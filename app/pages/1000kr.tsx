@@ -18,29 +18,30 @@ export const Page1000kr = () => {
       />
 
       {/* Main: top padding so content is never under fixed header on any viewport */}
-      <main className="site-main pt-24 md:pt-28">
-        <article className="ast-article-single">
+      <main className="site-main pt-24 md:pt-28 overflow-x-hidden">
+        <article className="ast-article-single w-full">
           <div className="entry-content clear max-w-[1440px] mx-auto px-6 md:px-10">
-
-            {/* Section 1: Referral Vercel embed — centered, full width within container */}
-            <section className="w-full overflow-hidden mb-0">
-              <div className="w-full overflow-hidden">
+            {/* Section 1: Referral embed — viewport-relative height so no huge gap, top always visible */}
+            <section className="w-full overflow-hidden mb-0 max-h-[78vh] md:max-h-[82vh] lg:max-h-none">
+              <div className="w-full overflow-auto lg:overflow-visible">
                 <iframe
                   src="https://asoldi-referal-section.vercel.app"
                   width="100%"
                   height={1510}
                   frameBorder={0}
                   scrolling="auto"
-                  style={{ border: 'none', width: '100%', minHeight: '1000px' }}
+                  style={{ border: 'none', width: '100%', minHeight: 'min(70vh, 900px)' }}
                   title="Asoldi referal"
                 />
               </div>
             </section>
+          </div>
 
-            {/* Transition + employment block: less gap, soft gradient so it doesn't feel cramped */}
-            <div className="w-full bg-gradient-to-b from-orange-50/40 via-orange-50/20 to-white pt-4 md:pt-6">
+          {/* 100% width differentiator + employment block */}
+          <div className="w-full bg-gradient-to-b from-orange-50/40 via-orange-50/20 to-white pt-4 md:pt-6">
+            <div className="max-w-[1440px] mx-auto px-6 md:px-10">
               {/* Section 2: Arrow + heading + text */}
-              <section className="w-full flex flex-col items-center justify-center py-4 md:py-6 px-6">
+              <section className="w-full flex flex-col items-center justify-center py-4 md:py-6 px-0">
                 <div className="flex justify-center mb-3">
                   <ChevronDown className="w-8 h-8 text-[#FF5B00]" aria-hidden />
                 </div>
@@ -175,7 +176,6 @@ export const Page1000kr = () => {
             </section>
 
             </div>
-
           </div>
         </article>
       </main>
