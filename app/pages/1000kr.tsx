@@ -84,9 +84,9 @@ export const Page1000kr = () => {
                   data-id="0d57232"
                   data-element_type="container"
                 >
-                  {/* xl: aspect ratio; lg: h-full so same height as contact form (images squish closer) */}
+                  {/* xl: aspect ratio; lg: h-full; phone: shorter by default (max-height cap) */}
                   <div
-                    className="e-con-full e-flex w-full min-w-0 overflow-visible h-full min-h-[280px] md:min-h-[320px] aspect-[2404/1468] lg:aspect-auto lg:min-h-0 xl:aspect-[2404/1468]"
+                    className="e-con-full e-flex w-full min-w-0 overflow-visible h-full min-h-[200px] max-h-[220px] sm:min-h-[240px] sm:max-h-[280px] md:min-h-[320px] md:max-h-none aspect-[2404/1468] lg:aspect-auto lg:min-h-0 lg:max-h-none xl:aspect-[2404/1468]"
                     data-id="6569a01"
                     data-element_type="container"
                   >
