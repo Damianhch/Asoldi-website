@@ -22,6 +22,20 @@ export default defineConfig(({ mode }) => {
       emptyOutDir: true,
       sourcemap: false,
       minify: 'esbuild',
+      rollupOptions: {
+        output: {
+          manualChunks: (id) => {
+            if (id.includes('node_modules')) {
+              if (id.includes('react-dom') || id.includes('/react/')) return 'react-vendor';
+              if (id.includes('motion')) return 'motion';
+              if (id.includes('react-router')) return 'router';
+              if (id.includes('lucide-react')) return 'icons';
+            }
+          },
+          chunkFileNames: 'assets/[name]-[hash].js',
+        },
+      },
+      chunkSizeWarningLimit: 400,
     },
     server: {
       hmr: process.env.DISABLE_HMR !== 'true',

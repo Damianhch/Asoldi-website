@@ -58,9 +58,9 @@ export const AboutUs = () => {
         structuredData={getAboutPageSchema('Om Asoldi', BUSINESS.description, SITE_URL + '/about')}
       />
       {/* Scroll Sequence Container */}
-      <div ref={containerRef} className="h-[1000vh] relative">
+      <div ref={containerRef} className="h-[1000vh] relative scroll-contain">
         {/* Sticky Container */}
-        <div className="sticky top-0 h-screen w-full overflow-hidden flex items-center justify-center">
+        <div className="sticky top-0 h-screen w-full overflow-hidden flex items-center justify-center scroll-contain">
           
           {/* Background Image Container */}
           <motion.div 

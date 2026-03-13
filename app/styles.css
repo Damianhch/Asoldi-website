@@ -22,3 +22,8 @@
 .animate-marquee {
   animation: marquee 40s linear infinite;
 }
+
+/* Reduce layout thrashing on scroll-heavy pages (e.g. About) */
+.scroll-contain {
+  contain: layout style paint;
+}

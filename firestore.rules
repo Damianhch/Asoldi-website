@@ -43,8 +43,9 @@ service cloud.firestore {
               request.resource.data[field].size() <= maxLen);
     }
     
+    // Replace YOUR_ADMIN_EMAIL with your Firebase Auth email; deploy via: firebase deploy --only firestore:rules
     function isAdmin() {
-      return isAuthenticated() && request.auth.token.email == "daracha777@gmail.com" && request.auth.token.email_verified == true;
+      return isAuthenticated() && request.auth.token.email == "YOUR_ADMIN_EMAIL" && request.auth.token.email_verified == true;
     }
     
     // ===============================================================
