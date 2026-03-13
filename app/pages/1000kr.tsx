@@ -120,12 +120,12 @@ export const Page1000kr = () => {
                             loading="lazy"
                           />
                         </div>
-                        {/* Layer 3: employee3 — bottom + center, full size */}
+                        {/* Layer 3: employee3 — center bottom, anchored so not floating */}
                         <div className="absolute inset-0 z-[3] flex items-end justify-center pointer-events-none">
                           <img
                             src="/media/employee3.webp"
                             alt=""
-                            className="h-full w-auto max-w-full object-contain object-center object-bottom"
+                            className="max-h-full w-auto max-w-full object-contain object-center object-bottom self-end"
                             loading="lazy"
                           />
                         </div>
