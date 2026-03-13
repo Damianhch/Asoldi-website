@@ -50,16 +50,16 @@ export const Page1000kr = () => {
               </p>
             </section>
 
-            {/* Section 3: Two-column — 30% contact form, 70% image container; wider section */}
+            {/* Section 3: Two-column — 40% contact form, 60% image container; no overflow, equal height on lg */}
             <section
-              className="e-flex e-con-boxed w-full max-w-7xl mx-auto px-2 md:px-4 pb-12 md:pb-16"
+              className="e-flex e-con-boxed w-full max-w-7xl mx-auto px-4 md:px-6 lg:px-8 pb-12 md:pb-16 box-border"
               data-id="583c880"
               data-element_type="container"
             >
-              <div className="e-con-inner w-full flex flex-col lg:flex-row gap-8 lg:gap-10 items-stretch">
-                {/* Left: Employment form — 30% width, not squished on tablet */}
+              <div className="e-con-inner w-full min-w-0 flex flex-col lg:flex-row gap-8 lg:gap-8 xl:gap-10 items-stretch">
+                {/* Left: Employment form — 40% width, can shrink to fix overflow */}
                 <div
-                  className="e-con-full hidden md:flex e-flex flex-[0_0_30%] min-w-0 flex-col min-h-[420px] md:min-h-[520px]"
+                  className="e-con-full hidden md:flex e-flex flex-[1_1_40%] min-w-0 flex-col min-h-[420px] md:min-h-[520px]"
                   data-id="1169ff7"
                   data-element_type="container"
                 >
@@ -78,14 +78,15 @@ export const Page1000kr = () => {
                   </div>
                 </div>
 
-                {/* Right: Layered employee images — 70% width, aspect 2404×1468 */}
+                {/* Right: Layered employee images — 60% width; aspect ratio on xl only, equal height on lg */}
                 <div
-                  className="e-con-full e-flex flex-[0_0_70%] min-w-0 order-first lg:order-none overflow-visible"
+                  className="e-con-full e-flex flex-[1_1_60%] min-w-0 order-first lg:order-none overflow-visible"
                   data-id="0d57232"
                   data-element_type="container"
                 >
+                  {/* xl: aspect ratio; lg: h-full so same height as contact form (images squish closer) */}
                   <div
-                    className="e-con-full e-flex w-full overflow-visible aspect-[2404/1468] min-h-[280px] md:min-h-[360px]"
+                    className="e-con-full e-flex w-full min-w-0 overflow-visible h-full min-h-[280px] md:min-h-[320px] aspect-[2404/1468] lg:aspect-auto lg:min-h-0 xl:aspect-[2404/1468]"
                     data-id="6569a01"
                     data-element_type="container"
                   >
@@ -137,8 +138,8 @@ export const Page1000kr = () => {
                             loading="lazy"
                           />
                         </div>
-                        {/* Layer 4 (top): employee4 — bottom + right, pop out -margin top/right, full size */}
-                        <div className="absolute inset-0 z-[5] flex items-end justify-end pointer-events-none -mt-8 -mr-6 md:-mt-10 md:-mr-8">
+                        {/* Layer 4 (top): employee4 — bottom + right, pop out; smaller offset on lg to avoid overflow */}
+                        <div className="absolute inset-0 z-[5] flex items-end justify-end pointer-events-none -mt-6 -mr-4 lg:-mt-6 lg:-mr-4 xl:-mt-10 xl:-mr-8">
                           <img
                             src="/media/employee4.webp"
                             alt=""
