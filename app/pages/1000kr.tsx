@@ -50,16 +50,16 @@ export const Page1000kr = () => {
               </p>
             </section>
 
-            {/* Section 3: Two-column — left = employment form in white container, right = stacked cards (HTML structure) */}
+            {/* Section 3: Two-column — 30% contact form, 70% image container; wider section */}
             <section
-              className="e-flex e-con-boxed w-full max-w-6xl mx-auto pb-12 md:pb-16"
+              className="e-flex e-con-boxed w-full max-w-7xl mx-auto px-2 md:px-4 pb-12 md:pb-16"
               data-id="583c880"
               data-element_type="container"
             >
-              <div className="e-con-inner w-full flex flex-col lg:flex-row gap-8 lg:gap-12 items-stretch">
-                {/* Left: Employment form — desktop, equal height with image container */}
+              <div className="e-con-inner w-full flex flex-col lg:flex-row gap-8 lg:gap-10 items-stretch">
+                {/* Left: Employment form — 30% width, not squished on tablet */}
                 <div
-                  className="e-con-full hidden md:flex e-flex flex-1 min-w-0 flex-col"
+                  className="e-con-full hidden md:flex e-flex flex-[0_0_30%] min-w-0 flex-col min-h-[420px] md:min-h-[520px]"
                   data-id="1169ff7"
                   data-element_type="container"
                 >
@@ -69,8 +69,8 @@ export const Page1000kr = () => {
                         src="https://employment-paginated-asoldi-form.vercel.app/"
                         title="Asoldi - Søknad"
                         width="100%"
-                        height={440}
-                        style={{ maxHeight: '430px', border: 'none' }}
+                        height={520}
+                        style={{ minHeight: '460px', border: 'none' }}
                         loading="lazy"
                         className="w-full flex-1 min-h-0"
                       />
@@ -78,14 +78,14 @@ export const Page1000kr = () => {
                   </div>
                 </div>
 
-                {/* Right: Layered employee images — aspect 2404×1468, equal height with left column */}
+                {/* Right: Layered employee images — 70% width, aspect 2404×1468 */}
                 <div
-                  className="e-con-full e-flex flex-1 min-w-0 order-first lg:order-none overflow-visible"
+                  className="e-con-full e-flex flex-[0_0_70%] min-w-0 order-first lg:order-none overflow-visible"
                   data-id="0d57232"
                   data-element_type="container"
                 >
                   <div
-                    className="e-con-full e-flex w-full overflow-visible aspect-[2404/1468] min-h-[280px] md:min-h-[320px]"
+                    className="e-con-full e-flex w-full overflow-visible aspect-[2404/1468] min-h-[280px] md:min-h-[360px]"
                     data-id="6569a01"
                     data-element_type="container"
                   >
@@ -152,16 +152,16 @@ export const Page1000kr = () => {
                 </div>
               </div>
 
-              {/* Employment form — mobile/tablet: same white container, full width */}
+              {/* Employment form — mobile/tablet: full width, tall enough to avoid squishing */}
               <div className="e-con-inner w-full mt-8 md:hidden">
                 <div className="elementor-widget-container w-full">
-                  <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100">
+                  <div className="bg-white rounded-2xl shadow-lg p-6 border border-gray-100 min-h-[420px]">
                     <iframe
                       src="https://employment-paginated-asoldi-form.vercel.app/"
                       title="Asoldi - Søknad"
                       width="100%"
-                      height={440}
-                      style={{ maxHeight: '430px', border: 'none' }}
+                      height={520}
+                      style={{ minHeight: '460px', border: 'none' }}
                       loading="lazy"
                       className="w-full"
                     />
