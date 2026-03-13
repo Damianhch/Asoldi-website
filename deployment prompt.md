@@ -44,6 +44,7 @@ I have a client website built in Google AI Studio that needs to be optimized for
 - Website is a React/TypeScript application (likely built with Vite)
 - May be using HashRouter instead of BrowserRouter
 - May load Tailwind CSS from CDN (slow, must be replaced with build-time)
+- **Pages may be statically imported in App.tsx** (entire site JS loads at once — replace with lazy loading per Step 4b)
 - Basic or missing SEO meta tags
 - No structured data (JSON-LD)
 - Missing sitemap.xml and robots.txt
@@ -97,7 +98,8 @@ I have a client website built in Google AI Studio that needs to be optimized for
 - **Change HashRouter to BrowserRouter** if present
   - Replace `HashRouter` with `BrowserRouter` in the main App component
   - Ensure clean URLs (e.g., `/page` instead of `/#/page`)
-  - Add HelmetProvider wrapper for dynamic meta tags
+  - Add HelmetProvider wrapper for dynamic meta tags (in the app entry, e.g. `app/index.tsx`)
+- **Use lazy-loaded route components and scroll-to-top on navigation** so the app does not load all pages at once and each new page opens at the top. Full implementation is in **Hostinger Step 4b** (lazy imports, Suspense, ScrollToTop component). Do not leave pages as static imports in `App.tsx`.
 
 
 ### 2. Dynamic Meta Tags Implementation
@@ -266,7 +268,7 @@ Move all React source files into `app/`:
 - `index.html`, `index.tsx`, `App.tsx`, `pages/`, `components/`, `constants.ts`, `config.ts`, `styles.css`
 
 
-Update `vite.config.ts`:
+Update `vite.config.ts` (include vendor chunk splitting for performance — see Step 4b):
 ```typescript
 import path from 'path';
 import { defineConfig } from 'vite';
@@ -285,7 +287,21 @@ export default defineConfig({
     outDir: '../dist',
     emptyOutDir: true,
     sourcemap: false,
-    minify: 'esbuild'
+    minify: 'esbuild',
+    rollupOptions: {
+      output: {
+        manualChunks: (id) => {
+          if (id.includes('node_modules')) {
+            if (id.includes('react-dom') || id.includes('/react/')) return 'react-vendor';
+            if (id.includes('motion')) return 'motion';
+            if (id.includes('react-router')) return 'router';
+            if (id.includes('lucide-react')) return 'icons';
+          }
+        },
+        chunkFileNames: 'assets/[name]-[hash].js',
+      },
+    },
+    chunkSizeWarningLimit: 400,
   }
 });
 ```
@@ -392,6 +408,59 @@ Hostinger’s Node.js build environment **cannot compile native addons**. During
 **If you need a database or native feature:** Use a hosted API, serverless function, or a stack that doesn’t rely on native compilation on Hostinger’s Node.js (e.g. use their PHP/MySQL for DB, or an external API).
 
 
+### Step 4b: Performance — code-split routes and scroll restoration
+
+
+**Do not load the whole site at once.** Use route-level code splitting and scroll restoration so the site stays fast and navigation feels correct.
+
+1. **Lazy-load page components**  
+   In `App.tsx`, do **not** import pages statically (e.g. do not use `import { Home } from './pages/Home'`). Use `React.lazy()` so each route’s JS loads only when the user visits that route. Ensure page components use **named exports** (e.g. `export const Home = () => ...`) so the `.then(m => ({ default: m.Home }))` pattern works:
+   ```tsx
+   import React, { Suspense, lazy } from 'react';
+   // ...
+   const Home = lazy(() => import('./pages/Home').then(m => ({ default: m.Home })));
+   const Pricing = lazy(() => import('./pages/Pricing').then(m => ({ default: m.Pricing })));
+   // ... same for every page component
+   ```
+
+2. **Wrap `Routes` in `Suspense`**  
+   Add a minimal fallback (e.g. a small spinner or “Loading…”) so users see something while the lazy chunk loads:
+   ```tsx
+   <Suspense fallback={<PageLoader />}>
+     <Routes>
+       <Route path="/" element={<Home />} />
+       ...
+     </Routes>
+   </Suspense>
+   ```
+   Create a simple `PageLoader` component (e.g. centered spinner) used only as this fallback.
+
+3. **Scroll to top on route change**  
+   Without this, opening a new page can leave the viewport scrolled down from the previous page. Add a `ScrollToTop` component (e.g. in `components/ScrollToTop.tsx`) that runs `window.scrollTo(0, 0)` when the route changes. Render it inside the router:
+   ```tsx
+   import { useEffect } from 'react';
+   import { useLocation } from 'react-router-dom';
+   export function ScrollToTop() {
+     const { pathname } = useLocation();
+     useEffect(() => { window.scrollTo(0, 0); }, [pathname]);
+     return null;
+   }
+   ```
+   In `App.tsx`, render `<ScrollToTop />` once inside `<Router>` (e.g. right after `<Router>`).
+
+4. **Vite: split vendor chunks**  
+   The **Step 1** `vite.config.ts` snippet above already includes `rollupOptions.output.manualChunks`. Ensure it is present so React, router, and other large libs are in separate cached chunks instead of one huge bundle. If the project does not use a given library (e.g. no “motion” or “lucide-react”), remove or adjust those conditions in `manualChunks` to match the project’s dependencies; do not remove the entire `rollupOptions` block.
+
+5. **Scroll-heavy pages**  
+   For pages with a lot of scroll-linked animations (e.g. long scroll story), add CSS containment so the browser can limit layout work:
+   ```css
+   .scroll-contain {
+     contain: layout style paint;
+   }
+   ```
+   Apply `scroll-contain` to the main scroll container (e.g. the tall wrapper or sticky container) to reduce layout thrashing while scrolling.
+
+
 ```json
 {
   "name": "project-name",
@@ -467,7 +536,7 @@ server.log
 1. **Semantic HTML**: Proper heading hierarchy (h1, h2, h3)
 2. **Internal Linking**: Navigation links use proper anchor text
 3. **Mobile Responsiveness**: Correct viewport meta tag
-4. **Page Speed**: No CDN dependencies, build-time CSS, optimized bundle
+4. **Page Speed**: No CDN dependencies, build-time CSS, optimized bundle; code-split routes so the whole site does not load at once (Step 4b).
 5. **Accessibility**: ARIA labels where needed, keyboard navigation
 
 
@@ -485,6 +554,7 @@ server.log
 - [ ] Verify all image paths in `app/constants.ts` point to files in `public/media/`
 - [ ] Ensure `package.json` has `"postinstall": "npm run build"` and build tools in `dependencies`
 - [ ] Remove native addons from `package.json` (e.g. better-sqlite3, native bcrypt, sharp) if not used — Hostinger cannot build them and install will fail (see Step 4a)
+- [ ] Use lazy-loaded routes + ScrollToTop + Suspense fallback so only the current page loads and scroll resets on navigation (see Step 4b)
 - [ ] Push to GitHub → Hostinger runs npm install → postinstall runs build → site updates
 - [ ] Verify all pages load at live URL
 - [ ] Test mobile responsiveness
@@ -502,6 +572,8 @@ server.log
 
 ✅ **Deployment Ready** — Express server, source in `app/`, postinstall runs build on deploy, .htaccess for SPA routing, build tools in dependencies
 
+✅ **Fast by default** — Lazy-loaded routes (only current page JS loads), scroll-to-top on navigation, vendor chunk splitting, optional scroll containment for heavy pages (Step 4b)
+
 
 ✅ **Production Optimized** — Build-time Tailwind CSS (~35KB vs ~300KB CDN), no external dependencies, fast loading
 
@@ -518,8 +590,10 @@ server.log
 1. **Preserve Existing Design**: Do NOT change visual design, layout, or user experience. Only optimize SEO and deployment.
 2. **Domain Placeholders**: Use `yourdomain.com` as placeholder. Client updates before deployment.
 3. **Auto-Extract Business Info**: Search codebase for business details — do NOT ask user. Only placeholder domain URLs.
-4. **Test Everything**: Build completes, preview works, all routes navigate, meta tags update on navigation.
+4. **Test Everything**: Build completes, preview works, all routes navigate (lazy chunks load when visiting each route), scroll position resets to top on navigation, meta tags update on navigation.
 5. **Hostinger: No native addons**: Remove packages like `better-sqlite3` from dependencies if unused — Hostinger’s install environment cannot compile native addons (node-gyp), so install would fail. Static SPA + Express does not need them.
+
+6. **Performance: Lazy routes + scroll to top**: Use React.lazy() for page components and wrap Routes in Suspense so only the current route’s JS loads. Add a ScrollToTop component so each new page opens at the top. Add Vite manualChunks for vendor splitting (Step 4b). This keeps first load and navigation fast.
 
 
 ---

@@ -15,6 +15,7 @@ const EmailMarketing = lazy(() => import('./pages/EmailMarketing').then(m => ({ 
 const PhotoVideo = lazy(() => import('./pages/PhotoVideo').then(m => ({ default: m.PhotoVideo })));
 const Clients = lazy(() => import('./pages/Clients').then(m => ({ default: m.Clients })));
 const Booking = lazy(() => import('./pages/Booking').then(m => ({ default: m.Booking })));
+const Page1000kr = lazy(() => import('./pages/1000kr').then(m => ({ default: m.Page1000kr })));
 
 export default function App() {
   return (
@@ -33,6 +34,7 @@ export default function App() {
             <Route path="/services/photo-video" element={<PhotoVideo />} />
             <Route path="/clients" element={<Clients />} />
             <Route path="/booking" element={<Booking />} />
+            <Route path="/1000kr" element={<Page1000kr />} />
           </Routes>
         </Suspense>
         <Footer />
