@@ -1,0 +1,76 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: bookings
+    // Document ID: auto-generated
+    // Fields:
+    //   - name: string (required, length 1-100)
+    //   - email: string (required, valid email)
+    //   - company: string (optional, length 0-100)
+    //   - message: string (optional, length 0-1000)
+    //   - createdAt: timestamp (required, immutable)
+    //
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isValidEmail(email) {
+      return email is string &&
+        email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+    
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+    
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+    
+    function isValidOptionalString(field, minLen, maxLen) {
+      return !(field in request.resource.data) ||
+             (request.resource.data[field] is string &&
+              request.resource.data[field].size() >= minLen &&
+              request.resource.data[field].size() <= maxLen);
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && request.auth.token.email == "daracha777@gmail.com" && request.auth.token.email_verified == true;
+    }
+    
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    
+    function isValidBooking(data) {
+      return hasRequiredFields(['name', 'email', 'createdAt']) &&
+             hasOnlyAllowedFields(['name', 'email', 'company', 'message', 'createdAt']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             isValidEmail(data.email) &&
+             isValidOptionalString('company', 0, 100) &&
+             isValidOptionalString('message', 0, 1000) &&
+             data.createdAt is timestamp;
+    }
+    
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    
+    match /bookings/{bookingId} {
+      // Anyone can create a booking request
+      allow create: if isValidBooking(request.resource.data);
+      
+      // Only admins can read, update, or delete bookings
+      allow read, update, delete: if isAdmin();
+    }
+  }
+}

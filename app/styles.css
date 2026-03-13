@@ -1,0 +1,24 @@
+@import url('https://fonts.googleapis.com/css2?family=Anton&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter Tight", sans-serif;
+  --font-serif: "Playfair Display", serif;
+  --font-display: "Anton", sans-serif;
+  --color-accent: #FF5B00;
+}
+
+@layer base {
+  body {
+    @apply bg-[#050505] text-white font-sans antialiased;
+  }
+}
+
+@keyframes marquee {
+  0% { transform: translateX(0); }
+  100% { transform: translateX(-100%); }
+}
+
+.animate-marquee {
+  animation: marquee 40s linear infinite;
+}
