@@ -1,7 +1,7 @@
 import React from 'react';
 import { Button } from './Button';
 import { motion } from 'motion/react';
-import { Twitter, Linkedin, Instagram, Facebook, Github, Mail, Phone, MapPin } from 'lucide-react';
+import { Twitter, Youtube, Instagram, Facebook, Github, Mail, Phone, MapPin } from 'lucide-react';
 import { useLocation, Link } from 'react-router-dom';
 
 export const Footer = () => {
@@ -110,8 +110,8 @@ export const Footer = () => {
                     <a href="https://www.instagram.com/asoldimedia/" target="_blank" rel="noreferrer" className="w-10 h-10 rounded-full bg-[#1a1a1a] border border-white/10 flex items-center justify-center text-gray-400 hover:bg-[#FF5B00] hover:text-white transition-all duration-300 group">
                         <Instagram size={18} className="group-hover:scale-110 transition-transform" />
                     </a>
-                    <a href="#" className="w-10 h-10 rounded-full bg-[#1a1a1a] border border-white/10 flex items-center justify-center text-gray-400 hover:bg-[#FF5B00] hover:text-white transition-all duration-300 group">
-                        <Linkedin size={18} className="group-hover:scale-110 transition-transform" />
+                    <a href="https://www.youtube.com/@AsoldiMedia?app=desktop" target="_blank" rel="noreferrer" className="w-10 h-10 rounded-full bg-[#1a1a1a] border border-white/10 flex items-center justify-center text-gray-400 hover:bg-[#FF5B00] hover:text-white transition-all duration-300 group">
+                        <Youtube size={18} className="group-hover:scale-110 transition-transform" />
                     </a>
                 </div>
             </div>
