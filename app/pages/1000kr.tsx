@@ -3,14 +3,6 @@ import { ChevronDown } from 'lucide-react';
 import { SEO } from '../components/SEO';
 import { BUSINESS } from '../config';
 
-/** Step cards for the right column — structure matches img 1 (stacked with margin) */
-const STEPS = [
-  { number: 1, title: 'Kontakt oss', description: 'Send inn referansen din via skjemaet.' },
-  { number: 2, title: 'Kontakt bedriftseier', description: 'Vi tar kontakt med bedriften du har referert.' },
-  { number: 3, title: 'Kunden betaler', description: 'Når kunden inngår avtale starter utbetalingen.' },
-  { number: 4, title: 'Du blir betalt', description: 'Du mottar din kommisjon i henhold til avtalen.' },
-];
-
 /**
  * 1000kr page — white background, centered embeds with header padding,
  * employment form in white container, stacked step section (HTML structure).
@@ -86,30 +78,75 @@ export const Page1000kr = () => {
                   </div>
                 </div>
 
-                {/* Right: Stacked cards (images-like section with margin) — exact structure */}
-                <div className="e-con-full flex flex-col gap-6 flex-1 min-w-0 order-first lg:order-none">
-                  {STEPS.map((step) => (
+                {/* Right: Layered employee images (img-2 style) — rounded panel with gradient + stacked images */}
+                <div
+                  className="e-con-full e-flex flex-1 min-w-0 order-first lg:order-none overflow-visible"
+                  data-id="0d57232"
+                  data-element_type="container"
+                >
+                  <div
+                    className="e-con-full e-flex w-full overflow-visible"
+                    data-id="6569a01"
+                    data-element_type="container"
+                  >
                     <div
-                      key={step.number}
-                      className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm flex gap-4 items-start"
-                      style={{ marginBottom: 0 }}
+                      className="e-con-full e-flex w-full overflow-visible"
+                      data-id="d19297c"
+                      data-element_type="container"
                     >
-                      <div className="flex-shrink-0 w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-[#050505] font-semibold">
-                        {step.number}
+                      <div
+                        className="e-con-full e-flex w-full rounded-2xl shadow-lg overflow-visible relative min-h-[380px] md:min-h-[420px] lg:min-h-[460px]"
+                        data-id="8831719"
+                        data-element_type="container"
+                      >
+                        {/* Layer 1 (back): background image — center, full size */}
+                        <div
+                          className="absolute inset-0 z-0 rounded-2xl bg-center bg-cover bg-no-repeat"
+                          style={{ backgroundImage: 'url(/media/employee1.webp)' }}
+                          aria-hidden
+                        />
+                        {/* Gradient overlay: ff5b00 100% bottom, 0% top right */}
+                        <div
+                          className="absolute inset-0 z-[1] rounded-2xl bg-gradient-to-tr from-transparent to-[#ff5b00]"
+                          aria-hidden
+                        />
+                        {/* Layer 5 (low): employee5 — align left, full size, moves right when section shrinks */}
+                        <div className="absolute inset-0 z-[2] flex items-center justify-start pointer-events-none">
+                          <img
+                            src="/media/employee5.webp"
+                            alt=""
+                            className="h-full w-auto max-w-full object-contain object-left"
+                            loading="lazy"
+                          />
+                        </div>
+                        {/* Layer 3: employee3 — center, full size, both sides shrink */}
+                        <div className="absolute inset-0 z-[3] flex items-center justify-center pointer-events-none">
+                          <img
+                            src="/media/employee3.webp"
+                            alt=""
+                            className="h-full w-auto max-w-full object-contain object-center"
+                            loading="lazy"
+                          />
+                        </div>
+                        {/* Layer 2: employee2 — align left, full size */}
+                        <div className="absolute inset-0 z-[4] flex items-center justify-start pointer-events-none">
+                          <img
+                            src="/media/employee2.webp"
+                            alt=""
+                            className="h-full w-auto max-w-full object-contain object-left"
+                            loading="lazy"
+                          />
+                        </div>
+                        {/* Layer 4 (top): employee4 — align right, pop out -margin top/right, full size */}
+                        <div className="absolute inset-0 z-[5] flex items-end justify-end pointer-events-none -mt-8 -mr-6 md:-mt-10 md:-mr-8">
+                          <img
+                            src="/media/employee4.webp"
+                            alt=""
+                            className="h-full w-auto max-w-full object-contain object-right flex-shrink-0"
+                            loading="lazy"
+                          />
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="text-lg font-semibold text-[#050505] mb-1">{step.title}</h3>
-                        <p className="text-gray-600 text-sm">{step.description}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* Spacer containers matching HTML (empty nested divs for structure) */}
-                <div className="e-con-full e-flex hidden" data-id="0d57232" aria-hidden="true">
-                  <div className="e-con-full" data-id="6569a01">
-                    <div className="e-con-full" data-id="d19297c">
-                      <div className="e-con-full" data-id="8831719" />
                     </div>
                   </div>
                 </div>
