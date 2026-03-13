@@ -56,15 +56,15 @@ export const Page1000kr = () => {
               data-id="583c880"
               data-element_type="container"
             >
-              <div className="e-con-inner w-full flex flex-col lg:flex-row gap-8 lg:gap-12">
-                {/* Left: Employment form in white background container — desktop */}
+              <div className="e-con-inner w-full flex flex-col lg:flex-row gap-8 lg:gap-12 items-stretch">
+                {/* Left: Employment form — desktop, equal height with image container */}
                 <div
-                  className="e-con-full hidden md:block e-flex flex-1 min-w-0"
+                  className="e-con-full hidden md:flex e-flex flex-1 min-w-0 flex-col"
                   data-id="1169ff7"
                   data-element_type="container"
                 >
-                  <div className="elementor-widget-container w-full">
-                    <div className="bg-white rounded-2xl shadow-lg p-6 md:p-8 border border-gray-100">
+                  <div className="elementor-widget-container w-full flex-1 min-h-0 flex flex-col">
+                    <div className="bg-white rounded-2xl shadow-lg p-6 md:p-8 border border-gray-100 flex-1 min-h-0 flex flex-col">
                       <iframe
                         src="https://employment-paginated-asoldi-form.vercel.app/"
                         title="Asoldi - Søknad"
@@ -72,30 +72,30 @@ export const Page1000kr = () => {
                         height={440}
                         style={{ maxHeight: '430px', border: 'none' }}
                         loading="lazy"
-                        className="w-full"
+                        className="w-full flex-1 min-h-0"
                       />
                     </div>
                   </div>
                 </div>
 
-                {/* Right: Layered employee images (img-2 style) — rounded panel with gradient + stacked images */}
+                {/* Right: Layered employee images — aspect 2404×1468, equal height with left column */}
                 <div
                   className="e-con-full e-flex flex-1 min-w-0 order-first lg:order-none overflow-visible"
                   data-id="0d57232"
                   data-element_type="container"
                 >
                   <div
-                    className="e-con-full e-flex w-full overflow-visible"
+                    className="e-con-full e-flex w-full overflow-visible aspect-[2404/1468] min-h-[280px] md:min-h-[320px]"
                     data-id="6569a01"
                     data-element_type="container"
                   >
                     <div
-                      className="e-con-full e-flex w-full overflow-visible"
+                      className="e-con-full e-flex w-full h-full overflow-visible"
                       data-id="d19297c"
                       data-element_type="container"
                     >
                       <div
-                        className="e-con-full e-flex w-full rounded-2xl shadow-lg overflow-visible relative min-h-[380px] md:min-h-[420px] lg:min-h-[460px]"
+                        className="e-con-full e-flex w-full h-full rounded-2xl shadow-lg overflow-visible relative"
                         data-id="8831719"
                         data-element_type="container"
                       >
@@ -110,21 +110,21 @@ export const Page1000kr = () => {
                           className="absolute inset-0 z-[1] rounded-2xl bg-gradient-to-tr from-transparent to-[#ff5b00]"
                           aria-hidden
                         />
-                        {/* Layer 5 (low): employee5 — align left, full size, moves right when section shrinks */}
-                        <div className="absolute inset-0 z-[2] flex items-center justify-start pointer-events-none">
+                        {/* Layer 5 (low): employee5 — bottom + left, full size */}
+                        <div className="absolute inset-0 z-[2] flex items-end justify-start pointer-events-none">
                           <img
                             src="/media/employee5.webp"
                             alt=""
-                            className="h-full w-auto max-w-full object-contain object-left"
+                            className="h-full w-auto max-w-full object-contain object-left object-bottom"
                             loading="lazy"
                           />
                         </div>
-                        {/* Layer 3: employee3 — center, full size, both sides shrink */}
-                        <div className="absolute inset-0 z-[3] flex items-center justify-center pointer-events-none">
+                        {/* Layer 3: employee3 — bottom + center, full size */}
+                        <div className="absolute inset-0 z-[3] flex items-end justify-center pointer-events-none">
                           <img
                             src="/media/employee3.webp"
                             alt=""
-                            className="h-full w-auto max-w-full object-contain object-center"
+                            className="h-full w-auto max-w-full object-contain object-center object-bottom"
                             loading="lazy"
                           />
                         </div>
@@ -137,12 +137,12 @@ export const Page1000kr = () => {
                             loading="lazy"
                           />
                         </div>
-                        {/* Layer 4 (top): employee4 — align right, pop out -margin top/right, full size */}
+                        {/* Layer 4 (top): employee4 — bottom + right, pop out -margin top/right, full size */}
                         <div className="absolute inset-0 z-[5] flex items-end justify-end pointer-events-none -mt-8 -mr-6 md:-mt-10 md:-mr-8">
                           <img
                             src="/media/employee4.webp"
                             alt=""
-                            className="h-full w-auto max-w-full object-contain object-right flex-shrink-0"
+                            className="h-full w-auto max-w-full object-contain object-right object-bottom flex-shrink-0"
                             loading="lazy"
                           />
                         </div>
