@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { ChevronLeft, ChevronRight, ArrowUpRight, Star } from 'lucide-react';
+import { ChevronLeft, ChevronRight, ArrowUpRight } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 interface CaseStudy {
@@ -106,7 +106,7 @@ export const CaseStudies = () => {
             viewport={{ once: true }}
             className="text-2xl md:text-3xl font-medium text-white mb-12"
           >
-            Vi har hjulpet over 10+ bedrifter så langt
+            samarbeid med 10+ bedrifter så langt
           </motion.h3>
           
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 justify-items-center gap-6 md:gap-8">
@@ -126,11 +126,7 @@ export const CaseStudies = () => {
                 />
                 <div className="text-center min-w-0">
                   <p className="text-white font-medium text-xs sm:text-sm truncate" title={client.name}>{client.name}</p>
-                  <p className="text-white/70 text-[10px] sm:text-xs truncate mb-0.5" title={client.business}>{client.business}</p>
-                  <div className="flex items-center justify-center gap-0.5">
-                    <Star size={10} fill="#FF5B00" strokeWidth={0} />
-                    <span className="text-gray-400 text-[10px] sm:text-xs">{client.score}</span>
-                  </div>
+                  <p className="text-white/70 text-[10px] sm:text-xs truncate" title={client.business}>{client.business}</p>
                 </div>
               </motion.div>
             ))}
