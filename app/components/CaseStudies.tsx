@@ -23,7 +23,7 @@ const caseStudies: CaseStudy[] = [
     businessName: "Superhero Burger",
     resultDescription: "Vi håndterer gjennomsnittelig 320 unike besøkende hver dag gjennom utviklingen av nettsiden, uten dette vll disse kundene ikke fått den informasjonen de var ute etter.",
     services: ["Nettside utvikling", "Nettside opprettholdelse"],
-    logo: "https://cdn.prod.website-files.com/6716051c7e279a14d3641f31/6720cb5abb9063b775af1c52_GrowStudio..svg"
+    logo: "/media/logo.jpg"
   },
   {
     id: 2,
@@ -43,7 +43,7 @@ const caseStudies: CaseStudy[] = [
     businessName: "Værnes bar",
     resultDescription: "Lar kunde bestille over nett, sende kunde henvendelser, og booke bord, en helhetlig og profesjonell restaurant løsning som lar kunden bestille det den vil.",
     services: ["Nettside utvikling", "Nettside opprettholdelse"],
-    logo: "https://cdn.prod.website-files.com/6716051c7e279a14d3641f31/6720cb5abb9063b775af1c52_GrowStudio..svg"
+    logo: "/media/Untitled_design__13_-removebg-preview.png"
   },
   {
     id: 4,
@@ -53,7 +53,7 @@ const caseStudies: CaseStudy[] = [
     businessName: "Mong sushi",
     resultDescription: "Økte tilstedeværelse på nett ved å vise meny, bilder av lokasjon og gir kunder mulighet til å bestille takeaway og sende kunde henvendelser på en lett og enkel måte.",
     services: ["Nettside utvikling", "Nettside opprettholdelse"],
-    logo: "https://cdn.prod.website-files.com/6716051c7e279a14d3641f31/6720cb5abb9063b775af1c52_GrowStudio..svg"
+    logo: "/media/mong sushi logo.webp"
   },
   {
     id: 5,
@@ -63,7 +63,7 @@ const caseStudies: CaseStudy[] = [
     businessName: "S'wich restaurant",
     resultDescription: "Ranker nr 3 i søkeord “restaurant” i trondheim etter 1 uke med nettside. målet var mer eksponering på google og google maps, og det var noe vi klarte å oppnå.",
     services: ["Nettside utvikling", "Nettside opprettholdelse"],
-    logo: "https://cdn.prod.website-files.com/6716051c7e279a14d3641f31/6720cb5abb9063b775af1c52_GrowStudio..svg"
+    logo: "/media/7444a9e70b64378cb31902781eb700f98431feee.webp"
   }
 ];
 

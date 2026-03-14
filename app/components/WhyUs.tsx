@@ -66,7 +66,7 @@ export const WhyUs = () => {
           >
             <div className="relative rounded-[40px] overflow-hidden border border-white/10 aspect-[4/5] lg:aspect-square">
               <img 
-                src="https://images.unsplash.com/photo-1522071820081-009f0129c71c?q=80&w=2070&auto=format&fit=crop" 
+                src="/media/DSC02166-scaled.webp" 
                 alt="Asoldi Team" 
                 className="w-full h-full object-cover hover:scale-105 transition-transform duration-700"
               />
