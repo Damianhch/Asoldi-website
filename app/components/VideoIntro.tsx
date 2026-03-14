@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'motion/react';
-import { Play } from 'lucide-react';
+
+const YOUTUBE_EMBED_URL = 'https://www.youtube.com/embed/623B9L_icyk?autoplay=0';
 
 export const VideoIntro = () => {
   return (
@@ -32,18 +33,15 @@ export const VideoIntro = () => {
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="relative aspect-video rounded-[40px] overflow-hidden bg-[#121212] border border-white/10 group cursor-pointer"
+          className="relative aspect-video rounded-[40px] overflow-hidden bg-[#121212] border border-white/10"
         >
-          <img 
-            src="https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&q=80" 
-            alt="Video thumbnail" 
-            className="w-full h-full object-cover opacity-60 group-hover:opacity-40 transition-opacity duration-500"
+          <iframe
+            src={YOUTUBE_EMBED_URL}
+            title="Introduksjonsvideo – Velkommen til Asoldi"
+            className="absolute inset-0 w-full h-full"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+            allowFullScreen
           />
-          <div className="absolute inset-0 flex items-center justify-center">
-            <div className="w-20 h-20 md:w-24 md:h-24 bg-[#FF5B00] rounded-full flex items-center justify-center text-white group-hover:scale-110 transition-transform duration-300 shadow-lg shadow-[#FF5B00]/20">
-              <Play size={32} className="ml-2" fill="currentColor" />
-            </div>
-          </div>
         </motion.div>
       </div>
     </section>

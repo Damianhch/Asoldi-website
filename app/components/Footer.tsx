@@ -51,7 +51,7 @@ export const Footer = () => {
             {/* Brand */}
             <div className="space-y-6">
                 <div className="flex items-center gap-2">
-                    <span className="text-2xl font-display tracking-tighter text-[#FF5B00]">ASOLDI</span>
+                    <img src="/media/Untitled-1.png" alt="Asoldi" className="h-8 w-auto" />
                 </div>
                 <p className="text-gray-400 text-sm leading-relaxed max-w-xs">
                     Studentdrevet digitalt byrå i Trondheim. Vi hjelper bedrifter med å vokse på nett gjennom høykvalitets nettsider og målrettet markedsføring.

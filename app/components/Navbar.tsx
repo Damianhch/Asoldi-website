@@ -38,7 +38,7 @@ export const Navbar = () => {
     >
       <div className="max-w-[1440px] mx-auto px-6 md:px-10 flex items-center justify-between">
         <Link to="/" className="flex-shrink-0 z-50 flex items-center gap-2">
-          <span className="text-2xl font-display tracking-tighter text-[#FF5B00]">ASOLDI</span>
+          <img src="/media/Untitled-1.png" alt="Asoldi" className="h-8 md:h-9 w-auto" />
         </Link>
 
         {/* Desktop Menu */}
