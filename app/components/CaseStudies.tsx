@@ -68,13 +68,14 @@ const caseStudies: CaseStudy[] = [
 ];
 
 const clients = [
-  { name: "Christopher", score: 5.0 },
-  { name: "William", score: 4.9 },
-  { name: "Peder", score: 5.0 },
-  { name: "Moses", score: 5.0 },
-  { name: "Evelyn", score: 4.8 },
-  { name: "Jan Peder", score: 5.0 },
-  { name: "Arman", score: 4.9 },
+  { name: "Arman Vestad", business: "Arman v", score: 4.9, image: "/media/arman vestad.webp" },
+  { name: "Naing Zaw Win", business: "Mong Sushi", score: 5.0, image: "/media/naing zaw win.jpg" },
+  { name: "Jan Peder", business: "Svelstad gård", score: 5.0, image: "/media/d42ca57d-b9ea-4792-81e2-31deb97b19ea.jpg" },
+  { name: "Christopher Vrioni", business: "Superhero burger & pizza", score: 5.0, image: "/media/christopher.avif" },
+  { name: "Moses", business: "Værnes bar", score: 5.0, image: "/media/moses.jpg" },
+  { name: "Abdulnasser", business: "S'wich", score: 5.0, image: "/media/f6b843b5f8538fe4545df36ab22d5db40278e8a8-1024x768.jpg" },
+  { name: "Ali Alnassry", business: "A.L.I Vision", score: 5.0, image: "/media/ali.PNG" },
+  { name: "Peder Nåvik", business: "Ulvolden Productions", score: 5.0, image: "/media/avatars-llBdG1u5GiDnhdxL-5C8UGQ-t240x240.jpg" },
 ];
 
 export const CaseStudies = () => {
@@ -108,22 +109,27 @@ export const CaseStudies = () => {
             Vi har hjulpet over 10+ bedrifter så langt
           </motion.h3>
           
-          <div className="flex flex-wrap justify-center gap-8 md:gap-12">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 justify-items-center gap-6 md:gap-8">
             {clients.map((client, index) => (
               <motion.div
                 key={index}
                 initial={{ opacity: 0, y: 20 }}
                 whileInView={{ opacity: 1, y: 0 }}
                 viewport={{ once: true }}
-                transition={{ delay: index * 0.1 }}
-                className="flex flex-col items-center gap-3"
+                transition={{ delay: index * 0.05 }}
+                className="flex flex-col items-center gap-2 max-w-[140px]"
               >
-                <div className="w-20 h-20 md:w-24 md:h-24 rounded-full bg-gray-800 hover:scale-105 transition-transform duration-300 border border-white/5" />
-                <div className="text-center">
-                  <p className="text-white font-medium text-sm mb-1">{client.name}</p>
-                  <div className="flex items-center justify-center gap-1">
-                    <Star size={12} fill="#FF5B00" strokeWidth={0} />
-                    <span className="text-gray-400 text-xs">{client.score}</span>
+                <img
+                  src={client.image}
+                  alt={client.name}
+                  className="w-14 h-14 sm:w-16 sm:h-16 md:w-20 md:h-20 rounded-full object-cover hover:scale-105 transition-transform duration-300 border border-white/10 flex-shrink-0"
+                />
+                <div className="text-center min-w-0">
+                  <p className="text-white font-medium text-xs sm:text-sm truncate" title={client.name}>{client.name}</p>
+                  <p className="text-white/70 text-[10px] sm:text-xs truncate mb-0.5" title={client.business}>{client.business}</p>
+                  <div className="flex items-center justify-center gap-0.5">
+                    <Star size={10} fill="#FF5B00" strokeWidth={0} />
+                    <span className="text-gray-400 text-[10px] sm:text-xs">{client.score}</span>
                   </div>
                 </div>
               </motion.div>
