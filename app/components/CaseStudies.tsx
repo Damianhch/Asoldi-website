@@ -33,7 +33,7 @@ const caseStudies: CaseStudy[] = [
     businessName: "Svelstad gårdsbruk",
     resultDescription: "Mulighet til å bestille gjennom mailing system, samt opprettelse av email liste for fremtidige salgsnyheter. Dette prosjektet signaliserte en ny begynnelse for svelstad på nett.",
     services: ["Nettside utvikling", "Nettside opprettholdelse"],
-    logo: "https://cdn.prod.website-files.com/6716051c7e279a14d3641f31/6720cb5abb9063b775af1c52_GrowStudio..svg"
+    logo: "/media/Uten-navn-1000-x-500-px3.webp"
   },
   {
     id: 3,
@@ -131,7 +131,7 @@ export const CaseStudies = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-[40px] overflow-hidden shadow-2xl min-h-[700px] flex flex-col">
+        <div className="bg-white rounded-[40px] overflow-hidden shadow-2xl min-h-[580px] flex flex-col">
           
           {/* Top Tabs / Logos */}
           <div className="flex w-full border-b border-gray-100">
@@ -142,14 +142,14 @@ export const CaseStudies = () => {
                   setDirection(index > currentIndex ? 1 : -1);
                   setCurrentIndex(index);
                 }}
-                className={`h-24 flex-1 flex items-center justify-center border-r border-gray-100 last:border-r-0 transition-colors duration-300 relative ${
+                className={`h-20 flex-1 flex items-center justify-center border-r border-gray-100 last:border-r-0 transition-colors duration-300 relative ${
                   index === currentIndex ? 'bg-white' : 'bg-gray-100 hover:bg-gray-50'
                 }`}
               >
                 <img 
                   src={study.logo} 
                   alt={study.businessName} 
-                  className={`w-24 h-auto object-contain transition-opacity duration-300 ${
+                  className={`w-20 h-auto max-h-12 object-contain transition-opacity duration-300 ${
                     index === currentIndex ? 'opacity-100' : 'opacity-50 grayscale'
                   }`} 
                 />

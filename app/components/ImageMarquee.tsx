@@ -15,7 +15,7 @@ export const ImageMarquee = () => {
       <div className="flex w-full">
         <div className="flex animate-marquee gap-8 flex-shrink-0 items-center pr-8">
           {websiteCaptureImages.map((src, index) => (
-            <div key={`1-${index}`} className="relative flex-shrink-0 w-[300px] md:w-[400px] aspect-[4/3] rounded-2xl overflow-hidden group bg-[#1a1a1a]">
+            <div key={`1-${index}`} className="relative flex-shrink-0 w-[280px] md:w-[360px] aspect-[16/9] rounded-2xl overflow-hidden group bg-[#1a1a1a]">
               <img
                 alt="Asoldi kunde – nettside"
                 className="w-full h-full object-cover object-top transition-transform duration-500 group-hover:scale-105"
@@ -26,7 +26,7 @@ export const ImageMarquee = () => {
         </div>
         <div className="flex animate-marquee gap-8 flex-shrink-0 items-center pr-8" aria-hidden="true">
           {websiteCaptureImages.map((src, index) => (
-            <div key={`2-${index}`} className="relative flex-shrink-0 w-[300px] md:w-[400px] aspect-[4/3] rounded-2xl overflow-hidden group bg-[#1a1a1a]">
+            <div key={`2-${index}`} className="relative flex-shrink-0 w-[280px] md:w-[360px] aspect-[16/9] rounded-2xl overflow-hidden group bg-[#1a1a1a]">
               <img
                 alt=""
                 aria-hidden="true"

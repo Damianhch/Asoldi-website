@@ -43,6 +43,16 @@ export const VideoIntro = () => {
             allowFullScreen
           />
         </motion.div>
+
+        <motion.p
+          initial={{ opacity: 0, y: 12 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ delay: 0.15 }}
+          className="mt-10 text-center text-white/70 text-lg md:text-xl max-w-2xl mx-auto leading-relaxed"
+        >
+          Som et 4 år gammelt markedsføringsbyrå med erfaring innen web utvikling og sosiale medier markedsføring er vi et trygt valg du kan forvente resultater av.
+        </motion.p>
       </div>
     </section>
   );

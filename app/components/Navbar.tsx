@@ -36,9 +36,9 @@ export const Navbar = () => {
         isScrolled ? 'bg-[#050505]/80 backdrop-blur-md py-4' : 'bg-transparent py-6'
       }`}
     >
-      <div className="max-w-[1440px] mx-auto px-6 md:px-10 flex items-center justify-between">
-        <Link to="/" className="flex-shrink-0 z-50 flex items-center gap-2">
-          <img src="/media/Untitled-1.png" alt="Asoldi" className="h-8 md:h-9 w-auto" />
+      <div className="max-w-[1440px] mx-auto px-4 md:px-8 flex items-center justify-between">
+        <Link to="/" className="flex-shrink-0 z-50 flex items-center py-1">
+          <img src="/media/Untitled-1.png" alt="Asoldi" className="h-9 md:h-10 w-auto" />
         </Link>
 
         {/* Desktop Menu */}

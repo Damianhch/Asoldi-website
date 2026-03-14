@@ -17,7 +17,7 @@ export const Ticker = () => {
           {websiteCaptureImages.map((src, index) => (
             <div
               key={`1-${index}`}
-              className="relative flex-shrink-0 w-[300px] md:w-[400px] aspect-[4/3] rounded-2xl overflow-hidden group bg-[#1a1a1a]"
+              className="relative flex-shrink-0 w-[280px] md:w-[360px] aspect-[16/9] rounded-2xl overflow-hidden group bg-[#1a1a1a]"
             >
               <img
                 src={src}
@@ -31,7 +31,7 @@ export const Ticker = () => {
           {websiteCaptureImages.map((src, index) => (
             <div
               key={`2-${index}`}
-              className="relative flex-shrink-0 w-[300px] md:w-[400px] aspect-[4/3] rounded-2xl overflow-hidden group bg-[#1a1a1a]"
+              className="relative flex-shrink-0 w-[280px] md:w-[360px] aspect-[16/9] rounded-2xl overflow-hidden group bg-[#1a1a1a]"
             >
               <img
                 src={src}
