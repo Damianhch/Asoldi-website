@@ -7,3 +7,6 @@ coverage/
 .env*
 !.env.example
 server.log
+data/users.json
+data/admin.json
+data/sites.json

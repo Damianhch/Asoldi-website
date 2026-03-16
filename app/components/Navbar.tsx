@@ -90,7 +90,10 @@ export const Navbar = () => {
           </Link>
         </div>
 
-        <div className="hidden lg:block">
+        <div className="hidden lg:flex items-center gap-4">
+          <Link to="/login" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
+            Login
+          </Link>
           <Link to="/booking" className="bg-[#FF5B00] text-white px-6 py-3 rounded-full font-medium hover:bg-white hover:text-black transition-colors">
             Book konsultasjon
           </Link>
@@ -133,6 +136,7 @@ export const Navbar = () => {
               </div>
 
               <Link to="/clients" className="text-2xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Kundecaser</Link>
+              <Link to="/login" className="text-xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Login</Link>
               <Link to="/booking" className="bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium text-xl mt-4" onClick={() => setIsMobileMenuOpen(false)}>
                 Book konsultasjon
               </Link>
