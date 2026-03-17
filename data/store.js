@@ -81,15 +81,23 @@ export async function getUserByUsername(username) {
   return users.find((u) => u.username.toLowerCase() === username.toLowerCase()) || null;
 }
 
-export async function createUser(username, password) {
+const DEFAULT_ROLE = 'none';
+const ROLES = ['employee', 'client', 'none'];
+
+function normalizeRole(r) {
+  return ROLES.includes(r) ? r : DEFAULT_ROLE;
+}
+
+export async function createUser(username, password, role = DEFAULT_ROLE) {
   const users = readUsers();
   const existing = await getUserByUsername(username);
   if (existing) return { ok: false, error: 'Username already exists' };
   const id = String(Date.now());
   const passwordHash = await hashPassword(password);
-  users.push({ id, username, passwordHash, createdAt: new Date().toISOString() });
+  const userRole = normalizeRole(role);
+  users.push({ id, username, passwordHash, createdAt: new Date().toISOString(), role: userRole });
   writeUsers(users);
-  return { ok: true, user: { id, username, createdAt: users[users.length - 1].createdAt } };
+  return { ok: true, user: { id, username, createdAt: users[users.length - 1].createdAt, role: userRole } };
 }
 
 export async function updateUserPassword(id, newPassword) {
@@ -112,6 +120,15 @@ export async function updateUserUsername(id, newUsername) {
   return { ok: true };
 }
 
+export async function updateUserRole(id, role) {
+  const users = readUsers();
+  const i = users.findIndex((u) => u.id === id);
+  if (i === -1) return { ok: false, error: 'User not found' };
+  users[i].role = normalizeRole(role);
+  writeUsers(users);
+  return { ok: true };
+}
+
 export async function deleteUser(id) {
   const users = readUsers();
   const filtered = users.filter((u) => u.id !== id);
@@ -124,5 +141,25 @@ export async function verifyEmployee(username, password) {
   const user = await getUserByUsername(username);
   if (!user) return { ok: false };
   const valid = await verifyPassword(password, user.passwordHash);
-  return valid ? { ok: true, user: { id: user.id, username: user.username } } : { ok: false };
+  const role = normalizeRole(user.role);
+  return valid ? { ok: true, user: { id: user.id, username: user.username, role } } : { ok: false };
+}
+
+/** Seed employee users for ansatt login if they don't exist. Username = email, password = FirstNamePassword. */
+const EMPLOYEE_SEED = [
+  { username: 'jonatanhetland@gmail.com', password: 'JonatanPassword' },
+  { username: 'zo.sliwinska@gmail.com', password: 'ZofiaPassword' },
+  { username: 'bjorn.skalle@sogn.no', password: 'BjørnPassword' },
+  { username: 'helenedortheaselle@gmail.com', password: 'HelenePassword' },
+];
+
+export async function ensureEmployeeUsers() {
+  for (const { username, password } of EMPLOYEE_SEED) {
+    const existing = await getUserByUsername(username);
+    if (!existing) {
+      await createUser(username, password, 'employee');
+    } else if (normalizeRole(existing.role) !== 'employee') {
+      await updateUserRole(existing.id, 'employee');
+    }
+  }
 }

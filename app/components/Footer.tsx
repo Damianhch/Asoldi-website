@@ -3,10 +3,12 @@ import { Button } from './Button';
 import { motion } from 'motion/react';
 import { Twitter, Youtube, Instagram, Facebook, Github, Mail, Phone, MapPin } from 'lucide-react';
 import { useLocation, Link } from 'react-router-dom';
+import { useEmployeeAuth } from '../contexts/EmployeeAuthContext';
 
 export const Footer = () => {
   const currentYear = new Date().getFullYear();
   const location = useLocation();
+  const { isEmployee } = useEmployeeAuth();
 
   if (location.pathname === '/booking') {
     return null;
@@ -73,6 +75,9 @@ export const Footer = () => {
                     <li><Link to="/clients" className="hover:text-[#FF5B00] transition-colors block w-fit">Kundecaser</Link></li>
                     <li><Link to="/pricing" className="hover:text-[#FF5B00] transition-colors block w-fit">Priser</Link></li>
                     <li><Link to="/about" className="hover:text-[#FF5B00] transition-colors block w-fit">Om oss</Link></li>
+                    {isEmployee === true && (
+                      <li><Link to="/ansatt" className="hover:text-[#FF5B00] transition-colors block w-fit text-[#FF5B00]">Ansatt</Link></li>
+                    )}
                 </ul>
             </div>
 

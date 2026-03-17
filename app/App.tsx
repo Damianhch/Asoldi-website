@@ -4,6 +4,7 @@ import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
 import { PageLoader } from './components/PageLoader';
+import { EmployeeAuthProvider } from './contexts/EmployeeAuthContext';
 
 // Lazy-load pages so only the current route's JS is loaded. Reduces initial bundle and speeds up first paint.
 const Home = lazy(() => import('./pages/Home').then(m => ({ default: m.Home })));
@@ -20,10 +21,11 @@ const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login }
 const Admin = lazy(() => import('./pages/Admin/Admin').then(m => ({ default: m.Admin })));
 const SuperAdmin = lazy(() => import('./pages/SuperAdmin/SuperAdmin').then(m => ({ default: m.SuperAdmin })));
 const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then(m => ({ default: m.LoginForgotPassword })));
+const Ansatt = lazy(() => import('./pages/Ansatt').then(m => ({ default: m.Ansatt })));
 
 function AppLayout() {
   const location = useLocation();
-  const isAdminArea = location.pathname === '/admin' || location.pathname === '/superadmin';
+  const isAdminArea = location.pathname === '/admin' || location.pathname === '/superadmin' || location.pathname === '/ansatt';
   return (
     <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20">
       {!isAdminArea && <Navbar />}
@@ -42,6 +44,7 @@ function AppLayout() {
           <Route path="/login/forgot-password" element={<LoginForgotPassword />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/superadmin" element={<SuperAdmin />} />
+          <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/1000kr" element={<Page1000kr />} />
         </Routes>
       </Suspense>
@@ -53,8 +56,10 @@ function AppLayout() {
 export default function App() {
   return (
     <Router>
-      <ScrollToTop />
-      <AppLayout />
+      <EmployeeAuthProvider>
+        <ScrollToTop />
+        <AppLayout />
+      </EmployeeAuthProvider>
     </Router>
   );
 }

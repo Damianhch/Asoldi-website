@@ -1,9 +1,18 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { LogOut, Plus, Globe, Key, Edit2, Trash2 } from 'lucide-react';
+import { LogOut, Plus, Globe, Key, Edit2, Trash2, Users } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 
 const API = '/api';
+
+type UserRole = 'employee' | 'client' | 'none';
+
+type User = {
+  id: string;
+  username: string;
+  createdAt: string;
+  role: UserRole;
+};
 
 function getToken() {
   return localStorage.getItem('superAdminToken');
@@ -46,6 +55,11 @@ export const SuperAdmin = () => {
   const [editName, setEditName] = useState('');
   const [editFeatures, setEditFeatures] = useState({ users: true, analytics: false, ecommerce: false });
   const [copyKey, setCopyKey] = useState<string | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [addUserOpen, setAddUserOpen] = useState(false);
+  const [addUserUsername, setAddUserUsername] = useState('');
+  const [addUserPassword, setAddUserPassword] = useState('');
+  const [userRoleSaving, setUserRoleSaving] = useState<string | null>(null);
 
   const fetchSites = useCallback(async () => {
     const res = await fetch(`${API}/hub/sites`, { headers: authHeaders() });
@@ -59,14 +73,26 @@ export const SuperAdmin = () => {
     setSites(data);
   }, []);
 
+  const fetchUsers = useCallback(async () => {
+    const res = await fetch(`${API}/admin/users`, { headers: authHeaders() });
+    if (res.status === 401) {
+      clearToken();
+      setLoggedIn(false);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    setUsers(Array.isArray(data) ? data : []);
+  }, []);
+
   useEffect(() => {
     const t = getToken();
     if (!t) {
       setLoggedIn(false);
       return;
     }
-    fetchSites().then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
-  }, [fetchSites]);
+    Promise.all([fetchSites(), fetchUsers()]).then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
+  }, [fetchSites, fetchUsers]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -156,6 +182,48 @@ export const SuperAdmin = () => {
     navigator.clipboard.writeText(key);
     setCopyKey(key);
     setTimeout(() => setCopyKey(null), 2000);
+  };
+
+  const handleAddUser = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/admin/users`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: addUserUsername.trim(), password: addUserPassword, role: 'none' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || 'Failed');
+        return;
+      }
+      setAddUserOpen(false);
+      setAddUserUsername('');
+      setAddUserPassword('');
+      fetchUsers();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUserRoleChange = async (id: string, role: UserRole) => {
+    setUserRoleSaving(id);
+    try {
+      const res = await fetch(`${API}/admin/users/${id}`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Failed');
+        return;
+      }
+      setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, role } : u)));
+    } finally {
+      setUserRoleSaving(null);
+    }
   };
 
   if (loggedIn === null) {
@@ -294,6 +362,52 @@ export const SuperAdmin = () => {
           {sites.length === 0 && (
             <p className="text-gray-400 text-center py-8">No sites yet. Add one to get a site key for client CMS.</p>
           )}
+
+          <div className="mt-12 pt-8 border-t border-white/10">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+                <Users size={20} /> Users (roles for login)
+              </h2>
+              <button
+                type="button"
+                onClick={() => setAddUserOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]"
+              >
+                <Plus size={18} /> Add user
+              </button>
+            </div>
+            <p className="text-gray-500 text-sm mb-4">Assign role per user. Default is &quot;none&quot;. Only &quot;employee&quot; can access the Ansatt page.</p>
+            <div className="space-y-3">
+              {users.map((user) => (
+                <div
+                  key={user.id}
+                  className="rounded-xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-wrap items-center gap-4"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-white truncate">{user.username}</p>
+                    <p className="text-gray-500 text-xs">Created: {new Date(user.createdAt).toLocaleDateString()}</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <label className="text-gray-400 text-sm">Role:</label>
+                    <select
+                      value={user.role}
+                      onChange={(e) => handleUserRoleChange(user.id, e.target.value as UserRole)}
+                      disabled={userRoleSaving === user.id}
+                      className="bg-[#1a1a1a] border border-white/20 text-white rounded-lg px-3 py-2 text-sm min-w-[120px] disabled:opacity-50"
+                    >
+                      <option value="none">None</option>
+                      <option value="employee">Employee</option>
+                      <option value="client">Client</option>
+                    </select>
+                    {userRoleSaving === user.id && <span className="text-gray-500 text-xs">Saving…</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+            {users.length === 0 && (
+              <p className="text-gray-400 text-center py-6">No users yet. Add a user (default role: none).</p>
+            )}
+          </div>
         </main>
 
         {addOpen && (
@@ -327,6 +441,43 @@ export const SuperAdmin = () => {
                 </div>
               </form>
               <p className="text-gray-500 text-xs mt-4">After adding, copy the site key and set CMS_SITE_KEY in the client project env.</p>
+            </div>
+          </div>
+        )}
+
+        {addUserOpen && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+            <div className="bg-[#2a2a2a] rounded-xl border border-white/10 p-6 max-w-md w-full">
+              <h2 className="text-lg font-semibold text-white mb-4">Add user</h2>
+              <p className="text-gray-500 text-sm mb-4">New users get role &quot;none&quot; by default. Set role in the Users list after creating.</p>
+              <form onSubmit={handleAddUser} className="space-y-4">
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Username (e.g. email)</label>
+                  <input
+                    type="text"
+                    value={addUserUsername}
+                    onChange={(e) => setAddUserUsername(e.target.value)}
+                    placeholder="user@example.com"
+                    className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Password</label>
+                  <input
+                    type="password"
+                    value={addUserPassword}
+                    onChange={(e) => setAddUserPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                    required
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Add user</button>
+                  <button type="button" onClick={() => { setAddUserOpen(false); setAddUserUsername(''); setAddUserPassword(''); }} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
+                </div>
+              </form>
             </div>
           </div>
         )}

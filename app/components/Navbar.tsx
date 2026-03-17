@@ -3,8 +3,10 @@ import { Link } from 'react-router-dom';
 import { Button } from './Button';
 import { Menu, X, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useEmployeeAuth } from '../contexts/EmployeeAuthContext';
 
 export const Navbar = () => {
+  const { isEmployee } = useEmployeeAuth();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isServicesOpen, setIsServicesOpen] = useState(false);
@@ -136,7 +138,12 @@ export const Navbar = () => {
               </div>
 
               <Link to="/clients" className="text-2xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Kundecaser</Link>
-              <Link to="/login" className="text-xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Login</Link>
+              {isEmployee === true && (
+                <Link to="/ansatt" className="text-2xl font-medium text-[#FF5B00]" onClick={() => setIsMobileMenuOpen(false)}>Ansatt</Link>
+              )}
+              {isEmployee !== true && (
+                <Link to="/login" className="text-xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Login</Link>
+              )}
               <Link to="/booking" className="bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium text-xl mt-4" onClick={() => setIsMobileMenuOpen(false)}>
                 Book konsultasjon
               </Link>

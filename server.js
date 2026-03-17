@@ -72,15 +72,20 @@ function adminAuth(req, res, next) {
 
 app.get('/api/admin/users', adminAuth, async (_req, res) => {
   const users = await store.getAllUsers();
-  res.json(users.map(({ id, username, createdAt }) => ({ id, username, createdAt })));
+  res.json(users.map((u) => ({
+    id: u.id,
+    username: u.username,
+    createdAt: u.createdAt,
+    role: u.role === 'employee' || u.role === 'client' ? u.role : 'none',
+  })));
 });
 
 app.post('/api/admin/users', adminAuth, async (req, res) => {
-  const { username, password } = req.body || {};
+  const { username, password, role } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password required' });
   }
-  const result = await store.createUser(username, password);
+  const result = await store.createUser(username, password, role || 'none');
   if (!result.ok) {
     return res.status(400).json({ message: result.error });
   }
@@ -89,13 +94,17 @@ app.post('/api/admin/users', adminAuth, async (req, res) => {
 
 app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params;
-  const { username, password } = req.body || {};
+  const { username, password, role } = req.body || {};
   if (username !== undefined) {
     const result = await store.updateUserUsername(id, username);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
   if (password !== undefined && password !== '') {
     const result = await store.updateUserPassword(id, password);
+    if (!result.ok) return res.status(400).json({ message: result.error });
+  }
+  if (role !== undefined && ['employee', 'client', 'none'].includes(role)) {
+    const result = await store.updateUserRole(id, role);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
   res.json({ ok: true });
@@ -130,7 +139,27 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ message: 'Invalid username or password' });
   }
   const token = signToken({ role: 'employee', userId: result.user.id, at: Date.now() });
-  res.json({ token, user: result.user });
+  res.json({ token, user: { id: result.user.id, username: result.user.username, role: result.user.role } });
+});
+
+function employeeAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload || payload.role !== 'employee') {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  req.employee = payload;
+  next();
+}
+
+app.get('/api/auth/me', employeeAuth, async (req, res) => {
+  const user = await store.getUserById(req.employee.userId);
+  if (!user) return res.status(401).json({ message: 'User not found' });
+  if (user.role !== 'employee') {
+    return res.status(403).json({ message: 'Access denied. Employee role required.' });
+  }
+  res.json({ user: { id: user.id, username: user.username, role: user.role } });
 });
 
 // --- Hub API (public: site config for client CMS)
@@ -207,7 +236,12 @@ app.get('*', (req, res) => {
   else res.status(500).send('index.html not found');
 });
 
-ensureAdminExists().then(() => {
+async function ensureData() {
+  await ensureAdminExists();
+  await store.ensureEmployeeUsers();
+}
+
+ensureData().then(() => {
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 }).catch((err) => {
   console.error('Failed to init admin:', err);

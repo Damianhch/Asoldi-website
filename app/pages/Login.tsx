@@ -28,8 +28,8 @@ export const Login = () => {
         setError(data.message || 'Innlogging feilet. Sjekk brukernavn og passord.');
         return;
       }
-      // Success: redirect to home or a dashboard when you add one
-      window.location.href = '/';
+      if (data.token) localStorage.setItem('employeeToken', data.token);
+      window.location.href = '/ansatt';
     } catch {
       setError('Noe gikk galt. Prøv igjen.');
     } finally {
