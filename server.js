@@ -236,9 +236,17 @@ app.get('*', (req, res) => {
   else res.status(500).send('index.html not found');
 });
 
+function ensureHubDefaultSite() {
+  const sites = hub.getAllSites();
+  if (sites.length > 0) return;
+  hub.createSite({ name: 'Mong Sushi', domain: 'mongsushi.no' });
+  console.log('Hub: seeded default site Mong Sushi (mongsushi.no). Copy its site key and set CMS_SITE_KEY on the client.');
+}
+
 async function ensureData() {
   await ensureAdminExists();
   await store.ensureEmployeeUsers();
+  ensureHubDefaultSite();
 }
 
 ensureData().then(() => {

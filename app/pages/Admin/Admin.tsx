@@ -5,16 +5,19 @@ import { Helmet } from 'react-helmet-async';
 
 const API = '/api';
 
+// Accept both keys: old Super Admin used superAdminToken, Admin used adminToken. Same backend, same login.
 function getToken() {
-  return localStorage.getItem('adminToken');
+  return localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken');
 }
 
 function setToken(t: string) {
   localStorage.setItem('adminToken', t);
+  localStorage.setItem('superAdminToken', t);
 }
 
 function clearToken() {
   localStorage.removeItem('adminToken');
+  localStorage.removeItem('superAdminToken');
 }
 
 function authHeaders() {
