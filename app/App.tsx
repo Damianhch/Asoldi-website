@@ -19,13 +19,12 @@ const Booking = lazy(() => import('./pages/Booking').then(m => ({ default: m.Boo
 const Page1000kr = lazy(() => import('./pages/1000kr').then(m => ({ default: m.Page1000kr })));
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const Admin = lazy(() => import('./pages/Admin/Admin').then(m => ({ default: m.Admin })));
-const SuperAdmin = lazy(() => import('./pages/SuperAdmin/SuperAdmin').then(m => ({ default: m.SuperAdmin })));
 const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then(m => ({ default: m.LoginForgotPassword })));
 const Ansatt = lazy(() => import('./pages/Ansatt').then(m => ({ default: m.Ansatt })));
 
 function AppLayout() {
   const location = useLocation();
-  const isAdminArea = location.pathname === '/admin' || location.pathname === '/superadmin' || location.pathname === '/ansatt';
+  const isAdminArea = location.pathname === '/admin' || location.pathname === '/ansatt';
   return (
     <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20">
       {!isAdminArea && <Navbar />}
@@ -43,7 +42,7 @@ function AppLayout() {
           <Route path="/login" element={<Login />} />
           <Route path="/login/forgot-password" element={<LoginForgotPassword />} />
           <Route path="/admin" element={<Admin />} />
-          <Route path="/superadmin" element={<SuperAdmin />} />
+          <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/1000kr" element={<Page1000kr />} />
         </Routes>

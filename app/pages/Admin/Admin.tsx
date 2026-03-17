@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, LogOut, LayoutDashboard, BarChart3, ShoppingBag } from 'lucide-react';
+import { Users, LogOut, LayoutDashboard, BarChart3, ShoppingBag, Globe, Plus, Key, Edit2, Trash2 } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 
 const API = '/api';
@@ -22,8 +22,25 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-type Tab = 'users' | 'analytics' | 'ecommerce';
+type Tab = 'clients' | 'users' | 'analytics' | 'ecommerce';
 type Features = { users?: boolean; analytics?: boolean; ecommerce?: boolean };
+type UserRole = 'employee' | 'client' | 'none';
+
+type Site = {
+  id: string;
+  site_key: string;
+  domain: string;
+  name: string;
+  features: { users?: boolean; analytics?: boolean; ecommerce?: boolean };
+  createdAt: string;
+};
+
+type AdminUser = {
+  id: string;
+  username: string;
+  createdAt: string;
+  role: UserRole;
+};
 
 const DEFAULT_FEATURES: Features = { users: true, analytics: false, ecommerce: false };
 
@@ -32,10 +49,10 @@ export const Admin = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
-  const [tab, setTab] = useState<Tab>('users');
+  const [tab, setTab] = useState<Tab>('clients');
   const [features, setFeatures] = useState<Features>(DEFAULT_FEATURES);
   const [siteName, setSiteName] = useState('');
-  const [users, setUsers] = useState<{ id: string; username: string; createdAt: string }[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(false);
   const [userForm, setUserForm] = useState({ username: '', password: '' });
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -44,6 +61,17 @@ export const Admin = () => {
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [changePasswordError, setChangePasswordError] = useState('');
+  const [userRoleSaving, setUserRoleSaving] = useState<string | null>(null);
+
+  const [sites, setSites] = useState<Site[]>([]);
+  const [addSiteOpen, setAddSiteOpen] = useState(false);
+  const [addSiteName, setAddSiteName] = useState('');
+  const [addSiteDomain, setAddSiteDomain] = useState('');
+  const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
+  const [editSiteDomain, setEditSiteDomain] = useState('');
+  const [editSiteName, setEditSiteName] = useState('');
+  const [editSiteFeatures, setEditSiteFeatures] = useState({ users: true, analytics: false, ecommerce: false });
+  const [copyKey, setCopyKey] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
     const res = await fetch(`${API}/admin/users`, { headers: authHeaders() });
@@ -54,7 +82,19 @@ export const Admin = () => {
     }
     if (!res.ok) return;
     const data = await res.json();
-    setUsers(data);
+    setUsers(Array.isArray(data) ? data : []);
+  }, []);
+
+  const fetchSites = useCallback(async () => {
+    const res = await fetch(`${API}/hub/sites`, { headers: authHeaders() });
+    if (res.status === 401) {
+      clearToken();
+      setLoggedIn(false);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json();
+    setSites(Array.isArray(data) ? data : []);
   }, []);
 
   useEffect(() => {
@@ -73,8 +113,8 @@ export const Admin = () => {
       setLoggedIn(false);
       return;
     }
-    fetchUsers().then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
-  }, [fetchUsers]);
+    Promise.all([fetchUsers(), fetchSites()]).then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
+  }, [fetchUsers, fetchSites]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -114,7 +154,7 @@ export const Admin = () => {
       const res = await fetch(`${API}/admin/users`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify(userForm),
+        body: JSON.stringify({ ...userForm, role: 'none' }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -125,6 +165,25 @@ export const Admin = () => {
       fetchUsers();
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUserRoleChange = async (id: string, role: UserRole) => {
+    setUserRoleSaving(id);
+    try {
+      const res = await fetch(`${API}/admin/users/${id}`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Failed');
+        return;
+      }
+      setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, role } : u)));
+    } finally {
+      setUserRoleSaving(null);
     }
   };
 
@@ -184,6 +243,71 @@ export const Admin = () => {
     setChangePasswordOpen(false);
     setCurrentPassword('');
     setNewPassword('');
+  };
+
+  const handleAddSite = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/hub/sites`, {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: addSiteName || 'New site', domain: addSiteDomain.trim() }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Failed');
+        return;
+      }
+      setAddSiteOpen(false);
+      setAddSiteName('');
+      setAddSiteDomain('');
+      fetchSites();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleUpdateSite = async (id: string) => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/hub/sites/${id}`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ domain: editSiteDomain, name: editSiteName, features: editSiteFeatures }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Failed');
+        return;
+      }
+      setEditingSiteId(null);
+      fetchSites();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDeleteSite = async (id: string) => {
+    if (!confirm('Remove this site from the hub? The client CMS will stop receiving feature updates until re-added.')) return;
+    setLoading(true);
+    try {
+      const res = await fetch(`${API}/hub/sites/${id}`, { method: 'DELETE', headers: authHeaders() });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Failed');
+        return;
+      }
+      fetchSites();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copySiteKey = (key: string) => {
+    navigator.clipboard.writeText(key);
+    setCopyKey(key);
+    setTimeout(() => setCopyKey(null), 2000);
   };
 
   if (loggedIn === null) {
@@ -247,6 +371,14 @@ export const Admin = () => {
             <p className="text-xs text-gray-400 mt-1">Client CMS</p>
           </div>
           <nav className="flex-1 p-2">
+            <button
+              onClick={() => setTab('clients')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm font-medium transition-colors ${
+                tab === 'clients' ? 'bg-[#FF5B00] text-white' : 'text-gray-300 hover:bg-white/10'
+              }`}
+            >
+              <Globe size={18} /> Manage clients
+            </button>
             {features.users !== false && (
               <button
                 onClick={() => setTab('users')}
@@ -299,6 +431,78 @@ export const Admin = () => {
 
         {/* Main content */}
         <main className="flex-1 ml-56 p-8">
+          {tab === 'clients' && (
+            <div className="max-w-4xl">
+              <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
+              <p className="text-gray-400 text-sm mb-6">Client sites in the hub. Add a site to get a site key for client CMS. Changing domain keeps the same site key.</p>
+              <div className="flex items-center justify-between mb-6">
+                <h2 className="text-lg font-semibold text-white">Sites</h2>
+                <button
+                  type="button"
+                  onClick={() => setAddSiteOpen(true)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]"
+                >
+                  <Plus size={18} /> Add site
+                </button>
+              </div>
+              <div className="space-y-4">
+                {sites.map((site) => (
+                  <div
+                    key={site.id}
+                    className="rounded-xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-wrap items-center gap-4"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-white">{site.name || 'Unnamed'}</p>
+                      <p className="text-gray-400 text-sm flex items-center gap-1">
+                        <Globe size={14} /> {site.domain || '—'}
+                      </p>
+                      <p className="text-gray-500 text-xs mt-1 flex items-center gap-1">
+                        <Key size={12} /> <code className="bg-black/30 px-1 rounded">{site.site_key}</code>
+                        <button
+                          type="button"
+                          onClick={() => copySiteKey(site.site_key)}
+                          className="text-[#FF5B00] hover:underline ml-1"
+                        >
+                          {copyKey === site.site_key ? 'Copied!' : 'Copy'}
+                        </button>
+                      </p>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs">
+                      {site.features?.users && <span className="px-2 py-0.5 rounded bg-green-900/50 text-green-300">Users</span>}
+                      {site.features?.analytics && <span className="px-2 py-0.5 rounded bg-blue-900/50 text-blue-300">Analytics</span>}
+                      {site.features?.ecommerce && <span className="px-2 py-0.5 rounded bg-purple-900/50 text-purple-300">Ecommerce</span>}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingSiteId(site.id);
+                          setEditSiteDomain(site.domain);
+                          setEditSiteName(site.name);
+                          setEditSiteFeatures({ ...site.features });
+                        }}
+                        className="p-2 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white"
+                        title="Edit"
+                      >
+                        <Edit2 size={18} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSite(site.id)}
+                        className="p-2 rounded-lg text-red-400 hover:bg-red-900/20"
+                        title="Delete"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {sites.length === 0 && (
+                <p className="text-gray-400 text-center py-8">No sites yet. Add one to get a site key for client CMS.</p>
+              )}
+            </div>
+          )}
           {tab === 'analytics' && (
             <div className="max-w-4xl">
               <h1 className="text-2xl font-bold text-white mb-6">Analytics</h1>
@@ -314,7 +518,7 @@ export const Admin = () => {
           {tab === 'users' && (
             <div className="max-w-4xl">
               <h1 className="text-2xl font-bold text-white mb-6">Users</h1>
-              <p className="text-gray-400 text-sm mb-6">Employees who can log in at /login (ansatt). Passwords are encrypted and cannot be viewed—only set or reset.</p>
+              <p className="text-gray-400 text-sm mb-6">Users who can log in at /login (ansatt). Set role per user: only &quot;employee&quot; can access the Ansatt page. New users get role &quot;none&quot; by default.</p>
 
               <div className="rounded-xl bg-[#2a2a2a] border border-white/10 p-6 mb-8">
                 <h2 className="text-lg font-medium text-white mb-4">Add user</h2>
@@ -354,6 +558,7 @@ export const Admin = () => {
                   <thead>
                     <tr className="border-b border-white/10">
                       <th className="px-4 py-3 text-gray-400 font-medium">Username</th>
+                      <th className="px-4 py-3 text-gray-400 font-medium">Role</th>
                       <th className="px-4 py-3 text-gray-400 font-medium">Created</th>
                       <th className="px-4 py-3 text-gray-400 font-medium w-48">Actions</th>
                     </tr>
@@ -377,6 +582,19 @@ export const Admin = () => {
                           ) : (
                             <span onClick={() => setEditingId(u.id)} className="cursor-pointer hover:underline">{u.username}</span>
                           )}
+                        </td>
+                        <td className="px-4 py-3">
+                          <select
+                            value={u.role}
+                            onChange={(e) => handleUserRoleChange(u.id, e.target.value as UserRole)}
+                            disabled={userRoleSaving === u.id}
+                            className="bg-[#1a1a1a] border border-white/20 text-white rounded px-2 py-1 text-sm min-w-[100px] disabled:opacity-50"
+                          >
+                            <option value="none">None</option>
+                            <option value="employee">Employee</option>
+                            <option value="client">Client</option>
+                          </select>
+                          {userRoleSaving === u.id && <span className="text-gray-500 text-xs ml-1">Saving…</span>}
                         </td>
                         <td className="px-4 py-3 text-gray-400 text-sm">{new Date(u.createdAt).toLocaleDateString()}</td>
                         <td className="px-4 py-3">
@@ -431,6 +649,91 @@ export const Admin = () => {
           )}
         </main>
       </div>
+
+      {addSiteOpen && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#2a2a2a] rounded-xl border border-white/10 p-6 max-w-md w-full">
+            <h2 className="text-lg font-semibold text-white mb-4">Add site</h2>
+            <form onSubmit={handleAddSite} className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Name</label>
+                <input
+                  type="text"
+                  value={addSiteName}
+                  onChange={(e) => setAddSiteName(e.target.value)}
+                  placeholder="e.g. Mong Sushi"
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Domain</label>
+                <input
+                  type="text"
+                  value={addSiteDomain}
+                  onChange={(e) => setAddSiteDomain(e.target.value)}
+                  placeholder="e.g. mongsushi.no"
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                />
+              </div>
+              <div className="flex gap-2">
+                <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Add</button>
+                <button type="button" onClick={() => { setAddSiteOpen(false); setAddSiteName(''); setAddSiteDomain(''); }} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
+              </div>
+            </form>
+            <p className="text-gray-500 text-xs mt-4">After adding, copy the site key and set CMS_SITE_KEY in the client project env.</p>
+          </div>
+        </div>
+      )}
+
+      {editingSiteId && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#2a2a2a] rounded-xl border border-white/10 p-6 max-w-md w-full">
+            <h2 className="text-lg font-semibold text-white mb-4">Edit site</h2>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Name</label>
+                <input
+                  type="text"
+                  value={editSiteName}
+                  onChange={(e) => setEditSiteName(e.target.value)}
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Domain</label>
+                <input
+                  type="text"
+                  value={editSiteDomain}
+                  onChange={(e) => setEditSiteDomain(e.target.value)}
+                  placeholder="mongsushi.no"
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-400 mb-2">Features</label>
+                <div className="flex flex-wrap gap-4">
+                  <label className="flex items-center gap-2 text-white">
+                    <input type="checkbox" checked={editSiteFeatures.users} onChange={(e) => setEditSiteFeatures((f) => ({ ...f, users: e.target.checked }))} className="rounded" />
+                    Users
+                  </label>
+                  <label className="flex items-center gap-2 text-white">
+                    <input type="checkbox" checked={editSiteFeatures.analytics} onChange={(e) => setEditSiteFeatures((f) => ({ ...f, analytics: e.target.checked }))} className="rounded" />
+                    Analytics
+                  </label>
+                  <label className="flex items-center gap-2 text-white">
+                    <input type="checkbox" checked={editSiteFeatures.ecommerce} onChange={(e) => setEditSiteFeatures((f) => ({ ...f, ecommerce: e.target.checked }))} className="rounded" />
+                    Ecommerce
+                  </label>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => handleUpdateSite(editingSiteId)} disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Save</button>
+                <button type="button" onClick={() => setEditingSiteId(null)} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {changePasswordOpen && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
