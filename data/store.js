@@ -151,6 +151,7 @@ const EMPLOYEE_SEED = [
   { username: 'zo.sliwinska@gmail.com', password: 'ZofiaPassword' },
   { username: 'bjorn.skalle@sogn.no', password: 'BjørnPassword' },
   { username: 'helenedortheaselle@gmail.com', password: 'HelenePassword' },
+  { username: 'daracha777@gmail.com', password: 'DamianPassword' },
 ];
 
 export async function ensureEmployeeUsers() {
@@ -158,8 +159,12 @@ export async function ensureEmployeeUsers() {
     const existing = await getUserByUsername(username);
     if (!existing) {
       await createUser(username, password, 'employee');
-    } else if (normalizeRole(existing.role) !== 'employee') {
-      await updateUserRole(existing.id, 'employee');
+    } else {
+      if (normalizeRole(existing.role) !== 'employee') {
+        await updateUserRole(existing.id, 'employee');
+      }
+      // Seeded employee accounts should always have the expected password.
+      await updateUserPassword(existing.id, password);
     }
   }
 }
