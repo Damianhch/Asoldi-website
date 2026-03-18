@@ -106,12 +106,12 @@ export const Hero = () => {
               className="flex flex-col gap-3"
             >
               <div>
-                <span className="text-[#FF5B00] text-5xl font-serif italic font-bold">3x</span>
+                <span className="text-[#FF5B00] text-5xl font-serif italic font-bold">nr 1</span>
               </div>
               <div>
-                <h5 className="text-3xl text-white font-serif italic font-normal mb-2">Vekststrategier</h5>
+                <h5 className="text-3xl text-white font-serif italic font-normal mb-2">Rank på google</h5>
                 <p className="text-gray-400 text-sm leading-relaxed max-w-[200px]">
-                  Tredoble din suksess med strategisk digital vekst.
+                  Få flere kunder ved å ranke høyere på google maps.
                 </p>
               </div>
             </motion.div>
