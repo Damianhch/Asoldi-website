@@ -82,20 +82,49 @@ export const Hero = () => {
               transition={{ duration: 0.8, delay: 0.2 }}
               className="flex flex-col gap-3"
             >
-              <div className="flex gap-1 text-[#FF5B00]">
-                {[...Array(5)].map((_, i) => (
-                  <Star key={i} size={18} fill="#FF5B00" strokeWidth={0} />
-                ))}
-              </div>
-              <div>
-                <h5 className="text-3xl text-white font-normal leading-tight mb-2">
-                  100% <span className="font-serif italic">Fornøyde</span><br/>
-                  <span className="font-serif italic">Kunder</span>
+              <a
+                href="https://www.google.com/maps/place/Asoldi/@63.4339857,10.3978324,12z/data=!3m1!4b1!4m8!3m7!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1!16s%2Fg%2F11wn5bswhk?entry=ttu&g_ep=EgoyMDI2MDMxNS4wIKXMDSoASAFQAw%3D%3D"
+                target="_blank"
+                rel="noreferrer"
+                className="relative block rounded-2xl bg-[#0f0f0f] border border-white/10 p-6 hover:border-[#FF5B00]/40 hover:bg-[#111] transition-colors"
+              >
+                {/* Google logo */}
+                <div className="absolute top-4 right-4">
+                  <svg width="26" height="26" viewBox="0 0 256 262" aria-hidden="true">
+                    <path fill="#4285F4" d="M255.9 133.5c0-10.7-.9-18.5-2.9-26.6H130.6v48.4h72.9c-1.5 12-9.6 30.2-27.5 42.3l-.3 1.6 38.7 30 2.7.3c25.1-23.2 39.8-57.3 39.8-96.3"/>
+                    <path fill="#34A853" d="M130.6 261.1c35.2 0 64.8-11.6 86.4-31.6l-41.2-31.9c-11 7.7-25.9 13.1-45.2 13.1-34.5 0-63.7-23.2-74.1-55.2l-1.5.1-40.2 31.2-.5 1.4c21.5 42.7 65.7 72.9 116.3 72.9"/>
+                    <path fill="#FBBC05" d="M56.5 155.5c-2.7-8-4.2-16.6-4.2-25.5s1.5-17.5 4.1-25.5l-.1-1.7-40.7-31.7-1.3.6C5.5 89.6 0 109.4 0 130c0 20.5 5.5 40.4 14.3 58.2l42.2-32.7"/>
+                    <path fill="#EB4335" d="M130.6 49.3c24.4 0 40.8 10.5 50.2 19.3l36.7-35.8C195.3 11.6 165.8 0 130.6 0 80 0 35.8 30.2 14.3 71.8l42.1 32.7c10.5-32 39.6-55.2 74.2-55.2"/>
+                  </svg>
+                </div>
+
+                {/* Top row: avatars + rating */}
+                <div className="flex items-center gap-4 mb-5">
+                  <div className="flex -space-x-3">
+                    {[1, 2, 3].map((i) => (
+                      <div key={i} className="w-10 h-10 rounded-full border-2 border-[#0f0f0f] bg-gray-700 overflow-hidden">
+                        <img src={`https://i.pravatar.cc/100?img=${i + 10}`} alt="Kunde" className="w-full h-full object-cover" />
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="flex gap-1 text-[#FF5B00] mb-1">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} size={14} fill="#FF5B00" strokeWidth={0} />
+                      ))}
+                    </div>
+                    <div className="text-white font-semibold text-base leading-tight">10+ fornøyde kunder</div>
+                  </div>
+                </div>
+
+                {/* Title + text: match bottom card typography */}
+                <h5 className="text-4xl text-white font-semibold leading-tight mb-3">
+                  100% fornøyd garanti
                 </h5>
-                <p className="text-gray-400 text-sm leading-relaxed max-w-[200px]">
+                <p className="text-gray-400 text-sm leading-relaxed max-w-[260px]">
                   Vi leverer resultater som skaper ekte verdi for våre kunder.
                 </p>
-              </div>
+              </a>
             </motion.div>
 
             {/* Stat 2 */}
