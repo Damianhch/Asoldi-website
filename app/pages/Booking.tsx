@@ -127,7 +127,7 @@ export const Booking = () => {
                   {/* Author */}
                   <div className="flex items-center gap-3 md:gap-4 pb-2">
                     <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-gray-600 overflow-hidden flex-shrink-0">
-                      <img src={`https://i.pravatar.cc/100?img=${activeReview + 20}`} alt={reviews[activeReview].name} className="w-full h-full object-cover" />
+                      <img src="/media/christopher.avif" alt={reviews[activeReview].name} className="w-full h-full object-cover" />
                     </div>
                     <div>
                       <div className="text-white font-medium text-sm md:text-base">{reviews[activeReview].name}</div>

@@ -163,9 +163,13 @@ export const SocialMediaMarketing = () => {
                 </Link>
                 <div className="flex items-center gap-4">
                   <div className="flex -space-x-3">
-                    {[1, 2, 3].map((i) => (
+                    {[
+                      { src: '/media/christopher.avif', alt: 'Christopher' },
+                      { src: '/media/arman%20vestad.webp', alt: 'Arman' },
+                      { src: '/media/ali.PNG', alt: 'Ali' },
+                    ].map((img, i) => (
                       <div key={i} className="w-10 h-10 rounded-full border-2 border-[#050505] bg-gray-600 overflow-hidden">
-                        <img src={`https://i.pravatar.cc/100?img=${i + 10}`} alt="User" />
+                        <img src={img.src} alt={img.alt} className="w-full h-full object-cover" />
                       </div>
                     ))}
                   </div>
