@@ -7,8 +7,8 @@ export const Hero = () => {
   const services = [
     "Nettsideutvikling",
     "Sosiale Medier",
-    "Innholdsproduksjon",
-    "Digital Strategi"
+    "Email markedsføring",
+    "Innholdsproduksjon"
   ];
 
   return (
@@ -66,9 +66,9 @@ export const Hero = () => {
               className="relative w-full max-w-[400px] aspect-[3/4] rounded-t-[200px] overflow-hidden border-x border-t border-white/10"
             >
               <img 
-                src="https://images.unsplash.com/photo-1552664730-d307ca884978?q=80&w=2070&auto=format&fit=crop" 
-                alt="Digital Marketing Agency" 
-                className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700"
+                src="/media/asoldi%20capture%202.PNG"
+                alt="Asoldi"
+                className="w-full h-full object-cover object-center"
               />
             </motion.div>
           </div>
