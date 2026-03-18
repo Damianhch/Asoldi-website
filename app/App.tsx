@@ -1,4 +1,4 @@
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, useLocation } from 'react-router-dom';
 import { Navbar } from './components/Navbar';
 import { Footer } from './components/Footer';
@@ -25,6 +25,45 @@ const Ansatt = lazy(() => import('./pages/Ansatt').then(m => ({ default: m.Ansat
 function AppLayout() {
   const location = useLocation();
   const isAdminArea = location.pathname === '/admin' || location.pathname === '/ansatt';
+
+  useEffect(() => {
+    // Tawk should ONLY exist on /ansatt. If it leaks during navigation, force-remove it.
+    if (location.pathname === '/ansatt') return;
+    const ids = [
+      'tawk-script',
+      'tawkchat-container',
+      'tawkchat',
+      'tawkchat-minified-wrapper',
+      'tawkchat-minified-container',
+    ];
+    ids.forEach((id) => {
+      const el = document.getElementById(id);
+      el?.parentNode?.removeChild(el);
+    });
+    document.querySelectorAll('iframe[src*="tawk.to"]').forEach((el) => el.parentNode?.removeChild(el));
+    // Remove any leftover nodes with id containing "tawk".
+    document.querySelectorAll('[id*="tawk"], [id*="Tawk"]').forEach((el) => el.parentNode?.removeChild(el));
+    // Hide as final fallback.
+    const styleId = 'hide-tawk-style';
+    let style = document.getElementById(styleId) as HTMLStyleElement | null;
+    if (!style) {
+      style = document.createElement('style');
+      style.id = styleId;
+      style.textContent = `
+        [id*="tawk"], [id*="Tawk"], iframe[src*="tawk.to"] { display: none !important; }
+      `;
+      document.head.appendChild(style);
+    }
+    try {
+      // @ts-expect-error best-effort cleanup
+      delete window.Tawk_API;
+      // @ts-expect-error best-effort cleanup
+      delete window.Tawk_LoadStart;
+    } catch {
+      // ignore
+    }
+  }, [location.pathname]);
+
   return (
     <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20">
       {!isAdminArea && <Navbar />}

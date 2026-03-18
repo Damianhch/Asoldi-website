@@ -53,7 +53,8 @@ export function EmployeeAuthProvider({ children }: { children: React.ReactNode }
         }
       })
       .catch(() => {
-        if (!cancelled) setIsEmployee(false);
+        // If we have a token but the request fails (network, transient), keep employee UI visible.
+        if (!cancelled) setIsEmployee(true);
       });
     return () => { cancelled = true; };
   }, [authNonce]);

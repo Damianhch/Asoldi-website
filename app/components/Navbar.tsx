@@ -90,12 +90,19 @@ export const Navbar = () => {
           <Link to="/clients" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
             Kundecaser
           </Link>
+          {isEmployee === true && (
+            <Link to="/ansatt" className="text-sm font-medium text-[#FF5B00] hover:text-[#ff7b2e] transition-colors">
+              Ansatt
+            </Link>
+          )}
         </div>
 
         <div className="hidden lg:flex items-center gap-4">
-          <Link to="/login" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
-            Login
-          </Link>
+          {isEmployee !== true && (
+            <Link to="/login" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
+              Login
+            </Link>
+          )}
           <Link to="/booking" className="bg-[#FF5B00] text-white px-6 py-3 rounded-full font-medium hover:bg-white hover:text-black transition-colors">
             Book konsultasjon
           </Link>
