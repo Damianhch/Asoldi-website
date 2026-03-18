@@ -7,8 +7,8 @@ export const Hero = () => {
   const services = [
     "Nettsideutvikling",
     "Sosiale Medier",
-    "Innholdsproduksjon",
-    "Digital Strategi"
+    "Email markedsføring",
+    "Innholdsproduksjon"
   ];
 
   return (
@@ -66,9 +66,9 @@ export const Hero = () => {
               className="relative w-full max-w-[400px] aspect-[3/4] rounded-t-[200px] overflow-hidden border-x border-t border-white/10"
             >
               <img 
-                src="https://images.unsplash.com/photo-1552664730-d307ca884978?q=80&w=2070&auto=format&fit=crop" 
-                alt="Digital Marketing Agency" 
-                className="w-full h-full object-cover grayscale hover:grayscale-0 transition-all duration-700"
+                src="/media/asoldi%20capture%202.PNG"
+                alt="Asoldi"
+                className="w-full h-full object-cover object-center"
               />
             </motion.div>
           </div>
@@ -82,20 +82,47 @@ export const Hero = () => {
               transition={{ duration: 0.8, delay: 0.2 }}
               className="flex flex-col gap-3"
             >
-              <div className="flex gap-1 text-[#FF5B00]">
-                {[...Array(5)].map((_, i) => (
-                  <Star key={i} size={18} fill="#FF5B00" strokeWidth={0} />
-                ))}
-              </div>
-              <div>
-                <h5 className="text-3xl text-white font-normal leading-tight mb-2">
-                  100% <span className="font-serif italic">Fornøyde</span><br/>
-                  <span className="font-serif italic">Kunder</span>
+              <a
+                href="https://www.google.com/maps/place/Asoldi/@63.4339857,10.3978324,12z/data=!3m1!4b1!4m8!3m7!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1!16s%2Fg%2F11wn5bswhk?entry=ttu&g_ep=EgoyMDI2MDMxNS4wIKXMDSoASAFQAw%3D%3D"
+                target="_blank"
+                rel="noreferrer"
+                className="group relative block rounded-2xl bg-[#0f0f0f] border border-white/10 p-6 hover:border-[#FF5B00]/40 hover:bg-[#111] transition-colors"
+              >
+                <div className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 border border-white/10 flex items-center justify-center text-white/80 text-xs font-semibold">
+                  G
+                </div>
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="flex -space-x-2">
+                    {['A', 'S', 'O'].map((ch, i) => (
+                      <div
+                        key={i}
+                        className="w-9 h-9 rounded-full bg-gradient-to-br from-white/10 to-white/5 border border-white/10 flex items-center justify-center text-white text-xs"
+                      >
+                        {ch}
+                      </div>
+                    ))}
+                  </div>
+                  <div>
+                    <div className="text-white font-semibold leading-tight">10+ fornøyde kunder</div>
+                    <div className="flex items-center gap-1 text-[#FF5B00]">
+                      {[...Array(5)].map((_, i) => (
+                        <Star key={i} size={14} fill="#FF5B00" strokeWidth={0} />
+                      ))}
+                      <span className="text-gray-400 text-xs ml-1">5.0</span>
+                    </div>
+                  </div>
+                </div>
+
+                <h5 className="text-4xl md:text-5xl text-white font-semibold leading-tight">
+                  100% fornøyd<br />garanti
                 </h5>
-                <p className="text-gray-400 text-sm leading-relaxed max-w-[200px]">
+                <p className="text-gray-400 text-sm leading-relaxed mt-3">
                   Vi leverer resultater som skaper ekte verdi for våre kunder.
                 </p>
-              </div>
+                <div className="mt-4 text-sm text-[#FF5B00] opacity-0 group-hover:opacity-100 transition-opacity">
+                  Se Google anmeldelser →
+                </div>
+              </a>
             </motion.div>
 
             {/* Stat 2 */}
@@ -105,13 +132,11 @@ export const Hero = () => {
               transition={{ duration: 0.8, delay: 0.3 }}
               className="flex flex-col gap-3"
             >
-              <div>
-                <span className="text-[#FF5B00] text-5xl font-serif italic font-bold">3x</span>
-              </div>
-              <div>
-                <h5 className="text-3xl text-white font-serif italic font-normal mb-2">Vekststrategier</h5>
-                <p className="text-gray-400 text-sm leading-relaxed max-w-[200px]">
-                  Tredoble din suksess med strategisk digital vekst.
+              <div className="rounded-2xl bg-[#0f0f0f] border border-white/10 p-6">
+                <div className="text-[#FF5B00] text-sm font-semibold">nr 1</div>
+                <h5 className="text-3xl text-[#FF5B00] font-semibold mt-2 mb-3">Rank på google</h5>
+                <p className="text-gray-400 text-sm leading-relaxed">
+                  Få flere kunder ved å ranke høyere på google maps
                 </p>
               </div>
             </motion.div>

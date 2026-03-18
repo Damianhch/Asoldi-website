@@ -208,40 +208,6 @@ export const Ansatt = () => {
           </section>
 
           <section className="mb-10">
-            <h2 className="text-xl font-semibold text-white mb-4">Opplæring</h2>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="rounded-xl bg-gradient-to-br from-[#1a1a1a] to-[#121212] border border-white/10 p-6">
-                <h3 className="text-lg font-semibold text-white mb-2">Introduksjons segment</h3>
-                <p className="text-gray-400 text-sm mb-4">Bli bedre kjent med Asoldi og hvordan man bruker systemene våre</p>
-                <div className="flex flex-wrap gap-3 text-sm text-gray-300 mb-5">
-                  <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">10min læringstid</span>
-                  <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">6 videoer</span>
-                </div>
-                <a
-                  href="#"
-                  className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200] transition-colors"
-                >
-                  Se introduksjons segment
-                </a>
-              </div>
-              <div className="rounded-xl bg-gradient-to-br from-[#1a1a1a] to-[#121212] border border-white/10 p-6">
-                <h3 className="text-lg font-semibold text-white mb-2">Opplæringsprosess - del 1</h3>
-                <p className="text-gray-400 text-sm mb-4">Lær den stegvise prosessen de beste selgerene våre bruker</p>
-                <div className="flex flex-wrap gap-3 text-sm text-gray-300 mb-5">
-                  <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">10min læringstid</span>
-                  <span className="px-3 py-1 rounded-full bg-white/5 border border-white/10">6 videoer</span>
-                </div>
-                <a
-                  href="#"
-                  className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200] transition-colors"
-                >
-                  Se opplæringsprosess del 1
-                </a>
-              </div>
-            </div>
-          </section>
-
-          <section className="mb-10">
             <h2 className="text-xl font-semibold text-white mb-4">Lydklipp</h2>
             <div className="space-y-4">
               <div className="rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
