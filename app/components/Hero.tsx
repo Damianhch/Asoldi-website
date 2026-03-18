@@ -86,32 +86,33 @@ export const Hero = () => {
                 href="https://www.google.com/maps/place//data=!4m7!3m6!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1"
                 target="_blank"
                 rel="noreferrer"
-                className="relative block rounded-2xl hover:opacity-95 transition-opacity"
+                className="relative block hover:opacity-95 transition-opacity"
               >
-                {/* Minimal top strip only (grey background) */}
-                <div className="relative inline-flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5 border border-white/10">
+                <div className="relative flex items-center gap-3">
                   <div className="flex -space-x-2">
-                    <div className="w-8 h-8 rounded-full border border-white/10 bg-gray-700 overflow-hidden">
+                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
                       <img src="/media/christopher.avif" alt="Christopher" className="w-full h-full object-cover" />
                     </div>
-                    <div className="w-8 h-8 rounded-full border border-white/10 bg-gray-700 overflow-hidden">
+                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
                       <img src="/media/arman%20vestad.webp" alt="Arman" className="w-full h-full object-cover" />
                     </div>
-                    <div className="w-8 h-8 rounded-full border border-white/10 bg-gray-700 overflow-hidden">
+                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
                       <img src="/media/ali.PNG" alt="Ali" className="w-full h-full object-cover" />
                     </div>
                   </div>
-                  <div>
+                  <div className="flex flex-col">
                     <div className="flex items-center gap-2">
                       <div className="flex gap-1 text-[#FF5B00]">
                         {[...Array(5)].map((_, i) => (
                           <Star key={i} size={12} fill="#FF5B00" strokeWidth={0} />
                         ))}
                       </div>
-                      <div className="text-white font-semibold text-sm leading-tight">10+ fornøyde kunder</div>
+                    </div>
+                    <div className="text-white font-semibold text-sm leading-tight mt-1">
+                      10+ fornøyde kunder
                     </div>
                   </div>
-                  <div className="absolute -top-2 -right-2">
+                  <div className="ml-auto">
                     <svg width="26" height="26" viewBox="0 0 256 262" aria-hidden="true">
                       <path fill="#4285F4" d="M255.9 133.5c0-10.7-.9-18.5-2.9-26.6H130.6v48.4h72.9c-1.5 12-9.6 30.2-27.5 42.3l-.3 1.6 38.7 30 2.7.3c25.1-23.2 39.8-57.3 39.8-96.3"/>
                       <path fill="#34A853" d="M130.6 261.1c35.2 0 64.8-11.6 86.4-31.6l-41.2-31.9c-11 7.7-25.9 13.1-45.2 13.1-34.5 0-63.7-23.2-74.1-55.2l-1.5.1-40.2 31.2-.5 1.4c21.5 42.7 65.7 72.9 116.3 72.9"/>
