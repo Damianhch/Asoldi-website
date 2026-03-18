@@ -29,6 +29,8 @@ export const Login = () => {
         return;
       }
       if (data.token) localStorage.setItem('employeeToken', data.token);
+      // Notify the app immediately so navbar updates without re-login.
+      window.dispatchEvent(new Event('employee-auth-changed'));
       window.location.href = '/ansatt';
     } catch {
       setError('Noe gikk galt. Prøv igjen.');

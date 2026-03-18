@@ -54,6 +54,26 @@ export const Ansatt = () => {
     s1.charset = 'UTF-8';
     s1.setAttribute('crossorigin', '*');
     if (s0?.parentNode) s0.parentNode.insertBefore(s1, s0);
+    return () => {
+      // Remove chat when leaving /ansatt so it never appears on public pages.
+      const script = document.getElementById('tawk-script');
+      script?.parentNode?.removeChild(script);
+      // Common Tawk containers/iframes.
+      document.querySelectorAll('iframe[src*="tawk.to"]').forEach((el) => el.parentNode?.removeChild(el));
+      const container = document.getElementById('tawkchat-container');
+      container?.parentNode?.removeChild(container);
+      const root = document.getElementById('tawkchat');
+      root?.parentNode?.removeChild(root);
+      // Best-effort cleanup of globals.
+      try {
+        // @ts-expect-error - best-effort global cleanup
+        delete window.Tawk_API;
+        // @ts-expect-error - best-effort global cleanup
+        delete window.Tawk_LoadStart;
+      } catch {
+        // ignore
+      }
+    };
   }, [allowed]);
 
   const handleLogout = () => {
