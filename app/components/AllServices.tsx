@@ -90,6 +90,7 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const hoveredRef = useRef(false);
   const playerRef = useRef<any>(null);
   const [playerReady, setPlayerReady] = useState(false);
+  const [hasStartedOnce, setHasStartedOnce] = useState(false);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
 
@@ -129,6 +130,12 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
             setPlayerReady(true);
             playerRef.current?.pauseVideo?.();
             if (hoveredRef.current) playerRef.current?.playVideo?.();
+          },
+          onStateChange: (event: any) => {
+            const YT = window.YT;
+            if (YT?.PlayerState?.PLAYING && event?.data === YT.PlayerState.PLAYING) {
+              setHasStartedOnce(true);
+            }
           },
         },
       });
@@ -172,17 +179,24 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <h3 className="text-2xl font-medium text-black mb-4">{service.title}</h3>
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
+          {/* Thumbnail keeps the video area from going blank/grey while the player initializes. */}
+          <img
+            src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
+            alt=""
+            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 pointer-events-none ${
+              hovered ? 'opacity-100' : 'opacity-100'
+            } ${hovered ? '' : 'grayscale'}`}
+            style={{ opacity: playerReady && (hovered || hasStartedOnce) ? 0 : 1 }}
+          />
+
           <div
             id={playerId}
             className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
             style={{
-              opacity: playerReady ? 1 : 0,
+              opacity: playerReady && (hovered || hasStartedOnce) ? 1 : 0,
               filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)',
             }}
           />
-          {!playerReady && (
-            <div className="absolute inset-0 bg-gray-200" />
-          )}
         </div>
 
         <p className="text-gray-600 mb-6 flex-grow text-lg leading-relaxed">{service.description}</p>
