@@ -92,6 +92,8 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const playerCreatedRef = useRef(false);
   const [playerReady, setPlayerReady] = useState(false);
   const [hasStartedOnce, setHasStartedOnce] = useState(false);
+  const [thumbSrc, setThumbSrc] = useState(`https://i.ytimg.com/vi/${service.videoId}/hqdefault.jpg`);
+  const [thumbFallbackStep, setThumbFallbackStep] = useState(0);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
 
@@ -164,6 +166,19 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
     playerRef.current?.pauseVideo?.();
   };
 
+  const handleThumbError = () => {
+    // Try a couple of thumbnail hosts/qualities before giving up.
+    if (thumbFallbackStep === 0) {
+      setThumbSrc(`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`);
+      setThumbFallbackStep(1);
+      return;
+    }
+    if (thumbFallbackStep === 1) {
+      setThumbSrc(`https://i.ytimg.com/vi/${service.videoId}/mqdefault.jpg`);
+      setThumbFallbackStep(2);
+    }
+  };
+
   return (
     <div 
       className={`min-w-[100%] md:min-w-[calc(50%-12px)] lg:min-w-[calc(33.333%-16px)] relative group h-[520px]`}
@@ -180,17 +195,18 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
           <img
-            src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
+            src={thumbSrc}
             alt=""
+            onError={handleThumbError}
             className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-              hasStartedOnce ? 'opacity-0' : 'opacity-100'
+              hovered && hasStartedOnce && playerReady ? 'opacity-0' : 'opacity-100'
             } ${hovered ? '' : 'grayscale'} pointer-events-none`}
           />
           <div
             id={playerId}
             className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
             style={{
-              opacity: hasStartedOnce && playerReady ? 1 : 0,
+              opacity: hovered && hasStartedOnce ? 1 : 0,
               filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)',
             }}
           />
