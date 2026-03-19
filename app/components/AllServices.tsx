@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, ArrowLeft, Mail, Megaphone, Search, FileText } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -10,7 +10,7 @@ interface Service {
   description: string;
   icon: React.ReactNode;
   color: string;
-  video: string;
+  videoId: string;
   link: string;
 }
 
@@ -21,7 +21,7 @@ const services: Service[] = [
     description: "Vi bygger moderne, raske og konverteringsoptimaliserte nettsider som gjør besøkende til kunder.",
     icon: <Search size={48} strokeWidth={1.5} />,
     color: "bg-[#00E5FF]",
-    video: "https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4",
+    videoId: "tMSAgjjxWrc",
     link: "/services/web-development"
   },
   {
@@ -30,7 +30,7 @@ const services: Service[] = [
     description: "Vi hjelper deg med å dominere på Facebook og Instagram gjennom målrettet annonsering og innhold.",
     icon: <Megaphone size={48} strokeWidth={1.5} />,
     color: "bg-[#00C853]",
-    video: "https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4",
+    videoId: "e228EHq40c0",
     link: "/services/social-media"
   },
   {
@@ -39,7 +39,7 @@ const services: Service[] = [
     description: "Profesjonell foto, video og tekst som fanger oppmerksomheten og bygger din merkevare.",
     icon: <FileText size={48} strokeWidth={1.5} />,
     color: "bg-[#FFEA00]",
-    video: "https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4",
+    videoId: "0oZOl2XlkrY",
     link: "/services/photo-video"
   },
   {
@@ -48,28 +48,21 @@ const services: Service[] = [
     description: "Konverter leads til lojale kunder med målrettede kampanjer og automatisering.",
     icon: <Mail size={48} strokeWidth={1.5} />,
     color: "bg-[#FF00FF]",
-    video: "https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4",
+    videoId: "OcuyhOafDCA",
     link: "/services/email-marketing"
   }
 ];
 
 const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ service, cardsToShow }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [hovered, setHovered] = useState(false);
+  const embedBase = `https://www.youtube.com/embed/${service.videoId}?controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playsinline=1&mute=1&loop=1&playlist=${service.videoId}`;
+  const embedSrc = `${embedBase}&autoplay=${hovered ? 1 : 0}`;
 
   return (
     <div 
       className={`min-w-[100%] md:min-w-[calc(50%-12px)] lg:min-w-[calc(33.333%-16px)] relative group h-[520px]`}
-      onMouseEnter={() => {
-        if (videoRef.current) {
-          videoRef.current.play().catch(() => {});
-        }
-      }}
-      onMouseLeave={() => {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.currentTime = 0;
-        }
-      }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {/* Colored background */}
       <div className={`absolute inset-0 rounded-2xl transition-all duration-200 ease-out ${service.color} group-hover:-inset-2 -translate-x-3 translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0 pointer-events-none`} />
@@ -79,15 +72,13 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <h3 className="text-2xl font-medium text-black mb-4">{service.title}</h3>
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
-          <video 
-            ref={videoRef}
-            muted 
-            playsInline
-            loop
-            className="w-full h-full object-cover"
-          >
-            <source src={service.video} type="video/mp4" />
-          </video>
+          <iframe
+            title=""
+            src={embedSrc}
+            frameBorder={0}
+            allow="autoplay; encrypted-media"
+            className="w-full h-full absolute inset-0 grayscale group-hover:grayscale-0 transition-all duration-200"
+          />
         </div>
 
         <p className="text-gray-600 mb-6 flex-grow text-lg leading-relaxed">{service.description}</p>

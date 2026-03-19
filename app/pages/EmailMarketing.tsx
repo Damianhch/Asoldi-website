@@ -188,15 +188,14 @@ export const EmailMarketing = () => {
               transition={{ duration: 0.6, delay: 0.2 }}
               className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-[#111]"
             >
-              <video 
-                autoPlay 
-                loop 
-                muted 
-                playsInline
-                className="w-full h-full object-cover"
-              >
-                <source src="https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4" type="video/mp4" />
-              </video>
+              <iframe
+                title="E-post Markedsføring video"
+                src="https://www.youtube.com/embed/OcuyhOafDCA?autoplay=1&mute=1&loop=1&playlist=OcuyhOafDCA&controls=1&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playsinline=1"
+                frameBorder={0}
+                allow="autoplay; encrypted-media"
+                allowFullScreen
+                className="w-full h-full"
+              />
             </motion.div>
           </div>
         </div>
