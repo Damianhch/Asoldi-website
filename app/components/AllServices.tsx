@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowRight, ArrowLeft, Mail, Megaphone, Search, FileText } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -53,16 +53,119 @@ const services: Service[] = [
   }
 ];
 
+declare global {
+  interface Window {
+    YT?: any;
+    onYouTubeIframeAPIReady?: () => void;
+  }
+}
+
+let ytApiPromise: Promise<void> | null = null;
+const loadYouTubeIframeAPI = (): Promise<void> => {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (window.YT?.Player) return Promise.resolve();
+  if (ytApiPromise) return ytApiPromise;
+
+  ytApiPromise = new Promise((resolve) => {
+    const existing = document.getElementById('youtube-iframe-api');
+    if (!existing) {
+      const tag = document.createElement('script');
+      tag.id = 'youtube-iframe-api';
+      tag.src = 'https://www.youtube.com/iframe_api';
+      document.head.appendChild(tag);
+    }
+
+    // YouTube will call this once the API is ready.
+    window.onYouTubeIframeAPIReady = () => resolve();
+
+    // If the API was already ready (race condition), resolve immediately.
+    if (window.YT?.Player) resolve();
+  });
+
+  return ytApiPromise;
+};
+
 const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ service, cardsToShow }) => {
   const [hovered, setHovered] = useState(false);
-  const embedBase = `https://www.youtube.com/embed/${service.videoId}?controls=0&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playsinline=1&mute=1&loop=1&playlist=${service.videoId}`;
-  const embedSrc = `${embedBase}&autoplay=${hovered ? 1 : 0}`;
+  const hoveredRef = useRef(false);
+  const playerRef = useRef<any>(null);
+
+  const playerId = useRef(`yt-service-${service.id}`).current;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadYouTubeIframeAPI().then(() => {
+      if (cancelled) return;
+      const YT = window.YT;
+      if (!YT?.Player) return;
+
+      // Ensure we don't leak old players during hot-reload.
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
+
+      playerRef.current = new YT.Player(playerId, {
+        videoId: service.videoId,
+        playerVars: {
+          // Start playing quickly so the UI doesn't show a big play overlay.
+          autoplay: 1,
+          controls: 0,
+          modestbranding: 1,
+          rel: 0,
+          showinfo: 0,
+          iv_load_policy: 3,
+          playsinline: 1,
+          mute: 1,
+          loop: 1,
+          playlist: service.videoId,
+          enablejsapi: 1,
+          disablekb: 1,
+          cc_load_policy: 0,
+          origin: typeof window !== 'undefined' ? window.location.origin : undefined,
+        },
+        events: {
+          onReady: () => {
+            // If we aren't hovered, immediately pause (but keep the timestamp).
+            playerRef.current?.pauseVideo?.();
+            if (hoveredRef.current) {
+              playerRef.current?.playVideo?.();
+            }
+          },
+        },
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
+      playerRef.current = null;
+    };
+  }, [service.videoId, playerId]);
+
+  const handleEnter = () => {
+    setHovered(true);
+    hoveredRef.current = true;
+    playerRef.current?.playVideo?.();
+  };
+
+  const handleLeave = () => {
+    setHovered(false);
+    hoveredRef.current = false;
+    playerRef.current?.pauseVideo?.();
+  };
 
   return (
     <div 
       className={`min-w-[100%] md:min-w-[calc(50%-12px)] lg:min-w-[calc(33.333%-16px)] relative group h-[520px]`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
     >
       {/* Colored background */}
       <div className={`absolute inset-0 rounded-2xl transition-all duration-200 ease-out ${service.color} group-hover:-inset-2 -translate-x-3 translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0 pointer-events-none`} />
@@ -72,12 +175,11 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <h3 className="text-2xl font-medium text-black mb-4">{service.title}</h3>
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
-          <iframe
-            title=""
-            src={embedSrc}
-            frameBorder={0}
-            allow="autoplay; encrypted-media"
-            className="w-full h-full absolute inset-0 grayscale group-hover:grayscale-0 transition-all duration-200"
+          <div
+            id={playerId}
+            className={`absolute inset-0 w-full h-full transition-all duration-200 ${
+              hovered ? 'grayscale-0' : 'grayscale'
+            }`}
           />
         </div>
 

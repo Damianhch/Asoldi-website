@@ -11,6 +11,7 @@ export const Booking = () => {
     { 
       name: "Christopher Vrioni", 
       role: "Superhero Burger AS", 
+      image: "/media/christopher.avif",
       text: "Super happy with the website these guys made for us at superhero burger & superhero pizza (superheroinvest.no). They really done a good job... the whole process was smooth from start to finish. The site is clean, easy to use, and does exactly what we need it to. They were quick to respond whenever we had questions and made sure everything worked perfectly.", 
       verified: "Google", 
       rating: 5 
@@ -18,6 +19,7 @@ export const Booking = () => {
     { 
       name: "Naing Zaw Win", 
       role: "Mong Sushi", 
+      image: "/media/naing%20zaw%20win.jpg",
       text: "Veldig fornøyd, veldig glad.", 
       verified: "Google", 
       rating: 5 
@@ -127,7 +129,7 @@ export const Booking = () => {
                   {/* Author */}
                   <div className="flex items-center gap-3 md:gap-4 pb-2">
                     <div className="w-10 h-10 md:w-12 md:h-12 rounded-full bg-gray-600 overflow-hidden flex-shrink-0">
-                      <img src={`https://i.pravatar.cc/100?img=${activeReview + 20}`} alt={reviews[activeReview].name} className="w-full h-full object-cover" />
+                      <img src={reviews[activeReview].image} alt={reviews[activeReview].name} className="w-full h-full object-cover" />
                     </div>
                     <div>
                       <div className="text-white font-medium text-sm md:text-base">{reviews[activeReview].name}</div>

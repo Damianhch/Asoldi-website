@@ -8,6 +8,7 @@ interface TestimonialData {
   role: string;
   business: string;
   image: string;
+  verified: string;
   quote: string;
   highlight: string;
 }
@@ -15,31 +16,25 @@ interface TestimonialData {
 const testimonials: TestimonialData[] = [
   {
     id: 1,
-    name: "Sarah Jenkins",
-    role: "Grunnlegger",
-    business: "ArtSpace Gallery",
-    image: "https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?q=80&w=1000&auto=format&fit=crop",
-    quote: "Vi trengte en partner som forsto vår visjon, ikke bare en tjenesteleverandør. Asoldi leverte over all forventning, og økte vårt salg på nett med",
-    highlight: "200% på bare 3 måneder."
+    name: "Christopher Vrioni",
+    role: "Superhero Burger AS",
+    business: "Superhero burger & superhero pizza",
+    image: "/media/christopher.avif",
+    verified: "Verifisert via Google",
+    quote:
+      "Super happy with the website these guys made for us at superhero burger & superhero pizza (superheroinvest.no). They really done a good job... the whole process was smooth from start to finish. The site is clean, easy to use, and does exactly what we need it to. They were quick to respond whenever we had questions and made sure everything worked perfectly.",
+    highlight: "",
   },
   {
     id: 2,
-    name: "Michael Chen",
-    role: "Daglig leder",
-    business: "TechFlow Solutions",
-    image: "https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?q=80&w=1000&auto=format&fit=crop",
-    quote: "Teamets oppmerksomhet på detaljer og strategiske tilnærming transformerte vår digitale tilstedeværelse fullstendig. Vi har sett en massiv økning i brukerengasjement og",
-    highlight: "doblet vår lead-generering."
+    name: "Naing Zaw Win",
+    role: "Mong Sushi",
+    business: "",
+    image: "/media/naing%20zaw%20win.jpg",
+    verified: "Verifisert via Google",
+    quote: "Veldig fornøyd, veldig glad.",
+    highlight: "",
   },
-  {
-    id: 3,
-    name: "Emma Davis",
-    role: "Markedsdirektør",
-    business: "GreenLeaf Organics",
-    image: "https://images.unsplash.com/photo-1580489944761-15a19d654956?q=80&w=1000&auto=format&fit=crop",
-    quote: "Å jobbe med Asoldi var en game-changer. Deres innovative kampanjer hjalp oss med å nå en yngre målgruppe og etablerte oss som en",
-    highlight: "markedsleder innen bærekraft."
-  }
 ];
 
 export const Testimonial = () => {
@@ -119,11 +114,15 @@ export const Testimonial = () => {
                 {/* Details */}
                 <div className="text-center md:text-left mb-4">
                   <h3 className="text-3xl md:text-4xl font-medium text-white mb-2">{current.name}</h3>
-                  <p className="text-xl text-gray-400 mb-4">{current.role}, <span className="text-white">{current.business}</span></p>
+                  <p className="text-xl text-gray-400 mb-4">
+                    {current.role}
+                    {current.business ? ', ' : ''}
+                    {current.business ? <span className="text-white">{current.business}</span> : null}
+                  </p>
                   
                   <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full bg-white/5 border border-white/10 backdrop-blur-sm">
                     <CheckCircle size={16} className="text-[#FF5B00]" />
-                    <span className="text-sm text-gray-300">Verifisert fra LinkedIn</span>
+                    <span className="text-sm text-gray-300">{current.verified}</span>
                   </div>
                 </div>
               </div>
@@ -131,7 +130,12 @@ export const Testimonial = () => {
               {/* Bottom Section: Testimonial Text */}
               <div className="border-t border-white/10 pt-12 text-center">
                 <p className="text-3xl md:text-5xl lg:text-6xl font-serif italic text-white leading-[1.2] md:leading-[1.1]">
-                  "{current.quote} <span className="text-[#FF5B00]">{current.highlight}</span>"
+                  {"\""}
+                  {current.quote}
+                  {current.highlight ? (
+                    <span className="text-[#FF5B00]">{current.highlight}</span>
+                  ) : null}
+                  {"\""}
                 </p>
               </div>
 

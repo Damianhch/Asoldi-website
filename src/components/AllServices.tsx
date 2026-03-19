@@ -67,7 +67,6 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
       onMouseLeave={() => {
         if (videoRef.current) {
           videoRef.current.pause();
-          videoRef.current.currentTime = 0;
         }
       }}
     >
