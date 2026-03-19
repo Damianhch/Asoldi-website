@@ -89,38 +89,27 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const [hovered, setHovered] = useState(false);
   const hoveredRef = useRef(false);
   const playerRef = useRef<any>(null);
-  const playerCreatedRef = useRef(false);
   const [playerReady, setPlayerReady] = useState(false);
-  const [hasStartedOnce, setHasStartedOnce] = useState(false);
-  const [thumbSrc, setThumbSrc] = useState(`https://i.ytimg.com/vi/${service.videoId}/hqdefault.jpg`);
-  const [thumbFallbackStep, setThumbFallbackStep] = useState(0);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
 
   useEffect(() => {
-    return () => {
+    let cancelled = false;
+    loadYouTubeIframeAPI().then(() => {
+      if (cancelled) return;
+      const YT = window.YT;
+      if (!YT?.Player) return;
+
       try {
         playerRef.current?.destroy?.();
       } catch {
         // ignore
       }
-      playerRef.current = null;
-      playerCreatedRef.current = false;
-    };
-  }, []);
-
-  const ensurePlayer = () => {
-    if (playerCreatedRef.current) return;
-    playerCreatedRef.current = true;
-
-    loadYouTubeIframeAPI().then(() => {
-      const YT = window.YT;
-      if (!YT?.Player) return;
 
       playerRef.current = new YT.Player(playerId, {
         videoId: service.videoId,
         playerVars: {
-          autoplay: 1,
+          autoplay: 0,
           controls: 0,
           modestbranding: 1,
           rel: 0,
@@ -138,25 +127,27 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         events: {
           onReady: () => {
             setPlayerReady(true);
-            if (!hoveredRef.current) {
-              playerRef.current?.pauseVideo?.();
-            }
-          },
-          onStateChange: (event: any) => {
-            const YT = window.YT;
-            if (YT?.PlayerState?.PLAYING && event?.data === YT.PlayerState.PLAYING) {
-              setHasStartedOnce(true);
-            }
+            playerRef.current?.pauseVideo?.();
+            if (hoveredRef.current) playerRef.current?.playVideo?.();
           },
         },
       });
     });
-  };
+
+    return () => {
+      cancelled = true;
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
+      playerRef.current = null;
+    };
+  }, [playerId, service.videoId]);
 
   const handleEnter = () => {
     setHovered(true);
     hoveredRef.current = true;
-    ensurePlayer();
     playerRef.current?.playVideo?.();
   };
 
@@ -164,19 +155,6 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
     setHovered(false);
     hoveredRef.current = false;
     playerRef.current?.pauseVideo?.();
-  };
-
-  const handleThumbError = () => {
-    // Try a couple of thumbnail hosts/qualities before giving up.
-    if (thumbFallbackStep === 0) {
-      setThumbSrc(`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`);
-      setThumbFallbackStep(1);
-      return;
-    }
-    if (thumbFallbackStep === 1) {
-      setThumbSrc(`https://i.ytimg.com/vi/${service.videoId}/mqdefault.jpg`);
-      setThumbFallbackStep(2);
-    }
   };
 
   return (
@@ -194,22 +172,17 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <h3 className="text-2xl font-medium text-black mb-4">{service.title}</h3>
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
-          <img
-            src={thumbSrc}
-            alt=""
-            onError={handleThumbError}
-            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-              hovered && hasStartedOnce && playerReady ? 'opacity-0' : 'opacity-100'
-            } ${hovered ? '' : 'grayscale'} pointer-events-none`}
-          />
           <div
             id={playerId}
             className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
             style={{
-              opacity: hovered && hasStartedOnce ? 1 : 0,
+              opacity: playerReady ? 1 : 0,
               filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)',
             }}
           />
+          {!playerReady && (
+            <div className="absolute inset-0 bg-gray-200" />
+          )}
         </div>
 
         <p className="text-gray-600 mb-6 flex-grow text-lg leading-relaxed">{service.description}</p>
