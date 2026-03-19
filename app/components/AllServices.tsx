@@ -87,37 +87,30 @@ const loadYouTubeIframeAPI = (): Promise<void> => {
 
 const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ service, cardsToShow }) => {
   const [hovered, setHovered] = useState(false);
-  const hoveredRef = useRef(false);
   const playerRef = useRef<any>(null);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
-  const playerCreatedRef = useRef(false);
-  const [videoReady, setVideoReady] = useState(false);
 
   useEffect(() => {
-    return () => {
+    let cancelled = false;
+
+    loadYouTubeIframeAPI().then(() => {
+      if (cancelled) return;
+      const YT = window.YT;
+      if (!YT?.Player) return;
+
+      // Ensure we don't leak old players during hot-reload.
       try {
         playerRef.current?.destroy?.();
       } catch {
         // ignore
       }
-      playerRef.current = null;
-      playerCreatedRef.current = false;
-    };
-  }, []);
-
-  const ensurePlayer = () => {
-    if (playerCreatedRef.current) return;
-    playerCreatedRef.current = true;
-
-    loadYouTubeIframeAPI().then(() => {
-      const YT = window.YT;
-      if (!YT?.Player) return;
 
       playerRef.current = new YT.Player(playerId, {
         videoId: service.videoId,
         playerVars: {
-          autoplay: 0,
+          // Start playing quickly so the UI doesn't show a big play overlay.
+          autoplay: 1,
           controls: 0,
           modestbranding: 1,
           rel: 0,
@@ -134,29 +127,31 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         },
         events: {
           onReady: () => {
-            setVideoReady(true);
-            // Make sure the player doesn't start audio or motion until hover.
-            playerRef.current?.pauseVideo?.();
-            if (hoveredRef.current) {
-              playerRef.current?.playVideo?.();
-            }
+            // Ensure playback starts; we never pause, so YouTube doesn't show
+            // the big play overlay/title on hover.
+            playerRef.current?.playVideo?.();
           },
-        },
+        }
       });
     });
-  };
+
+    return () => {
+      cancelled = true;
+      try {
+        playerRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
+      playerRef.current = null;
+    };
+  }, [service.videoId, playerId]);
 
   const handleEnter = () => {
     setHovered(true);
-    hoveredRef.current = true;
-    ensurePlayer();
-    playerRef.current?.playVideo?.();
   };
 
   const handleLeave = () => {
     setHovered(false);
-    hoveredRef.current = false;
-    playerRef.current?.pauseVideo?.();
   };
 
   return (
@@ -180,19 +175,10 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <h3 className="text-2xl font-medium text-black mb-4">{service.title}</h3>
         
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
-          {/* Thumbnail acts as the "first frame" and hides YouTube play/title overlays. */}
-          <img
-            src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
-            alt=""
-            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-              hovered && videoReady ? 'opacity-0' : 'opacity-100 grayscale'
-            } pointer-events-none`}
-          />
-
           <div
             id={playerId}
-            className="service-card-video absolute inset-0 w-full h-full transition-opacity duration-200"
-            style={{ opacity: hovered && videoReady ? 1 : 0 }}
+            className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
+            style={{ filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)' }}
           />
         </div>
 
