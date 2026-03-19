@@ -9,8 +9,13 @@
 }
 
 @layer base {
+  html {
+    overflow-x: hidden;
+  }
   body {
     @apply bg-[#050505] text-white font-sans antialiased;
+    overflow-x: hidden;
+    min-width: 0;
   }
 }
 

@@ -137,6 +137,18 @@ export const Booking = () => {
           -ms-overflow-style: none;
           scrollbar-width: none;
         }
+        .calendly-booking-container .calendly-inline-widget,
+        .calendly-booking-container .calendly-inline-widget iframe {
+          min-height: 520px !important;
+          height: 100% !important;
+          width: 100% !important;
+        }
+        @media (min-width: 768px) {
+          .calendly-booking-container .calendly-inline-widget,
+          .calendly-booking-container .calendly-inline-widget iframe {
+            min-height: 320px !important;
+          }
+        }
       `}</style>
 
       <div className="absolute inset-0 pointer-events-none z-0">
@@ -144,8 +156,8 @@ export const Booking = () => {
         <div className="absolute bottom-[-10%] right-[-10%] w-[300px] md:w-[650px] h-[300px] md:h-[650px] bg-[#FF5B00] rounded-full blur-[100px] md:blur-[130px] opacity-30" />
       </div>
 
-      <div className="flex-grow pt-20 md:pt-24 pb-4 md:pb-6 px-6 md:px-10 max-w-[1600px] mx-auto w-full flex flex-col lg:flex-row gap-4 lg:gap-10 relative z-10 h-full lg:overflow-hidden">
-        <div className="w-full lg:w-5/12 flex flex-col flex-none lg:flex-1 lg:h-full lg:overflow-hidden min-h-0">
+      <div className="flex-grow pt-20 md:pt-24 pb-4 md:pb-6 px-4 md:px-10 max-w-[1600px] mx-auto w-full flex flex-col lg:flex-row gap-4 lg:gap-10 relative z-10 h-full lg:overflow-hidden">
+        <div className="w-full lg:w-5/12 flex flex-col flex-none lg:flex-1 lg:h-full lg:overflow-hidden min-h-0 order-2 lg:order-1">
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -245,7 +257,7 @@ export const Booking = () => {
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ duration: 0.6, delay: 0.3 }}
-          className="w-full lg:w-7/12 flex-none lg:flex-1 min-h-[500px] lg:min-h-0 lg:h-full bg-white rounded-[24px] md:rounded-[40px] shadow-2xl overflow-hidden relative flex flex-col mb-4 lg:mb-0"
+          className="w-full lg:w-7/12 flex-none lg:flex-1 min-h-[500px] lg:min-h-0 lg:h-full bg-white rounded-[20px] md:rounded-[40px] shadow-2xl overflow-hidden relative flex flex-col mb-4 lg:mb-0 order-1 lg:order-2"
         >
           <div className="p-8 md:p-12 h-full flex flex-col">
             <div className="mb-6">
@@ -317,8 +329,7 @@ export const Booking = () => {
                 <div className="flex-grow min-h-0 flex flex-col">
                   <div
                     ref={calendlyContainerRef}
-                    className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]"
-                    style={{ minHeight: 320 }}
+                    className="calendly-booking-container rounded-2xl border border-gray-200 overflow-hidden flex-grow w-full min-h-[520px] md:min-h-[320px]"
                   />
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                     {step === 2 ? (

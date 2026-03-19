@@ -34,14 +34,14 @@ export const Hero = () => {
               Vi er din ekspert på <span className="font-serif italic font-normal block text-white">digital vekst</span>
             </motion.h1>
             
-            <div className="flex flex-wrap gap-2 sm:gap-3 max-w-md justify-center md:justify-start mb-6 md:mb-10">
+            <div className="flex flex-wrap gap-1.5 sm:gap-2 md:gap-3 max-w-md justify-center md:justify-start mb-4 md:mb-10">
               {services.map((service, index) => (
                 <motion.div
                   key={index}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ duration: 0.5, delay: 0.1 + (index * 0.1) }}
-                  className="px-6 py-3 rounded-full border border-[#FF5B00]/20 bg-[#1a1a1a] text-sm md:text-base text-white hover:bg-[#FF5B00] hover:text-white transition-colors cursor-default"
+                  className="px-3 py-1.5 sm:px-4 sm:py-2 md:px-6 md:py-3 rounded-full border border-[#FF5B00]/20 bg-[#1a1a1a] text-xs sm:text-sm md:text-base text-white hover:bg-[#FF5B00] hover:text-white transition-colors cursor-default"
                 >
                   {service}
                 </motion.div>
@@ -64,7 +64,7 @@ export const Hero = () => {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8 }}
-              className="relative w-full max-w-[280px] md:max-w-[400px] aspect-[4/5] md:aspect-[3/4] rounded-t-[100px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
+              className="relative w-full max-w-[220px] md:max-w-[400px] aspect-[5/6] md:aspect-[3/4] rounded-t-[24px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
             >
               <img 
                 src="/media/asoldi%20capture%202.PNG"

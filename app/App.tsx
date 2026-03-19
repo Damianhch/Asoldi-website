@@ -65,7 +65,7 @@ function AppLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20">
+    <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20 overflow-x-hidden">
       {!isAdminArea && <Navbar />}
       <Suspense fallback={<PageLoader />}>
         <Routes>

@@ -54,13 +54,13 @@ export const Testimonial = () => {
   const current = testimonials[currentIndex];
 
   return (
-    <section className="py-32 px-6 md:px-10 bg-[#050505]">
-      <div className="max-w-[1440px] mx-auto">
+    <section className="py-32 px-0 md:px-10 bg-[#050505]">
+      <div className="max-w-[1440px] mx-auto w-full">
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           whileInView={{ opacity: 1, y: 0 }}
           viewport={{ once: true }}
-          className="bg-[#121212] rounded-[48px] p-8 md:p-20 border border-white/5 relative overflow-hidden min-h-[600px] flex flex-col justify-center"
+          className="bg-[#121212] rounded-none md:rounded-[48px] p-6 md:p-12 lg:p-20 border-0 md:border border-white/5 relative overflow-hidden min-h-[500px] md:min-h-[600px] flex flex-col justify-center"
         >
           {/* Background Decoration */}
           <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-[#FF5B00]/5 rounded-full blur-[100px] -translate-y-1/2 translate-x-1/2 pointer-events-none" />
@@ -91,7 +91,7 @@ export const Testimonial = () => {
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: direction * -50 }}
               transition={{ duration: 0.5, ease: "easeInOut" }}
-              className="relative z-10 flex flex-col gap-16 px-8 md:px-16"
+              className="relative z-10 flex flex-col gap-10 md:gap-16 px-6 md:px-16"
             >
               
               {/* Top Section: Owner Info & Image */}
@@ -128,8 +128,8 @@ export const Testimonial = () => {
               </div>
 
               {/* Bottom Section: Testimonial Text */}
-              <div className="border-t border-white/10 pt-12 text-center">
-                <p className="text-3xl md:text-5xl lg:text-6xl font-serif italic text-white leading-[1.2] md:leading-[1.1]">
+              <div className="border-t border-white/10 pt-8 md:pt-12 text-center">
+                <p className="text-xl md:text-3xl lg:text-5xl xl:text-6xl font-serif italic text-white leading-[1.2] md:leading-[1.1]">
                   {"\""}
                   {current.quote}
                   {current.highlight ? (

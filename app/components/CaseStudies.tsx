@@ -95,11 +95,11 @@ export const CaseStudies = () => {
   const currentStudy = caseStudies[currentIndex];
 
   return (
-    <section className="pt-16 pb-32 px-6 md:px-10 bg-[#050505]">
-      <div className="max-w-5xl mx-auto">
+    <section className="pt-16 pb-32 px-0 md:px-10 bg-[#050505]">
+      <div className="w-full max-w-5xl mx-auto md:px-0">
         
         {/* Clients Header Section */}
-        <div className="mb-20 text-center">
+        <div className="mb-20 text-center px-6 md:px-0">
           <motion.h3 
             initial={{ opacity: 0, y: 20 }}
             whileInView={{ opacity: 1, y: 0 }}
@@ -133,7 +133,7 @@ export const CaseStudies = () => {
           </div>
         </div>
 
-        <div className="bg-white rounded-[40px] overflow-hidden shadow-2xl min-h-[580px] flex flex-col">
+        <div className="bg-white rounded-none md:rounded-[40px] overflow-hidden shadow-2xl min-h-[580px] flex flex-col">
           
           {/* Top Tabs / Logos */}
           <div className="flex w-full border-b border-gray-100">
@@ -194,22 +194,22 @@ export const CaseStudies = () => {
                 className="w-full max-w-3xl flex flex-col items-center"
               >
                 {/* Big Result - Centered */}
-                <div className="text-center mb-16">
-                  <p className="text-gray-400 font-medium text-lg uppercase tracking-wider mb-4">
+                <div className="text-center mb-8 md:mb-16">
+                  <p className="text-gray-400 font-medium text-sm md:text-lg uppercase tracking-wider mb-2 md:mb-4">
                     {currentStudy.label}
                   </p>
-                  <h2 className="text-8xl md:text-[120px] font-serif italic font-medium text-[#050505] leading-none">
+                  <h2 className="text-6xl md:text-8xl lg:text-[120px] font-serif italic font-medium text-[#050505] leading-none">
                     {currentStudy.bigResult}
                   </h2>
                 </div>
 
                 {/* Content Block - Left Aligned Text, Centered Block */}
-                <div className="w-full max-w-2xl text-left mb-16">
-                  <h3 className="text-3xl md:text-4xl font-medium text-[#050505] mb-6">
+                <div className="w-full max-w-2xl text-left mb-8 md:mb-16">
+                  <h3 className="text-2xl md:text-3xl lg:text-4xl font-medium text-[#050505] mb-4 md:mb-6">
                     {currentStudy.businessName}
                   </h3>
                   
-                  <p className="text-gray-500 text-lg md:text-xl leading-relaxed mb-8">
+                  <p className="text-gray-500 text-base md:text-lg lg:text-xl leading-relaxed mb-6 md:mb-8">
                     {currentStudy.resultDescription}
                   </p>
 

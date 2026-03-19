@@ -38,7 +38,7 @@ export const Navbar = () => {
         isScrolled ? 'bg-[#050505]/80 backdrop-blur-md py-4' : 'bg-transparent py-6'
       }`}
     >
-      <div className="max-w-[1440px] mx-auto px-4 md:px-8 flex items-center justify-between">
+      <div className="max-w-[1440px] mx-auto px-5 md:px-8 flex items-center justify-between">
         <Link to="/" className="flex-shrink-0 z-50 flex items-center py-1">
           <img src="/media/Untitled-1.png" alt="Asoldi" className="h-9 md:h-10 w-auto" />
         </Link>
@@ -110,7 +110,7 @@ export const Navbar = () => {
 
         {/* Mobile Menu Toggle */}
         <button 
-          className="lg:hidden z-50 p-2 text-white relative"
+          className="lg:hidden z-50 p-2.5 text-white relative flex-shrink-0 ml-2"
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         >
           {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
