@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mail, Phone, Star, ArrowRight, CheckCircle2, ArrowLeft } from 'lucide-react';
 import { SEO } from '../components/SEO';
@@ -16,6 +16,19 @@ export const Booking = () => {
     service: 'Nettsideutvikling',
     message: '',
   });
+  const [bookingLinkCopied, setBookingLinkCopied] = useState(false);
+
+  /** Calendly supports prefill via URL: name, email (see Calendly Help Center). */
+  const calendlyBookingUrl = useMemo(() => {
+    const base = 'https://calendly.com/daracha777/30-min-meeting';
+    const params = new URLSearchParams();
+    params.set('hide_gdpr_banner', '1');
+    const name = formData.name.trim();
+    const email = formData.email.trim();
+    if (name) params.set('name', name);
+    if (email) params.set('email', email);
+    return `${base}?${params.toString()}`;
+  }, [formData.name, formData.email]);
 
   const reviews = [
     {
@@ -42,7 +55,7 @@ export const Booking = () => {
     step === 1
       ? 'Steg 1 av 3: Bedriftsinformasjon'
       : step === 2
-        ? 'Steg 2 av 3: Book møte nå? (valgfritt)'
+        ? 'Steg 2 av 3: Book møte nå'
         : 'Steg 3 av 3: Bekreftelse';
 
   const updateField = (field: keyof typeof formData, value: string) =>
@@ -51,6 +64,30 @@ export const Booking = () => {
   const handleFirstStepSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setStep(2);
+  };
+
+  const resetBookingFlow = () => {
+    setStep(1);
+    setWantsCalendly(null);
+    setBookingLinkCopied(false);
+    setFormData({
+      name: '',
+      email: '',
+      phone: '',
+      company: '',
+      service: 'Nettsideutvikling',
+      message: '',
+    });
+  };
+
+  const handleSendNewBookingLink = async () => {
+    try {
+      await navigator.clipboard.writeText(calendlyBookingUrl);
+      setBookingLinkCopied(true);
+      window.setTimeout(() => setBookingLinkCopied(false), 4000);
+    } catch {
+      window.open(calendlyBookingUrl, '_blank', 'noopener,noreferrer');
+    }
   };
 
   return (
@@ -241,37 +278,52 @@ export const Booking = () => {
 
             {step === 2 && (
               <div className="flex-grow flex flex-col min-h-0">
-                <p className="text-black/75 text-lg mb-4">Ønsker du å booke møte nå? (valgfritt)</p>
-                <div className="flex flex-wrap gap-3 mb-4">
-                  <button onClick={() => setWantsCalendly(true)} className={`px-5 py-3 rounded-xl border text-sm font-semibold transition-colors ${wantsCalendly === true ? 'bg-[#FF5B00] text-white border-[#FF5B00]' : 'bg-white text-black border-gray-300 hover:border-[#FF5B00]'}`}>
-                    Ja, jeg vil booke nå
-                  </button>
-                  <button
-                    onClick={() => {
-                      setWantsCalendly(false);
-                      setStep(3);
-                    }}
-                    className={`px-5 py-3 rounded-xl border text-sm font-semibold transition-colors ${wantsCalendly === false ? 'bg-black text-white border-black' : 'bg-white text-black border-gray-300 hover:border-black'}`}
-                  >
-                    Nei, kontakt meg senere
-                  </button>
+                <p className="text-black/75 text-lg mb-4">
+                  Book et møte i kalenderen under (navn og e-post er forhåndsutfylt). Eller trykk <strong className="text-black">Skip</strong> nederst til høyre hvis du vil at vi kontakter deg først.
+                </p>
+                <div className="flex-grow min-h-0 flex flex-col">
+                  <div className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]">
+                    <iframe
+                      key={calendlyBookingUrl}
+                      src={calendlyBookingUrl}
+                      title="Calendly booking"
+                      className="w-full h-full min-h-[320px]"
+                    />
+                  </div>
+                  <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setStep(1)}
+                        className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"
+                      >
+                        <ArrowLeft size={16} />
+                        Tilbake
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setWantsCalendly(true);
+                          setStep(3);
+                        }}
+                        className="px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200] flex items-center gap-2"
+                      >
+                        Gå til bekreftelse
+                        <ArrowRight size={16} />
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setWantsCalendly(false);
+                        setStep(3);
+                      }}
+                      className="px-5 py-3 rounded-xl border border-gray-400 text-black/70 hover:bg-gray-100 font-semibold self-end sm:ml-auto"
+                    >
+                      Skip
+                    </button>
+                  </div>
                 </div>
-
-                {wantsCalendly === true ? (
-                  <div className="flex-grow min-h-0 flex flex-col">
-                    <div className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]">
-                      <iframe src="https://calendly.com/daracha777/30-min-meeting?hide_gdpr_banner=1" title="Calendly booking" className="w-full h-full min-h-[320px]" />
-                    </div>
-                    <div className="mt-4 flex gap-3">
-                      <button onClick={() => setStep(1)} className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"><ArrowLeft size={16} />Tilbake</button>
-                      <button onClick={() => setStep(3)} className="ml-auto px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200] flex items-center gap-2">Gå til bekreftelse <ArrowRight size={16} /></button>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="mt-auto">
-                    <button onClick={() => setStep(1)} className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"><ArrowLeft size={16} />Tilbake</button>
-                  </div>
-                )}
               </div>
             )}
 
@@ -311,22 +363,20 @@ export const Booking = () => {
                   </div>
                 </div>
 
-                <div className="mt-auto pt-6 flex gap-3">
-                  <button onClick={() => setStep(2)} className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"><ArrowLeft size={16} />Tilbake</button>
+                <div className="mt-auto pt-6 flex flex-col sm:flex-row gap-3 sm:items-center">
+                  {wantsCalendly ? (
+                    <button
+                      type="button"
+                      onClick={handleSendNewBookingLink}
+                      className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 font-semibold order-2 sm:order-1"
+                    >
+                      {bookingLinkCopied ? 'Lenke kopiert – lim inn der du vil sende den' : 'Send ny booking-lenke'}
+                    </button>
+                  ) : null}
                   <button
-                    onClick={() => {
-                      setStep(1);
-                      setWantsCalendly(null);
-                      setFormData({
-                        name: '',
-                        email: '',
-                        phone: '',
-                        company: '',
-                        service: 'Nettsideutvikling',
-                        message: '',
-                      });
-                    }}
-                    className="ml-auto px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200]"
+                    type="button"
+                    onClick={resetBookingFlow}
+                    className={`px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200] order-1 sm:order-2 ${wantsCalendly ? 'sm:ml-auto' : 'w-full sm:w-auto sm:ml-auto'}`}
                   >
                     Send ny henvendelse
                   </button>
