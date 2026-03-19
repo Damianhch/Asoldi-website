@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { motion, useScroll, useTransform } from 'motion/react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network } from 'lucide-react';
+import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network, Server, Settings, ArrowRightLeft, Palette, FileText, Search, BarChart3, Mail, ShoppingCart, Languages, BookOpen, Calendar, RefreshCw } from 'lucide-react';
 import { FAQ } from '../components/FAQ';
 import { PricingCTA } from '../components/PricingCTA';
 import { SEO } from '../components/SEO';
@@ -70,6 +70,23 @@ export const WebDevelopment = () => {
   const partners = ['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Arman V'];
 
   const caseStudies = [clientCases[2], clientCases[3], clientCases[4]];
+
+  const webServices = [
+    { title: 'Nettside utvikling', desc: 'Lager selve nettsiden med ønskede tjenester og tillegg, raskt, gunstig pris, og fantastisk kvalitet.', icon: Code2 },
+    { title: 'Nettside hosting', desc: 'Holder nettsiden online, viktig for de med Ecommerce behov samt avlaster ansvaret for de bedriftene som har lyst på en mer "hands off" opplevelse.', icon: Server },
+    { title: 'Opprettholdelse', desc: 'Oppdateringer, bilde-oppdateringer, og andre lav investerende endringer i nettsiden inngår i dette. Hvis dette og hosting er noe kunden har lyst på.', icon: Settings },
+    { title: 'Nettside migrasjon', desc: 'Vi overfører en gammel eller ny nettside til en valgfri hosting tjeneste for kunden, samt kan skifte domene hvis ønskelig.', icon: ArrowRightLeft },
+    { title: 'Nettside redesign', desc: 'Har bedriften en nettside fra før av kan vi redesigne den med nye funksjoner i allerede eksisterende CMS (WordPress, Shopify, Wix etc).', icon: Palette },
+    { title: 'Copywriting', desc: 'Dette er teksten som står på nettsiden: optimalisert til å få kunden til å kjøpe, samt Google til å ranke – all tekst er intensjonell og forteller en historie.', icon: FileText },
+    { title: 'SEO / Google Maps ranking', desc: 'En av de største fordelene med å ha en nettside er å ranke høyt på Google/Google Maps. For de som vil ha mer organisk trafikk fra spesifikke søkeord som "restaurant i Trondheim", "frisørsalong i Trondheim" etc.', icon: Search },
+    { title: 'Nettside analystikk', desc: 'Lar bedriften se hvor lenge hver kunde er på nettsiden, view count og generell statistikk – viktig for de med høye besøkstall og generelt alle.', icon: BarChart3 },
+    { title: 'Email markedsføring', desc: 'Funksjon som lar bedriften samle e-post og kontakt informasjon til kunder og er høyt verdsatt av nettbutikker.', icon: Mail },
+    { title: 'Ecommerce', desc: 'Lar bedriften selge ting på nettsiden, og lar kundene lage kontoer (samle inn info). Passer bra med email marketing.', icon: ShoppingCart },
+    { title: 'Multi-språklig', desc: 'Lar nettsiden være på flere språk enn bare 1 – perfekt for bedrifter som har flerspråklige kunder og vil appellere til flere.', icon: Languages },
+    { title: 'Blog integrering', desc: 'Lar kunden skrive blogginnlegg som automatisk blir posted til nettsiden – øker SEO og Google Maps ranking, samt forsterker posisjon i markedet.', icon: BookOpen },
+    { title: 'Booking og kontakt skjema', desc: 'Lar kunden sende en melding eller bestille. Et billigere alternativ til ecommerce – for de som "bare vil ha en simpel nettside".', icon: Calendar },
+    { title: 'Business info sync', desc: 'Lar reviews, åpningstider, samt sosiale medier vises i sanntid i nettsiden. Øker konvertering og social proof.', icon: RefreshCw },
+  ];
 
   const processSteps = [
     { 
@@ -214,6 +231,62 @@ export const WebDevelopment = () => {
         </div>
       </section>
 
+      {/* Våre tjenester - 14 services grid */}
+      <section className="py-16 md:py-24 bg-[#050505]">
+        <div className="max-w-7xl mx-auto px-6 md:px-10">
+          <div className="mb-12 md:mb-16">
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-2 tracking-tight">Våre tjenester</h2>
+            <p className="text-lg md:text-xl text-white/60 font-light">14 tjenester</p>
+          </div>
+
+          {/* Desktop: 4-column grid with dividers */}
+          <div className="hidden md:grid md:grid-cols-4 border-t border-l border-white/10">
+            {webServices.map((s, i) => {
+              const Icon = s.icon;
+              return (
+                <div
+                  key={i}
+                  className="p-6 md:p-8 border-b border-r border-white/10 group hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex gap-4">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center group-hover:bg-[#FF5B00]/20 transition-colors">
+                      <Icon size={20} className="text-white/60 group-hover:text-[#FF5B00] transition-colors" strokeWidth={1.5} />
+                    </div>
+                    <div className="min-w-0">
+                      <h3 className="text-lg font-medium text-white mb-2">{s.title}</h3>
+                      <p className="text-sm text-white/60 font-light leading-relaxed">{s.desc}</p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Mobile: scroll wheel - 1 item at a time */}
+          <div className="md:hidden overflow-x-auto snap-x snap-mandatory scroll-smooth -mx-6 px-6 pb-4">
+            <div className="flex gap-4" style={{ width: 'max-content' }}>
+              {webServices.map((s, i) => {
+                const Icon = s.icon;
+                return (
+                  <div
+                    key={i}
+                    className="w-[calc(100vw-3rem)] flex-shrink-0 snap-center p-6 rounded-2xl border border-white/10 bg-white/5"
+                  >
+                    <div className="flex gap-4 mb-4">
+                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-[#FF5B00]/20 flex items-center justify-center">
+                        <Icon size={24} className="text-[#FF5B00]" strokeWidth={1.5} />
+                      </div>
+                      <h3 className="text-xl font-medium text-white">{s.title}</h3>
+                    </div>
+                    <p className="text-sm text-white/60 font-light leading-relaxed">{s.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      </section>
+
       {/* Case Studies */}
       <section className="py-16 md:py-24 max-w-7xl mx-auto px-6 md:px-10">
         <div className="mb-12 md:mb-16 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
@@ -244,6 +317,54 @@ export const WebDevelopment = () => {
               </h3>
             </Link>
           ))}
+        </div>
+      </section>
+
+      {/* Features: Ecom, WordPress/Shopify, Responsive */}
+      <section className="py-16 md:py-24 bg-[#050505]">
+        <div className="max-w-7xl mx-auto px-6 md:px-10">
+          <div className="space-y-20 md:space-y-28">
+            {[
+              {
+                title: 'Ecom Vennlig design',
+                description: 'Hvis du trenger å selge noe gjennom din nettside har vi deg dekt. Fra intuitiv navigasjon til sikre betalingsterminaler, hver funksjon er laget for å forbedre handleopplevelsen og øke salget.',
+                image: '/media/a-photo-of-a-tablet-screen-displaying-social-media-op-pvWF6RbO71rHRJFINhw-WDNK0dcQQL6EbuWshLeu-A.webp',
+              },
+              {
+                title: 'WordPress Og Shopify',
+                description: 'Enten du trenger fleksibiliteten og tilpasningen til WordPress eller de strømlinjeformede e-handelsmulighetene til Shopify, leverer vi nettsteder som fungerer for din bedrift. Administrer innholdet ditt, spor salg og vekst med plattformer bygget for suksess.',
+                image: '/media/Design-uten-navn4.webp',
+              },
+              {
+                title: 'Responsiv nettside designs',
+                description: 'Kundene dine surfer på telefoner, nettbrett og stasjonære datamaskiner. Vi sikrer at nettsiden din ser fantastisk ut og fungerer perfekt på alle enheter, slik at du aldri går glipp av en sjanse til å komme i kontakt med publikummet ditt.',
+                image: '/media/Design-uten-navn6.webp',
+              },
+            ].map((item, i) => (
+              <div
+                key={i}
+                className={`flex flex-col md:flex-row items-center gap-8 md:gap-16 ${i % 2 === 1 ? 'md:flex-row-reverse' : ''}`}
+              >
+                <div className="w-full md:w-1/2 text-center md:text-left">
+                  <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4 md:mb-6 tracking-tight">
+                    {item.title}
+                  </h2>
+                  <p className="text-base md:text-lg text-white/60 font-light leading-relaxed">
+                    {item.description}
+                  </p>
+                </div>
+                <div className="w-full md:w-1/2">
+                  <div className="rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+                    <img
+                      src={item.image}
+                      alt={item.title}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </section>
 
