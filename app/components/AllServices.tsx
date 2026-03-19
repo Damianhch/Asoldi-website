@@ -97,8 +97,7 @@ const ServiceCard: React.FC<{
 
   const playerId = useRef(`yt-service-${service.id}`).current;
   const playerCreatedRef = useRef(false);
-  const [ytReady, setYtReady] = useState(false);
-  const [hasStartedOnce, setHasStartedOnce] = useState(false);
+  const [videoReady, setVideoReady] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -150,15 +149,9 @@ const ServiceCard: React.FC<{
         },
         events: {
           onReady: () => {
+            setVideoReady(true);
             // If the mouse left before the player finished loading, stop it.
-            setYtReady(true);
             if (!hoveredRef.current) playerRef.current?.pauseVideo?.();
-          },
-          onStateChange: (event: any) => {
-            const YT = window.YT;
-            if (YT?.PlayerState?.PLAYING && event?.data === YT.PlayerState.PLAYING) {
-              setHasStartedOnce(true);
-            }
           },
         },
       });
@@ -205,19 +198,19 @@ const ServiceCard: React.FC<{
           <img
             src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
             alt=""
-            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 z-10 ${
-              hasStartedOnce ? 'opacity-0' : 'opacity-100 grayscale'
+            className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
+              hovered && videoReady
+                ? 'opacity-0'
+                : hovered
+                  ? 'opacity-100'
+                  : 'opacity-100 grayscale'
             } pointer-events-none`}
           />
 
           <div
             id={playerId}
             className="service-card-video absolute inset-0 w-full h-full transition-opacity duration-200"
-            style={{
-              opacity: hasStartedOnce && ytReady ? 1 : 0,
-              filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)',
-              zIndex: 0,
-            }}
+            style={{ opacity: hovered && videoReady ? 1 : 0 }}
           />
         </div>
 
