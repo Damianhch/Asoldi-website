@@ -91,6 +91,7 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const playerRef = useRef<any>(null);
   const playerCreatedRef = useRef(false);
   const [playerReady, setPlayerReady] = useState(false);
+  const [hasStartedOnce, setHasStartedOnce] = useState(false);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
 
@@ -139,6 +140,12 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
               playerRef.current?.pauseVideo?.();
             }
           },
+          onStateChange: (event: any) => {
+            const YT = window.YT;
+            if (YT?.PlayerState?.PLAYING && event?.data === YT.PlayerState.PLAYING) {
+              setHasStartedOnce(true);
+            }
+          },
         },
       });
     });
@@ -176,14 +183,14 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
             src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
             alt=""
             className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-              hovered && playerReady ? 'opacity-0' : 'opacity-100'
+              hasStartedOnce ? 'opacity-0' : 'opacity-100'
             } ${hovered ? '' : 'grayscale'} pointer-events-none`}
           />
           <div
             id={playerId}
             className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
             style={{
-              opacity: hovered && playerReady ? 1 : 0,
+              opacity: hasStartedOnce && playerReady ? 1 : 0,
               filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)',
             }}
           />
