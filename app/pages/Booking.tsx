@@ -55,7 +55,7 @@ export const Booking = () => {
     step === 1
       ? 'Steg 1 av 3: Bedriftsinformasjon'
       : step === 2
-        ? 'Steg 2 av 3: Book møte nå'
+        ? 'Steg 2 av 3: Book møte nå? (valgfritt)'
         : 'Steg 3 av 3: Bekreftelse';
 
   const updateField = (field: keyof typeof formData, value: string) =>
@@ -278,9 +278,7 @@ export const Booking = () => {
 
             {step === 2 && (
               <div className="flex-grow flex flex-col min-h-0">
-                <p className="text-black/75 text-lg mb-4">
-                  Book et møte i kalenderen under (navn og e-post er forhåndsutfylt). Eller trykk <strong className="text-black">Skip</strong> nederst til høyre hvis du vil at vi kontakter deg først.
-                </p>
+                <p className="text-black/75 text-lg mb-4">Ønsker du å booke møte nå? (valgfritt)</p>
                 <div className="flex-grow min-h-0 flex flex-col">
                   <div className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]">
                     <iframe
@@ -291,27 +289,14 @@ export const Booking = () => {
                     />
                   </div>
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
-                    <div className="flex flex-wrap items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => setStep(1)}
-                        className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"
-                      >
-                        <ArrowLeft size={16} />
-                        Tilbake
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setWantsCalendly(true);
-                          setStep(3);
-                        }}
-                        className="px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200] flex items-center gap-2"
-                      >
-                        Gå til bekreftelse
-                        <ArrowRight size={16} />
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStep(1)}
+                      className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 flex items-center gap-2"
+                    >
+                      <ArrowLeft size={16} />
+                      Tilbake
+                    </button>
                     <button
                       type="button"
                       onClick={() => {
