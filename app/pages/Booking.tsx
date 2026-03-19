@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Mail, Phone, Star, ArrowRight, CheckCircle2, ArrowLeft } from 'lucide-react';
 import { SEO } from '../components/SEO';
@@ -17,14 +17,13 @@ export const Booking = () => {
     message: '',
   });
   const [bookingLinkCopied, setBookingLinkCopied] = useState(false);
+  const calendlyContainerRef = useRef<HTMLDivElement | null>(null);
 
-  /** Calendly supports prefill via URL: name, email (see Calendly Help Center). embed_type=Inline helps postMessage events fire. */
+  /** Calendly supports prefill via URL: name, email. Widget.js adds embed_domain/embed_type for postMessage events. */
   const calendlyBookingUrl = useMemo(() => {
     const base = 'https://calendly.com/daracha777/30-min-meeting';
     const params = new URLSearchParams();
     params.set('hide_gdpr_banner', '1');
-    params.set('embed_type', 'Inline');
-    if (typeof window !== 'undefined') params.set('embed_domain', window.location.hostname);
     const name = formData.name.trim();
     const email = formData.email.trim();
     if (name) params.set('name', name);
@@ -92,10 +91,13 @@ export const Booking = () => {
     }
   };
 
-  /** Calendly iframe posts calendly.event_scheduled when user completes booking. */
+  const showCalendlyView = step === 2 || (step === 3 && wantsCalendly);
+
+  /** Calendly posts calendly.event_scheduled when user clicks Schedule Event. Requires widget.js. */
   useEffect(() => {
     const handler = (e: MessageEvent) => {
-      if (e.data?.event === 'calendly.event_scheduled') {
+      const ev = e.data?.event;
+      if (ev === 'calendly.event_scheduled' || (typeof ev === 'string' && ev.includes('event_scheduled'))) {
         setWantsCalendly(true);
         setStep(3);
       }
@@ -104,7 +106,20 @@ export const Booking = () => {
     return () => window.removeEventListener('message', handler);
   }, []);
 
-  const showCalendlyView = step === 2 || (step === 3 && wantsCalendly);
+  /** Init Calendly inline widget (widget.js adds embed params so postMessage events fire). */
+  useEffect(() => {
+    if (!showCalendlyView || !calendlyContainerRef.current) return;
+    const el = calendlyContainerRef.current;
+    const init = () => {
+      const Cal = (window as unknown as { Calendly?: { initInlineWidget: (o: { url: string; parentElement: HTMLElement }) => void } }).Calendly;
+      if (Cal) {
+        Cal.initInlineWidget({ url: calendlyBookingUrl, parentElement: el });
+      } else {
+        setTimeout(init, 80);
+      }
+    };
+    init();
+  }, [showCalendlyView, calendlyBookingUrl]);
 
   return (
     <div className="bg-[#050505] min-h-[100dvh] lg:h-[100dvh] w-full overflow-x-hidden overflow-y-auto hide-scrollbar lg:overflow-hidden flex flex-col relative">
@@ -300,14 +315,11 @@ export const Booking = () => {
                     : 'Takk! Du har booket et møte. Bekreftelsen er sendt til din e-post.'}
                 </p>
                 <div className="flex-grow min-h-0 flex flex-col">
-                  <div className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]">
-                    <iframe
-                      key={calendlyBookingUrl}
-                      src={calendlyBookingUrl}
-                      title="Calendly booking"
-                      className="w-full h-full min-h-[320px]"
-                    />
-                  </div>
+                  <div
+                    ref={calendlyContainerRef}
+                    className="rounded-2xl border border-gray-200 overflow-hidden flex-grow min-h-[320px]"
+                    style={{ minHeight: 320 }}
+                  />
                   <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
                     {step === 2 ? (
                       <>
