@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useRef } from 'react';
 import { motion, useScroll, useTransform } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network } from 'lucide-react';
@@ -12,12 +12,17 @@ import { clientCases } from '../data/clients';
 const ServiceCard: React.FC<{ service: any }> = ({ service }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  useEffect(() => {
-    videoRef.current?.play().catch(() => {});
-  }, []);
-
   return (
-    <div className="relative group h-full">
+    <div 
+      className="relative group h-full"
+      onMouseEnter={() => videoRef.current?.play().catch(() => {})}
+      onMouseLeave={() => {
+        if (videoRef.current) {
+          videoRef.current.pause();
+          videoRef.current.currentTime = 0;
+        }
+      }}
+    >
       {/* Colored background */}
       <div className={`absolute inset-0 rounded-2xl transition-all duration-200 ease-out ${service.color} group-hover:-inset-2 -translate-x-3 translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0 pointer-events-none`} />
       
@@ -31,8 +36,7 @@ const ServiceCard: React.FC<{ service: any }> = ({ service }) => {
             muted 
             playsInline
             loop
-            autoPlay
-            className="w-full h-full object-cover"
+            className="w-full h-full object-cover transition-all duration-200 group-hover:grayscale-0 grayscale"
           >
             <source src={service.video} type="video/mp4" />
           </video>
@@ -65,11 +69,7 @@ export const EmailMarketing = () => {
 
   const partners = ['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Arman V'];
 
-  const caseStudies = [
-    { name: 'Svelstad.no', category: 'Nettsideutvikling', image: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&q=80' },
-    { name: 'Swich.no', category: 'Sosiale Medier', image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80' },
-    { name: 'Mongsushi.no', category: 'Digital Markedsføring', image: 'https://images.unsplash.com/photo-1504868584819-f8e8b4b6d7e3?auto=format&fit=crop&q=80' },
-  ];
+  const caseStudies = [clientCases[3], clientCases[4], clientCases[0]];
 
   const processSteps = [
     { 
@@ -167,8 +167,8 @@ export const EmailMarketing = () => {
                     ))}
                   </div>
                   <div className="text-sm">
-                    <div className="font-medium text-white">50+ Fornøyde Kunder</div>
-                    <div className="text-[#FF5B00] text-xs font-medium">★ 5.0/5 Vurdering</div>
+                    <div className="font-medium text-white">10+ Fornøyde Kunder</div>
+                    <div className="text-[#FF5B00] text-xs font-medium">★ 5/5 Vurdering</div>
                   </div>
                 </div>
               </div>
