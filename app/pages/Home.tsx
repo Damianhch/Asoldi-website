@@ -1,7 +1,7 @@
 import React from 'react';
 import { Hero } from '../components/Hero';
 import { ImageMarquee } from '../components/ImageMarquee';
-import { AllServices } from '../components/AllServices';
+import { AllServicesMP4 } from '../components/AllServicesMP4';
 import { Ticker } from '../components/Ticker';
 import { Features } from '../components/Features';
 import { WhyUs } from '../components/WhyUs';
@@ -28,7 +28,7 @@ export const Home = () => {
       <Hero />
       <ImageMarquee />
       <Features />
-      <AllServices />
+      <AllServicesMP4 />
       <VideoIntro />
       <CaseStudies />
       <OurProcess />
