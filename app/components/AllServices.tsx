@@ -87,7 +87,6 @@ const loadYouTubeIframeAPI = (): Promise<void> => {
 
 const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ service, cardsToShow }) => {
   const [hovered, setHovered] = useState(false);
-  const hoveredRef = useRef(false);
   const playerRef = useRef<any>(null);
 
   const playerId = useRef(`yt-service-${service.id}`).current;
@@ -128,13 +127,11 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         },
         events: {
           onReady: () => {
-            // If we aren't hovered, immediately pause (but keep the timestamp).
-            playerRef.current?.pauseVideo?.();
-            if (hoveredRef.current) {
-              playerRef.current?.playVideo?.();
-            }
+            // Ensure playback starts; we never pause, so YouTube doesn't show
+            // the big play overlay/title on hover.
+            playerRef.current?.playVideo?.();
           },
-        },
+        }
       });
     });
 
@@ -151,14 +148,10 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
 
   const handleEnter = () => {
     setHovered(true);
-    hoveredRef.current = true;
-    playerRef.current?.playVideo?.();
   };
 
   const handleLeave = () => {
     setHovered(false);
-    hoveredRef.current = false;
-    playerRef.current?.pauseVideo?.();
   };
 
   return (
@@ -166,7 +159,14 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
       className={`min-w-[100%] md:min-w-[calc(50%-12px)] lg:min-w-[calc(33.333%-16px)] relative group h-[520px]`}
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
+      onPointerEnter={handleEnter}
+      onPointerLeave={handleLeave}
     >
+      <style>{`
+        /* Prevent YouTube UI overlays from reacting to hover/click inside the iframe. */
+        .service-card-video iframe { pointer-events: none; }
+      `}</style>
+
       {/* Colored background */}
       <div className={`absolute inset-0 rounded-2xl transition-all duration-200 ease-out ${service.color} group-hover:-inset-2 -translate-x-3 translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0 pointer-events-none`} />
       
@@ -177,9 +177,8 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         <div className="w-full aspect-video bg-gray-100 rounded-lg overflow-hidden mb-4 relative">
           <div
             id={playerId}
-            className={`absolute inset-0 w-full h-full transition-all duration-200 ${
-              hovered ? 'grayscale-0' : 'grayscale'
-            }`}
+            className="service-card-video absolute inset-0 w-full h-full transition-all duration-200"
+            style={{ filter: hovered ? 'grayscale(0%)' : 'grayscale(100%)' }}
           />
         </div>
 
