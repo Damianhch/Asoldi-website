@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { motion, useScroll, useTransform } from 'motion/react';
 import { Link } from 'react-router-dom';
 import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network } from 'lucide-react';
@@ -7,25 +7,17 @@ import { PricingCTA } from '../components/PricingCTA';
 import { SEO } from '../components/SEO';
 import { getServiceSchema } from '../structuredData';
 import { BUSINESS, SITE_URL } from '../config';
+import { clientCases } from '../data/clients';
 
 const ServiceCard: React.FC<{ service: any }> = ({ service }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  useEffect(() => {
+    videoRef.current?.play().catch(() => {});
+  }, []);
+
   return (
-    <div 
-      className="relative group h-full"
-      onMouseEnter={() => {
-        if (videoRef.current) {
-          videoRef.current.play().catch(() => {});
-        }
-      }}
-      onMouseLeave={() => {
-        if (videoRef.current) {
-          videoRef.current.pause();
-          videoRef.current.currentTime = 0;
-        }
-      }}
-    >
+    <div className="relative group h-full">
       {/* Colored background */}
       <div className={`absolute inset-0 rounded-2xl transition-all duration-200 ease-out ${service.color} group-hover:-inset-2 -translate-x-3 translate-y-3 group-hover:translate-x-0 group-hover:translate-y-0 pointer-events-none`} />
       
@@ -39,6 +31,7 @@ const ServiceCard: React.FC<{ service: any }> = ({ service }) => {
             muted 
             playsInline
             loop
+            autoPlay
             className="w-full h-full object-cover"
           >
             <source src={service.video} type="video/mp4" />
@@ -72,11 +65,7 @@ export const SocialMediaMarketing = () => {
 
   const partners = ['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Arman V'];
 
-  const caseStudies = [
-    { name: 'Svelstad.no', category: 'Nettsideutvikling', image: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&q=80' },
-    { name: 'Swich.no', category: 'Sosiale Medier', image: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80' },
-    { name: 'Mongsushi.no', category: 'Digital Markedsføring', image: 'https://images.unsplash.com/photo-1504868584819-f8e8b4b6d7e3?auto=format&fit=crop&q=80' },
-  ];
+  const caseStudies = clientCases.slice(0, 3);
 
   const processSteps = [
     { 
@@ -107,21 +96,21 @@ export const SocialMediaMarketing = () => {
       desc: 'Vi bygger raske, moderne og konverteringsoptimaliserte nettsider.', 
       link: '/services/web-development',
       color: 'bg-[#00E5FF]',
-      video: 'https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4'
+      video: '/media/website sevice animation.mp4'
     },
     { 
       name: 'E-post Markedsføring', 
       desc: 'Konverter leads til lojale kunder med målrettede kampanjer.', 
       link: '/services/email-marketing',
       color: 'bg-[#FF00FF]',
-      video: 'https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4'
+      video: '/media/Email marketing video.mp4'
     },
     { 
       name: 'Innholdsproduksjon', 
       desc: 'Fang merkevaren din med fantastiske visuelle bilder.', 
       link: '/services/photo-video',
       color: 'bg-[#FFEA00]',
-      video: 'https://cdn.coverr.co/videos/coverr-typing-on-a-macbook-pro-2-5274/1080p.mp4'
+      video: '/media/video & bilde produksjon.mp4'
     },
   ];
 
@@ -188,13 +177,13 @@ export const SocialMediaMarketing = () => {
               transition={{ duration: 0.6, delay: 0.2 }}
               className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-[#111]"
             >
-              <iframe
-                title="Sosiale Medier video"
-                src="https://www.youtube.com/embed/e228EHq40c0?autoplay=1&mute=1&loop=1&playlist=e228EHq40c0&controls=1&modestbranding=1&rel=0&showinfo=0&iv_load_policy=3&playsinline=1"
-                frameBorder={0}
-                allow="autoplay; encrypted-media"
-                allowFullScreen
-                className="w-full h-full"
+              <video
+                src="/media/social media video.mp4"
+                autoPlay
+                muted
+                loop
+                playsInline
+                className="w-full h-full object-cover"
               />
             </motion.div>
           </div>
@@ -228,25 +217,25 @@ export const SocialMediaMarketing = () => {
             <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4">Case Studies</h2>
             <p className="text-lg md:text-xl text-white/60 font-light max-w-2xl">Se hvordan vi har hjulpet bedrifter med å transformere sin digitale tilstedeværelse.</p>
           </div>
-          <Link to="/case-studies" className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-3 rounded-full border border-white/20 text-white hover:bg-white/10 transition-colors whitespace-nowrap">
+          <Link to="/clients" className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-3 rounded-full border border-white/20 text-white hover:bg-white/10 transition-colors whitespace-nowrap">
             Se alle
           </Link>
         </div>
         
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
           {caseStudies.map((study, i) => (
-            <Link to="/case-studies" key={i} className="group block">
+            <Link to={`/clients#${study.slug}`} key={i} className="group block">
               <div className="aspect-[4/3] rounded-2xl overflow-hidden mb-6 relative">
                 <div className="absolute inset-0 bg-black/20 group-hover:bg-transparent transition-colors z-10" />
                 <img 
                   src={study.image} 
-                  alt={study.name} 
+                  alt={study.businessName} 
                   className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                 />
               </div>
-              <div className="text-sm text-[#FF5B00] mb-2">{study.category}</div>
+              <div className="text-sm text-[#FF5B00] mb-2">{study.benefit}</div>
               <h3 className="text-2xl font-medium text-white group-hover:text-[#FF5B00] transition-colors flex items-center justify-between">
-                {study.name}
+                {study.businessName}
                 <ArrowRight className="opacity-0 -translate-x-4 group-hover:opacity-100 group-hover:translate-x-0 transition-all" />
               </h3>
             </Link>

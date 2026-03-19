@@ -69,8 +69,8 @@ export const AboutUs = () => {
           >
             <div className="w-full h-full rounded-[20px] md:rounded-[40px] overflow-hidden relative">
               <img 
-                src="https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&q=80" 
-                alt="Our Team" 
+                src="/media/DSC02166-scaled.webp" 
+                alt="Asoldi team" 
                 className="w-full h-full object-cover"
               />
             </div>
@@ -100,7 +100,7 @@ export const AboutUs = () => {
             <div className="max-w-7xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-20 items-center">
               <div className="rounded-[20px] md:rounded-[40px] overflow-hidden aspect-video md:aspect-[4/5] relative">
                 <img 
-                  src="https://images.unsplash.com/photo-1600880292203-757bb62b4baf?auto=format&fit=crop&q=80" 
+                  src="/media/asoldi%20capture%202.PNG" 
                   alt="Vekst for bedrifter" 
                   className="w-full h-full object-cover"
                 />
@@ -137,8 +137,8 @@ export const AboutUs = () => {
                 <div className="aspect-video md:aspect-square relative w-full max-w-md mx-auto">
                   <div className="absolute inset-0 bg-gradient-to-tr from-[#FF5B00]/20 to-transparent rounded-2xl transform translate-x-2 translate-y-2 md:translate-x-4 md:translate-y-4"></div>
                   <img 
-                    src="https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80" 
-                    alt="Grunnlegger" 
+                    src="/media/employee1.webp" 
+                    alt="Studentdrevet team" 
                     className="w-full h-full object-cover rounded-2xl relative z-10 grayscale hover:grayscale-0 transition-all duration-500"
                   />
                 </div>

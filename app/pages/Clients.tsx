@@ -23,11 +23,11 @@ const clients: ClientData[] = [
   {
     id: 'superhero-burger',
     name: 'SUPERHERO\nBURGER',
-    logoUrl: 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&q=80&w=150&h=150',
+    logoUrl: '/media/logo.jpg',
     serviceProvided: 'Nettside utvikling',
-    backgroundImageUrl: 'https://images.unsplash.com/photo-1550547660-d9450f859349?auto=format&fit=crop&q=80',
+    backgroundImageUrl: '/media/superhero capture.PNG',
     description: 'VI HÅNDTERER GJENNOMSNITTELIG 320 UNIKE BESØKENDE HVER DAG GJENNOM UTVIKLINGEN AV NETTSIDEN, UTEN DETTE VIL DISSE KUNDENE IKKE FÅTT DEN INFORMASJONEN DE VAR UTE ETTER.',
-    dashboardImageUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80',
+    dashboardImageUrl: '/media/superhero capture.PNG',
     stats: [
       { value: '9600', label: 'besøkende / mnd' },
       { value: '3%+', label: 'konversjon' }
@@ -37,11 +37,11 @@ const clients: ClientData[] = [
   {
     id: 'svelstad-gardsbruk',
     name: 'SVELSTAD\nGÅRDSBRUK',
-    logoUrl: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80&w=150&h=150',
+    logoUrl: '/media/Uten-navn-1000-x-500-px3.webp',
     serviceProvided: 'Nettside utvikling',
-    backgroundImageUrl: 'https://images.unsplash.com/photo-1500382017468-9049fed747ef?auto=format&fit=crop&q=80',
+    backgroundImageUrl: '/media/Svelstad.PNG',
     description: 'MULIGHET TIL Å BESTILLE GJENNOM MAILING SYSTEM, SAMT OPPRETTELSE AV EMAIL LISTE FOR FREMTIDIGE SALGSNYHETER. DETTE PROSJEKTET SIGNALISERTE EN NY BEGYNNELSE FOR SVELSTAD PÅ NETT.',
-    dashboardImageUrl: 'https://images.unsplash.com/photo-1460925895917-afdab827c52f?auto=format&fit=crop&q=80',
+    dashboardImageUrl: '/media/Svelstad.PNG',
     stats: [
       { value: '4', label: 'bestillinger etter 1 uke' },
       { value: '20', label: 'nye kunde emails' }
@@ -51,11 +51,11 @@ const clients: ClientData[] = [
   {
     id: 'vaernes-bar',
     name: 'VÆRNES\nBAR',
-    logoUrl: 'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?auto=format&fit=crop&q=80&w=150&h=150',
+    logoUrl: '/media/Untitled_design__13_-removebg-preview.png',
     serviceProvided: 'Nettside utvikling',
-    backgroundImageUrl: 'https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?auto=format&fit=crop&q=80',
+    backgroundImageUrl: '/media/værnesbar website capture.PNG',
     description: 'LAR KUNDE BESTILLE OVER NETT, SENDE KUNDE HENVENDELSER, OG BOOKE BORD, EN HELHETLIG OG PROFESJONELL RESTAURANT LØSNING SOM LAR KUNDEN BESTILLE DET DEN VIL.',
-    dashboardImageUrl: 'https://images.unsplash.com/photo-1504868584819-f8e8b4b6d7e3?auto=format&fit=crop&q=80',
+    dashboardImageUrl: '/media/værnesbar website capture.PNG',
     stats: [
       { value: '#1', label: 'ranking på google' },
       { value: '800', label: 'besøkende første mnd' }
@@ -65,11 +65,11 @@ const clients: ClientData[] = [
   {
     id: 'mong-sushi',
     name: 'MONG\nSUSHI',
-    logoUrl: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&q=80&w=150&h=150',
+    logoUrl: '/media/mong sushi logo.webp',
     serviceProvided: 'Nettside utvikling',
-    backgroundImageUrl: 'https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&q=80',
+    backgroundImageUrl: '/media/mong sushi capture.PNG',
     description: 'ØKTE TILSTEDEVÆRELSE PÅ NETT VED Å VISE MENY, BILDER AV LOKASJON OG GIR KUNDER MULIGHET TIL Å BESTILLE TAKEAWAY OG SENDE KUNDE HENVENDELSER PÅ EN LETT OG ENKEL MÅTE.',
-    dashboardImageUrl: 'https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80',
+    dashboardImageUrl: '/media/mong sushi capture.PNG',
     stats: [
       { value: '8%+', label: 'konversjonsrate' },
       { value: '1200', label: 'besøkende / mnd' }
@@ -79,11 +79,11 @@ const clients: ClientData[] = [
   {
     id: 'swich-restaurant',
     name: 'S\'WICH\nRESTAURANT',
-    logoUrl: 'https://images.unsplash.com/photo-1552566626-52f8b828add9?auto=format&fit=crop&q=80&w=150&h=150',
+    logoUrl: '/media/7444a9e70b64378cb31902781eb700f98431feee.webp',
     serviceProvided: 'Nettside utvikling',
-    backgroundImageUrl: 'https://images.unsplash.com/photo-1552566626-52f8b828add9?auto=format&fit=crop&q=80',
+    backgroundImageUrl: '/media/swich website.PNG',
     description: 'RANKER NR 3 I SØKEORD “RESTAURANT” I TRONDHEIM ETTER 1 UKE MED NETTSIDE. MÅLET VAR MER EKSPONERING PÅ GOOGLE OG GOOGLE MAPS, OG DET VAR NOE VI KLARTE Å OPPNÅ.',
-    dashboardImageUrl: 'https://images.unsplash.com/photo-1504868584819-f8e8b4b6d7e3?auto=format&fit=crop&q=80',
+    dashboardImageUrl: '/media/swich website.PNG',
     stats: [
       { value: '#3', label: 'ranking på google' },
       { value: '1400', label: 'besøkende / mnd' }

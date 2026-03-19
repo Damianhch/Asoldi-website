@@ -12,7 +12,7 @@ export const Hero = () => {
   ];
 
   return (
-    <section id="Home" className="relative pt-20 pb-10 md:pt-32 md:pb-20 px-6 md:px-10 overflow-hidden bg-[#050505]">
+    <section id="Home" className="relative pt-20 pb-10 md:pt-32 md:pb-20 px-6 md:px-10 overflow-hidden bg-[#050505] min-h-[100dvh] lg:min-h-0 flex flex-col justify-center">
       {/* Decorative Line SVG */}
       <div className="absolute inset-0 w-full h-full pointer-events-none z-0">
         <svg width="100%" height="100%" viewBox="0 0 1440 800" fill="none" xmlns="http://www.w3.org/2000/svg" className="absolute top-0 left-0 w-full h-full opacity-30">
@@ -20,10 +20,10 @@ export const Hero = () => {
         </svg>
       </div>
 
-      <div className="max-w-[1440px] mx-auto relative z-10">
+      <div className="max-w-[1440px] mx-auto relative z-10 flex-1 flex flex-col justify-center">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-12 items-center">
           
-          {/* Left Column - Text & Services */}
+          {/* Left Column - Text & Services (no CTA on mobile) */}
           <div className="lg:col-span-5 flex flex-col justify-center items-center text-center md:items-start md:text-left">
             <motion.h1 
               initial={{ opacity: 0, y: 30 }}
@@ -48,18 +48,19 @@ export const Hero = () => {
               ))}
             </div>
 
+            {/* CTA - desktop only (mobile CTA is under image) */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.6 }}
-              className="w-full flex justify-center md:justify-start"
+              className="hidden lg:flex w-full justify-center md:justify-start"
             >
               <Button text="Book konsultasjon" href="/booking" className="bg-[#FF5B00] text-white hover:bg-white hover:text-black" />
             </motion.div>
           </div>
 
           {/* Middle Column - Image */}
-          <div className="lg:col-span-4 relative flex items-end justify-center">
+          <div className="lg:col-span-4 relative flex flex-col items-center justify-center gap-4 lg:gap-0">
             <motion.div 
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
@@ -72,10 +73,19 @@ export const Hero = () => {
                 className="w-full h-full object-cover object-center"
               />
             </motion.div>
+            {/* CTA - mobile only, under image */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.5, delay: 0.6 }}
+              className="lg:hidden w-full flex justify-center"
+            >
+              <Button text="Book konsultasjon" href="/booking" className="bg-[#FF5B00] text-white hover:bg-white hover:text-black" />
+            </motion.div>
           </div>
 
-          {/* Right Column - Stats */}
-          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
+          {/* Right Column - Stats (never shown on hero) */}
+          <div className="hidden">
             {/* Stat 1 */}
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
