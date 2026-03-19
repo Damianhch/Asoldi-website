@@ -1,8 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Mail, Phone, Star, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { Mail, Phone, Star, ArrowRight, ArrowLeft, CheckCircle2 } from 'lucide-react';
 import { SEO } from '../components/SEO';
 import { getContactPageSchema } from '../structuredData';
+
+const ASOLDI_EMAIL = 'kontakt@asoldi.com';
+const ASOLDI_PHONE = '+4748339191';
+
+// TODO: Add your real Calendly inline event URL here.
+const CALENDLY_URL = 'https://calendly.com/daracha777/30-min-meeting';
+
+type BookingStep = 0 | 1 | 2 | 3;
 
 export const Booking = () => {
   const [activeReview, setActiveReview] = useState(0);
@@ -30,13 +38,62 @@ export const Booking = () => {
     setActiveReview((prev) => (prev + 1) % reviews.length);
   };
 
-  const [formStatus, setFormStatus] = useState<'idle' | 'submitting' | 'success'>('idle');
+  const [step, setStep] = useState<BookingStep>(0);
+  const stepRef = useRef(step);
+  useEffect(() => {
+    stepRef.current = step;
+  }, [step]);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setFormStatus('submitting');
-    setTimeout(() => setFormStatus('success'), 1500);
+  const [bedriftNavn, setBedriftNavn] = useState('');
+  const [telefon, setTelefon] = useState('');
+
+  const [bookingMode, setBookingMode] = useState<'none' | 'booked'>('none');
+  const [clientEmail, setClientEmail] = useState<string | null>(null);
+
+  const resetFlow = () => {
+    setStep(0);
+    setBedriftNavn('');
+    setTelefon('');
+    setBookingMode('none');
+    setClientEmail(null);
   };
+
+  // Listen for Calendly "event scheduled" when we are on step 1.
+  useEffect(() => {
+    if (!CALENDLY_URL || CALENDLY_URL.includes('PASTE_')) return;
+
+    const handler = (e: MessageEvent) => {
+      const data = e.data as any;
+      if (data?.event !== 'calendly.event_scheduled') return;
+      if (stepRef.current !== 1) return;
+
+      const invitee = data?.payload?.invitee || {};
+      const email = invitee?.email || data?.payload?.email || null;
+      setBookingMode('booked');
+      setClientEmail(email);
+      setStep(3);
+    };
+
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
+
+  // Load Calendly widget JS when step 1 is visible.
+  useEffect(() => {
+    if (step !== 1) return;
+    if (!CALENDLY_URL || CALENDLY_URL.includes('PASTE_')) return;
+
+    const scriptId = 'calendly-widgetjs';
+    if (document.getElementById(scriptId)) return;
+
+    const s = document.createElement('script');
+    s.id = scriptId;
+    s.async = true;
+    s.src = 'https://assets.calendly.com/assets/external/widget.js';
+    document.body.appendChild(s);
+  }, [step]);
+
+  const progressIndex = step === 0 ? 0 : step === 1 ? 1 : 2;
 
   return (
     <div className="bg-[#050505] min-h-[100dvh] lg:h-[100dvh] w-full overflow-x-hidden overflow-y-auto hide-scrollbar lg:overflow-hidden flex flex-col relative">
@@ -177,87 +234,202 @@ export const Booking = () => {
           className="w-full lg:w-7/12 flex-none lg:flex-1 min-h-[500px] lg:min-h-0 lg:h-full bg-white rounded-[24px] md:rounded-[40px] shadow-2xl overflow-hidden relative flex flex-col mb-4 lg:mb-0"
         >
           <div className="p-8 md:p-12 h-full flex flex-col">
-            {formStatus === 'success' ? (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-3xl font-bold text-black">Book en konsultasjon</h2>
+                <div className="text-black/50 text-sm">
+                  {step === 0 ? 'Bedriftsinfo' : step === 1 ? 'Booking (valgfritt)' : 'Bekreftelse'}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3">
+                {[0, 1, 2].map((i) => (
+                  <div key={i} className="flex-1">
+                    <div className="h-2 rounded-full bg-black/10 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${progressIndex >= i ? 'bg-[#FF5B00]' : 'bg-black/10'}`}
+                        style={{ width: progressIndex >= i ? '100%' : '0%' }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {step === 0 && (
+              <form
+                className="space-y-6 flex-grow flex flex-col"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setStep(1);
+                }}
+              >
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-black/70 ml-1">Bedriftsnavn</label>
+                  <input
+                    required
+                    type="text"
+                    value={bedriftNavn}
+                    onChange={(e) => setBedriftNavn(e.target.value)}
+                    placeholder="F.eks. Superhero Burger AS"
+                    className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-black/70 ml-1">Telefon nummer</label>
+                  <input
+                    required
+                    type="tel"
+                    value={telefon}
+                    onChange={(e) => setTelefon(e.target.value)}
+                    placeholder="+47 123 45 678"
+                    className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black"
+                  />
+                </div>
+
+                <div className="flex-grow" />
+
+                <button
+                  type="submit"
+                  className="w-full py-5 bg-[#FF5B00] text-white font-bold rounded-2xl hover:bg-[#e65200] transition-all shadow-lg shadow-[#FF5B00]/20 flex items-center justify-center gap-3"
+                >
+                  Fortsett
+                  <ArrowRight size={20} />
+                </button>
+              </form>
+            )}
+
+            {step === 1 && (
+              <div className="flex-grow flex flex-col space-y-6">
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-bold text-black">Book møte (valgfritt)</h3>
+                  <p className="text-black/50">
+                    Du kan booke direkte i Calendly. Hvis du ikke ønsker å booke nå, trykk “Fortsett uten booking”.
+                  </p>
+                </div>
+
+                {CALENDLY_URL.includes('PASTE_') ? (
+                  <div className="bg-black/5 border border-black/10 rounded-2xl p-5 text-black/70">
+                    Sett riktig Calendly URL i `src/pages/Booking.tsx` under <code>CALENDLY_URL</code>.
+                  </div>
+                ) : (
+                  <div className="flex-grow rounded-2xl overflow-hidden border border-black/10 bg-white">
+                    <div className="w-full h-full">
+                      <div
+                        className="calendly-inline-widget"
+                        data-url={CALENDLY_URL}
+                        style={{ minWidth: '320px', height: 640 }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="flex gap-4">
+                  <button
+                    onClick={() => setStep(0)}
+                    className="flex-1 py-5 bg-black/5 text-black font-bold rounded-2xl hover:bg-black/10 transition-all"
+                    type="button"
+                  >
+                    <span className="inline-flex items-center justify-center gap-2">
+                      <ArrowLeft size={18} />
+                      Tilbake
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setBookingMode('none');
+                      setStep(2);
+                    }}
+                    className="flex-1 py-5 bg-black text-white font-bold rounded-2xl hover:bg-black/90 transition-all"
+                    type="button"
+                  >
+                    Fortsett uten booking
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {step === 2 && (
               <div className="flex-grow flex flex-col items-center justify-center text-center">
                 <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center text-emerald-600 mb-6">
                   <CheckCircle2 size={40} />
                 </div>
-                <h2 className="text-3xl font-bold text-black mb-4">Takk for din henvendelse!</h2>
+                <h2 className="text-3xl font-bold text-black mb-4">Takk for at du viser interesse</h2>
                 <p className="text-black/60 text-lg max-w-md">
-                  Vi har mottatt din melding og vil kontakte deg så snart som mulig for å avtale en uforpliktende konsultasjon.
+                  Vi vil kontakte deg innen <span className="font-semibold text-black/80">1-2 bedriftsdager</span>.
                 </p>
-                <button 
-                  onClick={() => setFormStatus('idle')}
-                  className="mt-8 text-[#FF5B00] font-medium hover:underline"
-                >
-                  Send en ny melding
-                </button>
-              </div>
-            ) : (
-              <>
-                <div className="mb-8">
-                  <h2 className="text-3xl font-bold text-black mb-2">Book en konsultasjon</h2>
-                  <p className="text-black/50">Fortell oss litt om din bedrift, så tar vi kontakt.</p>
+
+                <div className="mt-8 w-full max-w-md bg-black/5 border border-black/10 rounded-2xl p-5 text-left">
+                  <div className="font-bold text-black mb-3">Kontaktinfo</div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <Mail size={18} className="text-[#FF5B00]" />
+                    <a href={`mailto:${ASOLDI_EMAIL}`} className="text-black/80 hover:underline">
+                      {ASOLDI_EMAIL}
+                    </a>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Phone size={18} className="text-[#FF5B00]" />
+                    <a href={`tel:${ASOLDI_PHONE}`} className="text-black/80 hover:underline">
+                      +47 48 33 91 91
+                    </a>
+                  </div>
                 </div>
 
-                <form onSubmit={handleSubmit} className="space-y-6 flex-grow">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-black/70 ml-1">Navn</label>
-                      <input 
-                        required
-                        type="text" 
-                        placeholder="Ditt navn"
-                        className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black"
-                      />
+                <button onClick={resetFlow} className="mt-8 text-[#FF5B00] font-medium hover:underline" type="button">
+                  Send ny forespørsel
+                </button>
+              </div>
+            )}
+
+            {step === 3 && (
+              <div className="flex-grow flex flex-col items-center justify-center text-center">
+                <div className="w-20 h-20 bg-[#FF5B00]/15 rounded-full flex items-center justify-center text-[#FF5B00] mb-6">
+                  <CheckCircle2 size={40} />
+                </div>
+                <h2 className="text-3xl font-bold text-black mb-4">Du er booket!</h2>
+                <p className="text-black/60 text-lg max-w-md">
+                  Vi har sendt en bekreftelses e-post til <span className="font-semibold text-black/80">{clientEmail || 'client email'}</span>.
+                </p>
+
+                <div className="mt-8 w-full max-w-md bg-black/5 border border-black/10 rounded-2xl p-5 text-left">
+                  <div className="font-bold text-black mb-3">Kvitteringsoppsummering</div>
+                  <div className="space-y-2 text-black/80">
+                    <div className="flex justify-between gap-4">
+                      <span>Bedriftsnavn</span>
+                      <span className="font-semibold text-black/90">{bedriftNavn || '—'}</span>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-black/70 ml-1">E-post</label>
-                      <input 
-                        required
-                        type="email" 
-                        placeholder="navn@bedrift.no"
-                        className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black"
-                      />
+                    <div className="flex justify-between gap-4">
+                      <span>Telefon</span>
+                      <span className="font-semibold text-black/90">{telefon || '—'}</span>
+                    </div>
+                    <div className="flex justify-between gap-4">
+                      <span>Client email</span>
+                      <span className="font-semibold text-black/90">{clientEmail || '—'}</span>
                     </div>
                   </div>
+                </div>
 
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-black/70 ml-1">Tjeneste</label>
-                    <select className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black appearance-none">
-                      <option>Nettsideutvikling</option>
-                      <option>Sosiale Medier Marketing</option>
-                      <option>Innholdsproduksjon</option>
-                      <option>E-post Markedsføring</option>
-                      <option>Annet</option>
-                    </select>
+                <div className="mt-6 w-full max-w-md bg-white border border-black/10 rounded-2xl p-5 text-left">
+                  <div className="font-bold text-black mb-3">Kontaktinfo</div>
+                  <div className="flex items-center gap-3 mb-2">
+                    <Mail size={18} className="text-[#FF5B00]" />
+                    <a href={`mailto:${ASOLDI_EMAIL}`} className="text-black/80 hover:underline">
+                      {ASOLDI_EMAIL}
+                    </a>
                   </div>
-
-                  <div className="space-y-2 flex-grow flex flex-col">
-                    <label className="text-sm font-medium text-black/70 ml-1">Melding</label>
-                    <textarea 
-                      required
-                      placeholder="Fortell oss litt om hva du trenger hjelp med..."
-                      className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black flex-grow min-h-[120px] resize-none"
-                    />
+                  <div className="flex items-center gap-3">
+                    <Phone size={18} className="text-[#FF5B00]" />
+                    <a href={`tel:${ASOLDI_PHONE}`} className="text-black/80 hover:underline">
+                      +47 48 33 91 91
+                    </a>
                   </div>
+                </div>
 
-                  <button 
-                    type="submit"
-                    disabled={formStatus === 'submitting'}
-                    className="w-full py-5 bg-[#FF5B00] text-white font-bold rounded-2xl hover:bg-[#e65200] transition-all shadow-lg shadow-[#FF5B00]/20 flex items-center justify-center gap-3 disabled:opacity-70"
-                  >
-                    {formStatus === 'submitting' ? (
-                      <div className="w-6 h-6 border-3 border-white/30 border-t-white rounded-full animate-spin" />
-                    ) : (
-                      <>
-                        Send henvendelse
-                        <ArrowRight size={20} />
-                      </>
-                    )}
-                  </button>
-                </form>
-              </>
+                <button onClick={resetFlow} className="mt-8 text-[#FF5B00] font-medium hover:underline" type="button">
+                  Send ny forespørsel
+                </button>
+              </div>
             )}
           </div>
         </motion.div>
