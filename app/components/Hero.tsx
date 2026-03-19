@@ -12,7 +12,7 @@ export const Hero = () => {
   ];
 
   return (
-    <section id="Home" className="relative pt-32 pb-20 px-6 md:px-10 overflow-hidden bg-[#050505]">
+    <section id="Home" className="relative pt-20 pb-10 md:pt-32 md:pb-20 px-6 md:px-10 overflow-hidden bg-[#050505]">
       {/* Decorative Line SVG */}
       <div className="absolute inset-0 w-full h-full pointer-events-none z-0">
         <svg width="100%" height="100%" viewBox="0 0 1440 800" fill="none" xmlns="http://www.w3.org/2000/svg" className="absolute top-0 left-0 w-full h-full opacity-30">
@@ -21,20 +21,20 @@ export const Hero = () => {
       </div>
 
       <div className="max-w-[1440px] mx-auto relative z-10">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-12 items-center">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 md:gap-12 items-center">
           
           {/* Left Column - Text & Services */}
-          <div className="lg:col-span-5 flex flex-col justify-center">
+          <div className="lg:col-span-5 flex flex-col justify-center items-center text-center md:items-start md:text-left">
             <motion.h1 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.8, ease: [0.16, 1, 0.3, 1] }}
-              className="text-7xl md:text-8xl lg:text-[100px] leading-[0.9] font-medium tracking-tight mb-12 text-[#FF5B00]"
+              className="text-4xl sm:text-5xl md:text-7xl lg:text-8xl xl:text-[100px] leading-[0.9] font-medium tracking-tight mb-6 md:mb-12 text-[#FF5B00]"
             >
               Vi er din ekspert på <span className="font-serif italic font-normal block text-white">digital vekst</span>
             </motion.h1>
             
-            <div className="flex flex-wrap gap-3 max-w-md mb-10">
+            <div className="flex flex-wrap gap-2 sm:gap-3 max-w-md justify-center md:justify-start mb-6 md:mb-10">
               {services.map((service, index) => (
                 <motion.div
                   key={index}
@@ -52,6 +52,7 @@ export const Hero = () => {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5, delay: 0.6 }}
+              className="w-full flex justify-center md:justify-start"
             >
               <Button text="Book konsultasjon" href="/booking" className="bg-[#FF5B00] text-white hover:bg-white hover:text-black" />
             </motion.div>
@@ -63,7 +64,7 @@ export const Hero = () => {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8 }}
-              className="relative w-full max-w-[400px] aspect-[3/4] rounded-t-[200px] overflow-hidden border-x border-t border-white/10"
+              className="relative w-full max-w-[280px] md:max-w-[400px] aspect-[4/5] md:aspect-[3/4] rounded-t-[100px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
             >
               <img 
                 src="/media/asoldi%20capture%202.PNG"
@@ -74,13 +75,13 @@ export const Hero = () => {
           </div>
 
           {/* Right Column - Stats */}
-          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-12 pl-8">
+          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
             {/* Stat 1 */}
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8, delay: 0.2 }}
-              className="flex flex-col gap-3"
+              className="flex flex-col gap-2 md:gap-3"
             >
               <a
                 href="https://www.google.com/maps/place//data=!4m7!3m6!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1"
@@ -88,7 +89,7 @@ export const Hero = () => {
                 rel="noreferrer"
                 className="relative block hover:opacity-95 transition-opacity"
               >
-                <div className="relative flex items-center gap-3">
+                <div className="relative flex items-center justify-center md:justify-start gap-3">
                   <div className="flex -space-x-2">
                     <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
                       <img src="/media/christopher.avif" alt="Christopher" className="w-full h-full object-cover" />
@@ -123,9 +124,9 @@ export const Hero = () => {
                 </div>
 
                 {/* Title + text: match bottom card sizing */}
-                <div className="mt-4">
-                  <h5 className="text-3xl text-white font-serif italic font-normal mb-2">100% fornøyd garanti</h5>
-                  <p className="text-gray-400 text-sm leading-relaxed max-w-[260px]">
+                <div className="mt-3 md:mt-4">
+                  <h5 className="text-xl md:text-3xl text-white font-serif italic font-normal mb-1 md:mb-2">100% fornøyd garanti</h5>
+                  <p className="text-gray-400 text-xs md:text-sm leading-relaxed max-w-[260px] mx-auto md:mx-0">
                     Vi leverer resultater som skaper ekte verdi for våre kunder.
                   </p>
                 </div>
@@ -137,14 +138,14 @@ export const Hero = () => {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8, delay: 0.3 }}
-              className="flex flex-col gap-3"
+              className="flex flex-col gap-2 md:gap-3"
             >
               <div>
-                <span className="text-[#FF5B00] text-5xl font-serif italic font-bold">nr 1</span>
+                <span className="text-[#FF5B00] text-3xl md:text-5xl font-serif italic font-bold">nr 1</span>
               </div>
               <div>
-                <h5 className="text-3xl text-white font-serif italic font-normal mb-2">Rank på google</h5>
-                <p className="text-gray-400 text-sm leading-relaxed max-w-[200px]">
+                <h5 className="text-xl md:text-3xl text-white font-serif italic font-normal mb-1 md:mb-2">Rank på google</h5>
+                <p className="text-gray-400 text-xs md:text-sm leading-relaxed max-w-[200px] mx-auto md:mx-0">
                   Få flere kunder ved å ranke høyere på google maps.
                 </p>
               </div>

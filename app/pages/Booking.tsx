@@ -343,22 +343,13 @@ export const Booking = () => {
                         </button>
                       </>
                     ) : (
-                      <div className="flex flex-wrap gap-3">
-                        <button
-                          type="button"
-                          onClick={handleSendNewBookingLink}
-                          className="px-5 py-3 rounded-xl border border-gray-300 text-black hover:bg-gray-50 font-semibold"
-                        >
-                          {bookingLinkCopied ? 'Lenke kopiert' : 'Send ny booking-lenke'}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={resetBookingFlow}
-                          className="px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200]"
-                        >
-                          Send ny henvendelse
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={resetBookingFlow}
+                        className="px-5 py-3 rounded-xl bg-[#FF5B00] text-white font-semibold hover:bg-[#e65200]"
+                      >
+                        Send ny henvendelse
+                      </button>
                     )}
                   </div>
                 </div>
