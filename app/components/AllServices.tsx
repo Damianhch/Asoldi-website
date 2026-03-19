@@ -85,7 +85,12 @@ const loadYouTubeIframeAPI = (): Promise<void> => {
   return ytApiPromise;
 };
 
-const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ service, cardsToShow }) => {
+const ServiceCard: React.FC<{
+  service: Service;
+  cardsToShow: number;
+  activeServiceId: number | null;
+  setActiveServiceId: (id: number | null) => void;
+}> = ({ service, cardsToShow, activeServiceId, setActiveServiceId }) => {
   const [hovered, setHovered] = useState(false);
   const hoveredRef = useRef(false);
   const playerRef = useRef<any>(null);
@@ -106,6 +111,15 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
     };
   }, []);
 
+  useEffect(() => {
+    // Only one YouTube card should play at a time.
+    if (activeServiceId !== service.id) {
+      setHovered(false);
+      hoveredRef.current = false;
+      playerRef.current?.pauseVideo?.();
+    }
+  }, [activeServiceId, service.id]);
+
   const ensurePlayer = () => {
     if (playerCreatedRef.current) return;
     playerCreatedRef.current = true;
@@ -117,7 +131,8 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
       playerRef.current = new YT.Player(playerId, {
         videoId: service.videoId,
         playerVars: {
-          autoplay: 0,
+          // Autoplay only matters once the player is created (we create it on hover).
+          autoplay: 1,
           controls: 0,
           modestbranding: 1,
           rel: 0,
@@ -135,11 +150,8 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
         events: {
           onReady: () => {
             setVideoReady(true);
-            // Make sure the player doesn't start audio or motion until hover.
-            playerRef.current?.pauseVideo?.();
-            if (hoveredRef.current) {
-              playerRef.current?.playVideo?.();
-            }
+            // If the mouse left before the player finished loading, stop it.
+            if (!hoveredRef.current) playerRef.current?.pauseVideo?.();
           },
         },
       });
@@ -149,6 +161,7 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const handleEnter = () => {
     setHovered(true);
     hoveredRef.current = true;
+    setActiveServiceId(service.id);
     ensurePlayer();
     playerRef.current?.playVideo?.();
   };
@@ -156,6 +169,7 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
   const handleLeave = () => {
     setHovered(false);
     hoveredRef.current = false;
+    if (activeServiceId === service.id) setActiveServiceId(null);
     playerRef.current?.pauseVideo?.();
   };
 
@@ -185,7 +199,11 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
             src={`https://img.youtube.com/vi/${service.videoId}/hqdefault.jpg`}
             alt=""
             className={`absolute inset-0 w-full h-full object-cover transition-opacity duration-200 ${
-              hovered && videoReady ? 'opacity-0' : 'opacity-100 grayscale'
+              hovered && videoReady
+                ? 'opacity-0'
+                : hovered
+                  ? 'opacity-100'
+                  : 'opacity-100 grayscale'
             } pointer-events-none`}
           />
 
@@ -212,6 +230,7 @@ const ServiceCard: React.FC<{ service: Service; cardsToShow: number }> = ({ serv
 export const AllServices = () => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [cardsToShow, setCardsToShow] = useState(3);
+  const [activeServiceId, setActiveServiceId] = useState<number | null>(null);
 
   useEffect(() => {
     const handleResize = () => {
@@ -277,7 +296,13 @@ export const AllServices = () => {
             transition={{ type: "spring", stiffness: 300, damping: 30 }}
           >
             {services.map((service) => (
-              <ServiceCard key={service.id} service={service} cardsToShow={cardsToShow} />
+              <ServiceCard
+                key={service.id}
+                service={service}
+                cardsToShow={cardsToShow}
+                activeServiceId={activeServiceId}
+                setActiveServiceId={setActiveServiceId}
+              />
             ))}
           </motion.div>
         </div>
