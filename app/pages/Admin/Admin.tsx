@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Users, LogOut, LayoutDashboard, BarChart3, ShoppingBag, Globe, Plus, Key, Edit2, Trash2 } from 'lucide-react';
+import { Users, LogOut, LayoutDashboard, BarChart3, ShoppingBag, Globe, Plus, Key, Edit2, Trash2, FileText, ExternalLink } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 
 const API = '/api';
@@ -25,7 +25,23 @@ function authHeaders() {
   return t ? { Authorization: `Bearer ${t}` } : {};
 }
 
-type Tab = 'clients' | 'users' | 'analytics' | 'ecommerce';
+type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce';
+
+const SITE_PAGES = [
+  { path: '/', label: 'Home' },
+  { path: '/pricing', label: 'Pricing' },
+  { path: '/about', label: 'About' },
+  { path: '/booking', label: 'Booking' },
+  { path: '/clients', label: 'Clients' },
+  { path: '/services/web-development', label: 'Web Development' },
+  { path: '/services/social-media', label: 'Social Media Marketing' },
+  { path: '/services/email-marketing', label: 'Email Marketing' },
+  { path: '/services/photo-video', label: 'Photo & Video' },
+  { path: '/1000kr', label: '1000kr' },
+  { path: '/bli-ansatt', label: 'Bli ansatt' },
+  { path: '/login', label: 'Login' },
+  { path: '/ansatt', label: 'Ansatt' },
+];
 type Features = { users?: boolean; analytics?: boolean; ecommerce?: boolean };
 type UserRole = 'employee' | 'client' | 'none';
 
@@ -382,6 +398,14 @@ export const Admin = () => {
             >
               <Globe size={18} /> Manage clients
             </button>
+            <button
+              onClick={() => setTab('pages')}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-left text-sm font-medium transition-colors ${
+                tab === 'pages' ? 'bg-[#FF5B00] text-white' : 'text-gray-300 hover:bg-white/10'
+              }`}
+            >
+              <FileText size={18} /> Pages
+            </button>
             {features.users !== false && (
               <button
                 onClick={() => setTab('users')}
@@ -434,6 +458,26 @@ export const Admin = () => {
 
         {/* Main content */}
         <main className="flex-1 ml-56 p-8">
+          {tab === 'pages' && (
+            <div className="max-w-4xl">
+              <h1 className="text-2xl font-bold text-white mb-2">Pages</h1>
+              <p className="text-gray-400 text-sm mb-6">Quick navigation to all pages on this site.</p>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {SITE_PAGES.map((p) => (
+                  <a
+                    key={p.path}
+                    href={p.path}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between rounded-xl bg-[#2a2a2a] border border-white/10 px-4 py-3 hover:border-[#FF5B00]/50 hover:bg-[#2a2a2a]/80 transition-colors group"
+                  >
+                    <span className="text-white font-medium">{p.label}</span>
+                    <ExternalLink size={16} className="text-gray-400 group-hover:text-[#FF5B00] flex-shrink-0 ml-2" />
+                  </a>
+                ))}
+              </div>
+            </div>
+          )}
           {tab === 'clients' && (
             <div className="max-w-4xl">
               <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
