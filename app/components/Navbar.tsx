@@ -108,23 +108,24 @@ export const Navbar = () => {
           </Link>
         </div>
 
-        {/* Mobile Menu Toggle */}
+        {/* Mobile Menu Toggle - z-[60] so it stays above overlay when menu is open */}
         <button 
-          className="lg:hidden z-50 p-2.5 text-white relative flex-shrink-0 ml-2"
+          className="lg:hidden z-[60] p-2.5 text-white relative flex-shrink-0 ml-2"
           onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
         >
           {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
         </button>
 
-        {/* Mobile Menu Overlay */}
+        {/* Mobile Menu Overlay - pointer-events-none on bg so burger button stays clickable */}
         <AnimatePresence>
           {isMobileMenuOpen && (
             <motion.div
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
-              className="fixed inset-0 bg-[#050505] z-40 flex flex-col items-center justify-center gap-8 lg:hidden pt-20 overflow-y-auto"
+              className="fixed inset-0 bg-[#050505] z-40 flex flex-col items-center justify-center gap-8 lg:hidden pt-20 overflow-y-auto pointer-events-none"
             >
+              <div className="pointer-events-auto flex flex-col items-center gap-8">
               <Link to="/pricing" className="text-2xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Priser</Link>
               <Link to="/about" className="text-2xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Om oss</Link>
               
@@ -154,6 +155,7 @@ export const Navbar = () => {
               <Link to="/booking" className="bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium text-xl mt-4" onClick={() => setIsMobileMenuOpen(false)}>
                 Book konsultasjon
               </Link>
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
