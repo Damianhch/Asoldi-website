@@ -17,6 +17,7 @@ export const Booking = () => {
     message: '',
   });
   const [bookingLinkCopied, setBookingLinkCopied] = useState(false);
+  const [skipSending, setSkipSending] = useState(false);
   const calendlyContainerRef = useRef<HTMLDivElement | null>(null);
 
   /** Calendly supports prefill via URL: name, email. Widget.js adds embed_domain/embed_type for postMessage events. */
@@ -344,13 +345,30 @@ export const Booking = () => {
                         </button>
                         <button
                           type="button"
-                          onClick={() => {
+                          disabled={skipSending}
+                          onClick={async () => {
+                            setSkipSending(true);
+                            try {
+                              const res = await fetch('/api/booking', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(formData),
+                              });
+                              if (!res.ok) {
+                                const data = await res.json().catch(() => ({}));
+                                console.error('Booking email failed:', data.message);
+                              }
+                            } catch (e) {
+                              console.error('Booking request failed:', e);
+                            } finally {
+                              setSkipSending(false);
+                            }
                             setWantsCalendly(false);
                             setStep(3);
                           }}
-                          className="px-5 py-3 rounded-xl border border-gray-400 text-black/70 hover:bg-gray-100 font-semibold self-end sm:ml-auto"
+                          className="px-5 py-3 rounded-xl border border-gray-400 text-black/70 hover:bg-gray-100 font-semibold self-end sm:ml-auto disabled:opacity-50"
                         >
-                          Skip
+                          {skipSending ? 'Sender…' : 'Skip'}
                         </button>
                       </>
                     ) : (

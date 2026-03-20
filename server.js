@@ -1,10 +1,12 @@
 import express from 'express';
-import { createHmac } from 'crypto';
+import { createHmac, randomBytes } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import * as store from './data/store.js';
 import * as hub from './data/hub.js';
+import * as resetTokens from './data/reset-tokens.js';
+import * as emailLib from './lib/email.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -45,6 +47,19 @@ async function ensureAdminExists() {
 
 // --- API (must be before static)
 app.use(express.json());
+
+// Rate limit forgot-password (5 per IP per 15 min)
+const forgotPasswordAttempts = new Map();
+function rateLimitForgotPassword(ip) {
+  const now = Date.now();
+  const window = 15 * 60 * 1000;
+  const entries = forgotPasswordAttempts.get(ip) || [];
+  const recent = entries.filter((t) => now - t < window);
+  if (recent.length >= 5) return false;
+  recent.push(now);
+  forgotPasswordAttempts.set(ip, recent);
+  return true;
+}
 
 app.post('/api/admin/login', async (req, res) => {
   const { username, password } = req.body || {};
@@ -142,6 +157,59 @@ app.post('/api/auth/login', async (req, res) => {
   res.json({ token, user: { id: result.user.id, username: result.user.username, role: result.user.role } });
 });
 
+app.post('/api/auth/forgot-password', async (req, res) => {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimitForgotPassword(ip)) {
+    return res.status(429).json({ message: 'For mange forespørsler. Prøv igjen om 15 minutter.' });
+  }
+  const { username } = req.body || {};
+  if (!username || typeof username !== 'string') {
+    return res.status(400).json({ message: 'E-post kreves' });
+  }
+  const user = await store.getUserByUsername(username.trim());
+  if (!user || user.role !== 'employee') {
+    return res.json({ ok: true, message: 'Hvis e-posten finnes, vil du motta en lenke for å tilbakestille passordet.' });
+  }
+  if (!emailLib.canSendEmail()) {
+    return res.status(503).json({ message: 'E-post er ikke konfigurert. Kontakt administrator.' });
+  }
+  const token = randomBytes(32).toString('base64url');
+  resetTokens.saveResetToken(token, user.id, user.username);
+  const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
+  const resetUrl = `${baseUrl.replace(/\/$/, '')}/login/reset-password?token=${token}`;
+  try {
+    await emailLib.sendEmail({
+      to: user.username,
+      subject: 'Tilbakestill passord – Asoldi',
+      text: `Hei,\n\nDu ba om å tilbakestille passordet ditt. Klikk på lenken under for å velge et nytt passord:\n\n${resetUrl}\n\nLenken utløper om 1 time.\n\nHvis du ikke ba om dette, kan du ignorere denne e-posten.\n\nMed vennlig hilsen,\nAsoldi`,
+      html: `<p>Hei,</p><p>Du ba om å tilbakestille passordet ditt. Klikk på lenken under for å velge et nytt passord:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Lenken utløper om 1 time.</p><p>Hvis du ikke ba om dette, kan du ignorere denne e-posten.</p><p>Med vennlig hilsen,<br>Asoldi</p>`,
+    });
+  } catch (err) {
+    console.error('Forgot password email error:', err);
+    return res.status(500).json({ message: 'Kunne ikke sende e-post. Prøv igjen senere.' });
+  }
+  res.json({ ok: true, message: 'Hvis e-posten finnes, vil du motta en lenke for å tilbakestille passordet.' });
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  const { token, newPassword } = req.body || {};
+  if (!token || !newPassword) {
+    return res.status(400).json({ message: 'Token og nytt passord kreves' });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ message: 'Passordet må være minst 8 tegn' });
+  }
+  const entry = resetTokens.consumeResetToken(token);
+  if (!entry) {
+    return res.status(400).json({ message: 'Lenken er ugyldig eller utløpt. Be om en ny.' });
+  }
+  const result = await store.updateUserPassword(entry.userId, newPassword);
+  if (!result.ok) {
+    return res.status(500).json({ message: 'Kunne ikke oppdatere passord.' });
+  }
+  res.json({ ok: true, message: 'Passordet er tilbakestilt. Du kan nå logge inn.' });
+});
+
 function employeeAuth(req, res, next) {
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -212,6 +280,44 @@ app.put('/api/hub/sites/:id', adminAuth, (req, res) => {
 app.delete('/api/hub/sites/:id', adminAuth, (req, res) => {
   const result = hub.deleteSite(req.params.id);
   if (!result.ok) return res.status(404).json({ message: result.error });
+  res.json({ ok: true });
+});
+
+// --- Booking (skip Calendly: send email to daracha777@gmail.com)
+app.post('/api/booking', async (req, res) => {
+  const { name, email, phone, company, service, message } = req.body || {};
+  if (!name || !email) {
+    return res.status(400).json({ message: 'Navn og e-post kreves' });
+  }
+  if (!emailLib.canSendEmail()) {
+    return res.status(503).json({ message: 'E-post er ikke konfigurert.' });
+  }
+  const when = new Date().toLocaleString('nb-NO', { dateStyle: 'full', timeStyle: 'short' });
+  const body = `Ny henvendelse fra nettsiden (brukeren valgte å hoppe over Calendly-booking).
+
+Hvem:
+- Navn: ${name}
+- E-post: ${email}
+- Telefon: ${phone || 'Ikke oppgitt'}
+- Bedrift: ${company || 'Ikke oppgitt'}
+
+Når: ${when}
+Hvor: Nettsiden (booking-siden, skip Calendly)
+Tjeneste: ${service || 'Ikke oppgitt'}
+
+Melding:
+${message || '(Ingen melding)'}`;
+  try {
+    await emailLib.sendEmail({
+      to: 'daracha777@gmail.com',
+      subject: `[Asoldi] Ny henvendelse: ${name} – ${company || 'Ingen bedrift'}`,
+      text: body,
+      html: `<pre style="font-family:sans-serif;white-space:pre-wrap;">${body.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
+    });
+  } catch (err) {
+    console.error('Booking email error:', err);
+    return res.status(500).json({ message: 'Kunne ikke sende henvendelsen. Prøv igjen.' });
+  }
   res.json({ ok: true });
 });
 

@@ -20,6 +20,7 @@ const Page1000kr = lazy(() => import('./pages/1000kr').then(m => ({ default: m.P
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const Admin = lazy(() => import('./pages/Admin/Admin').then(m => ({ default: m.Admin })));
 const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then(m => ({ default: m.LoginForgotPassword })));
+const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then(m => ({ default: m.LoginResetPassword })));
 const Ansatt = lazy(() => import('./pages/Ansatt').then(m => ({ default: m.Ansatt })));
 
 function AppLayout() {
@@ -80,6 +81,7 @@ function AppLayout() {
           <Route path="/booking" element={<Booking />} />
           <Route path="/login" element={<Login />} />
           <Route path="/login/forgot-password" element={<LoginForgotPassword />} />
+          <Route path="/login/reset-password" element={<LoginResetPassword />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
