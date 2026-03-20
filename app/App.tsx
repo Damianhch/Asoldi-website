@@ -17,6 +17,7 @@ const PhotoVideo = lazy(() => import('./pages/PhotoVideo').then(m => ({ default:
 const Clients = lazy(() => import('./pages/Clients').then(m => ({ default: m.Clients })));
 const Booking = lazy(() => import('./pages/Booking').then(m => ({ default: m.Booking })));
 const Page1000kr = lazy(() => import('./pages/1000kr').then(m => ({ default: m.Page1000kr })));
+const BliAnsatt = lazy(() => import('./pages/BliAnsatt').then(m => ({ default: m.BliAnsatt })));
 const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
 const Admin = lazy(() => import('./pages/Admin/Admin').then(m => ({ default: m.Admin })));
 const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then(m => ({ default: m.LoginForgotPassword })));
@@ -86,6 +87,7 @@ function AppLayout() {
           <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/1000kr" element={<Page1000kr />} />
+          <Route path="/bli-ansatt" element={<BliAnsatt />} />
         </Routes>
       </Suspense>
       {!isAdminArea && <Footer />}

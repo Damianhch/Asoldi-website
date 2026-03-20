@@ -1,7 +1,7 @@
 import React, { useRef } from 'react';
 import { motion, useScroll, useTransform } from 'motion/react';
 import { Link } from 'react-router-dom';
-import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network, Server, Settings, ArrowRightLeft, Palette, FileText, Search, BarChart3, Mail, ShoppingCart, Languages, BookOpen, Calendar, RefreshCw } from 'lucide-react';
+import { ArrowRight, CheckCircle2, PenTool, Code2, Rocket, Network, Server, Settings, ArrowRightLeft, Palette, FileText, Search, BarChart3, Mail, ShoppingCart, Languages, BookOpen, Calendar, RefreshCw, Star } from 'lucide-react';
 import { FAQ } from '../components/FAQ';
 import { PricingCTA } from '../components/PricingCTA';
 import { SEO } from '../components/SEO';
@@ -143,31 +143,37 @@ export const WebDevelopment = () => {
         path="/services/web-development"
         structuredData={getServiceSchema('Nettsideutvikling', 'Profesjonell utvikling av nettsider og webapplikasjoner.', SITE_URL + '/services/web-development')}
       />
-      {/* Hero Section */}
-      <section className="relative overflow-hidden min-h-screen flex flex-col pt-24">
+      {/* Hero Section - on mobile: 100dvh so partners/stats below fold */}
+      <section className="relative overflow-hidden min-h-[100dvh] md:min-h-screen flex flex-col pt-20 md:pt-24">
         {/* Background Gradient */}
         <div className="absolute inset-0 bg-[#050505] pointer-events-none">
           <div className="absolute top-0 right-0 w-[800px] h-[800px] bg-[#FF5B00]/10 rounded-full blur-[120px] -translate-y-1/2 translate-x-1/3" />
         </div>
         
-        <div className="flex-grow flex items-center max-w-7xl mx-auto w-full px-6 md:px-10 relative z-10 py-12">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 lg:gap-20 items-center w-full">
-            {/* Left Content */}
+        {/* Mobile: compact layout; desktop: centered */}
+        <div className="flex-grow flex flex-col justify-center min-h-0 max-w-7xl mx-auto w-full px-6 md:px-10 relative z-10 py-4 md:py-12">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-12 lg:gap-20 items-start lg:items-center w-full">
+            {/* Left Content - on mobile: header + services only */}
             <motion.div 
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.6 }}
+              className="order-1 lg:order-1"
             >
-              <div className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-white/80 text-sm font-medium mb-6 uppercase tracking-wider">
-                Nettside utvikling
+              <div>
+                <div className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-white/80 text-sm font-medium mb-4 md:mb-6 uppercase tracking-wider">
+                  Nettside utvikling
+                </div>
+                <h1 className="text-4xl md:text-7xl lg:text-[80px] font-medium text-white mb-4 md:mb-6 tracking-tight leading-[1.05]">
+                  Nettsider som konverterer –<br />
+                  <span className="text-[#FF5B00] font-serif italic">mer trafikk, flere kunder</span>
+                </h1>
+                <p className="text-base md:text-xl lg:text-2xl text-white/60 font-light mb-6 md:mb-10 max-w-lg leading-relaxed">
+                  Gjør klikk om til kunder. Oppdag hvorfor bedrifter stoler på oss med sin digitale reise og nettsideutvikling.
+                </p>
               </div>
-              <h1 className="text-5xl md:text-7xl lg:text-[80px] font-medium text-white mb-6 tracking-tight leading-[1.05]">
-                Gode ideer,<br />Gode resultater
-              </h1>
-              <p className="text-lg md:text-xl lg:text-2xl text-white/60 font-light mb-10 max-w-lg leading-relaxed">
-                Gjør klikk om til kunder. Oppdag hvorfor bedrifter stoler på oss med sin digitale reise og nettsideutvikling.
-              </p>
-              <div className="flex flex-col sm:flex-row gap-6 items-start sm:items-center">
+              {/* Desktop: CTA + social proof inline */}
+              <div className="hidden lg:flex flex-col sm:flex-row gap-6 items-start sm:items-center">
                 <Link to="/booking" className="w-full sm:w-auto bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 text-lg">
                   Book et møte <ArrowRight size={20} />
                 </Link>
@@ -191,12 +197,12 @@ export const WebDevelopment = () => {
               </div>
             </motion.div>
 
-            {/* Right Video */}
+            {/* Right Video - on mobile: order 2, reduced height */}
             <motion.div 
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.6, delay: 0.2 }}
-              className="relative w-full aspect-video rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-[#111]"
+              className="order-2 lg:order-2 relative w-full aspect-video md:aspect-video max-h-[22vh] md:max-h-none rounded-2xl overflow-hidden border border-white/10 shadow-2xl bg-[#111] flex-shrink-0"
             >
               <video
                 src="/media/website sevice animation.mp4"
@@ -207,11 +213,49 @@ export const WebDevelopment = () => {
                 className="w-full h-full object-cover"
               />
             </motion.div>
+
+            {/* Mobile only: Social proof banner (below image) */}
+            <div className="order-3 lg:hidden flex items-center justify-between gap-4 py-3 px-4 rounded-xl bg-black/40 border border-white/5 flex-shrink-0">
+              <div className="flex -space-x-3">
+                {[
+                  { src: '/media/christopher.avif', alt: 'Christopher' },
+                  { src: '/media/arman%20vestad.webp', alt: 'Arman' },
+                  { src: '/media/ali.PNG', alt: 'Ali' },
+                ].map((img, i) => (
+                  <div key={i} className="w-9 h-9 rounded-full border-2 border-[#050505] bg-gray-600 overflow-hidden">
+                    <img src={img.src} alt={img.alt} className="w-full h-full object-cover" />
+                  </div>
+                ))}
+              </div>
+              <div className="flex flex-col items-center">
+                <div className="flex gap-0.5 text-[#FF5B00]">
+                  {[...Array(5)].map((_, i) => (
+                    <Star key={i} size={14} fill="#FF5B00" strokeWidth={0} />
+                  ))}
+                </div>
+                <div className="font-semibold text-white text-sm whitespace-nowrap">10+ fornøyde kunder</div>
+              </div>
+              <div className="flex-shrink-0">
+                <svg width="24" height="24" viewBox="0 0 256 262" aria-hidden="true">
+                  <path fill="#4285F4" d="M255.9 133.5c0-10.7-.9-18.5-2.9-26.6H130.6v48.4h72.9c-1.5 12-9.6 30.2-27.5 42.3l-.3 1.6 38.7 30 2.7.3c25.1-23.2 39.8-57.3 39.8-96.3"/>
+                  <path fill="#34A853" d="M130.6 261.1c35.2 0 64.8-11.6 86.4-31.6l-41.2-31.9c-11 7.7-25.9 13.1-45.2 13.1-34.5 0-63.7-23.2-74.1-55.2l-1.5.1-40.2 31.2-.5 1.4c21.5 42.7 65.7 72.9 116.3 72.9"/>
+                  <path fill="#FBBC05" d="M56.5 155.5c-2.7-8-4.2-16.6-4.2-25.5s1.5-17.5 4.1-25.5l-.1-1.7-40.7-31.7-1.3.6C5.5 89.6 0 109.4 0 130c0 20.5 5.5 40.4 14.3 58.2l42.2-32.7"/>
+                  <path fill="#EB4335" d="M130.6 49.3c24.4 0 40.8 10.5 50.2 19.3l36.7-35.8C195.3 11.6 165.8 0 130.6 0 80 0 35.8 30.2 14.3 71.8l42.1 32.7c10.5-32 39.6-55.2 74.2-55.2"/>
+                </svg>
+              </div>
+            </div>
+
+            {/* Mobile only: CTA below social proof */}
+            <div className="order-4 lg:hidden">
+              <Link to="/booking" className="w-full bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium hover:bg-white hover:text-black transition-colors flex items-center justify-center gap-2 text-lg">
+                Book et møte <ArrowRight size={20} />
+              </Link>
+            </div>
           </div>
         </div>
 
-        {/* Partners Scroll */}
-        <div className="w-full py-8 border-t border-white/5 bg-white/5 relative z-10 overflow-hidden">
+        {/* Partners Scroll - hidden on mobile to keep hero 100vh */}
+        <div className="hidden md:block w-full py-8 border-t border-white/5 bg-white/5 relative z-10 overflow-hidden">
           <div className="flex w-full opacity-50 grayscale">
             <div className="flex animate-marquee gap-8 md:gap-16 flex-shrink-0 items-center pr-8 md:pr-16">
               {[...partners, ...partners, ...partners].map((partner, i) => (
@@ -240,7 +284,8 @@ export const WebDevelopment = () => {
           className="mb-12 md:mb-16 flex flex-col sm:flex-row sm:items-end justify-between gap-6"
         >
           <div className="text-left">
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4">Case Studies</h2>
+            <h2 className="text-[#FF5B00] text-3xl md:text-5xl font-serif italic font-bold mb-2">resultater</h2>
+            <h3 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4">Case Studies</h3>
             <p className="text-lg md:text-xl text-white/60 font-light max-w-2xl">Se hvordan vi har hjulpet bedrifter med å transformere sin digitale tilstedeværelse.</p>
           </div>
           <Link to="/clients" className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-3 rounded-full border border-white/20 text-white hover:bg-white/10 transition-colors whitespace-nowrap">
