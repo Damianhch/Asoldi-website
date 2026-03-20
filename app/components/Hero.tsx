@@ -84,8 +84,8 @@ export const Hero = () => {
             </motion.div>
           </div>
 
-          {/* Right Column - Stats (never shown on hero) */}
-          <div className="hidden">
+          {/* Right Column - Stats (on desktop: hero; on mobile: below fold, visible when scrolling) */}
+          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
             {/* Stat 1 */}
             <motion.div 
               initial={{ opacity: 0, x: 20 }}

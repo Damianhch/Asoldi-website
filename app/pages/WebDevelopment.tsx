@@ -72,20 +72,20 @@ export const WebDevelopment = () => {
   const caseStudies = [clientCases[2], clientCases[3], clientCases[4]];
 
   const webServices = [
-    { title: 'Nettside utvikling', desc: 'Lager selve nettsiden med ønskede tjenester og tillegg, raskt, gunstig pris, og fantastisk kvalitet.', icon: Code2 },
-    { title: 'Nettside hosting', desc: 'Holder nettsiden online, viktig for de med Ecommerce behov samt avlaster ansvaret for de bedriftene som har lyst på en mer "hands off" opplevelse.', icon: Server },
-    { title: 'Opprettholdelse', desc: 'Oppdateringer, bilde-oppdateringer, og andre lav investerende endringer i nettsiden inngår i dette. Hvis dette og hosting er noe kunden har lyst på.', icon: Settings },
-    { title: 'Nettside migrasjon', desc: 'Vi overfører en gammel eller ny nettside til en valgfri hosting tjeneste for kunden, samt kan skifte domene hvis ønskelig.', icon: ArrowRightLeft },
-    { title: 'Nettside redesign', desc: 'Har bedriften en nettside fra før av kan vi redesigne den med nye funksjoner i allerede eksisterende CMS (WordPress, Shopify, Wix etc).', icon: Palette },
-    { title: 'Copywriting', desc: 'Dette er teksten som står på nettsiden: optimalisert til å få kunden til å kjøpe, samt Google til å ranke – all tekst er intensjonell og forteller en historie.', icon: FileText },
-    { title: 'SEO / Google Maps ranking', desc: 'En av de største fordelene med å ha en nettside er å ranke høyt på Google/Google Maps. For de som vil ha mer organisk trafikk fra spesifikke søkeord som "restaurant i Trondheim", "frisørsalong i Trondheim" etc.', icon: Search },
-    { title: 'Nettside analystikk', desc: 'Lar bedriften se hvor lenge hver kunde er på nettsiden, view count og generell statistikk – viktig for de med høye besøkstall og generelt alle.', icon: BarChart3 },
-    { title: 'Email markedsføring', desc: 'Funksjon som lar bedriften samle e-post og kontakt informasjon til kunder og er høyt verdsatt av nettbutikker.', icon: Mail },
-    { title: 'Ecommerce', desc: 'Lar bedriften selge ting på nettsiden, og lar kundene lage kontoer (samle inn info). Passer bra med email marketing.', icon: ShoppingCart },
-    { title: 'Multi-språklig', desc: 'Lar nettsiden være på flere språk enn bare 1 – perfekt for bedrifter som har flerspråklige kunder og vil appellere til flere.', icon: Languages },
-    { title: 'Blog integrering', desc: 'Lar kunden skrive blogginnlegg som automatisk blir posted til nettsiden – øker SEO og Google Maps ranking, samt forsterker posisjon i markedet.', icon: BookOpen },
-    { title: 'Booking og kontakt skjema', desc: 'Lar kunden sende en melding eller bestille. Et billigere alternativ til ecommerce – for de som "bare vil ha en simpel nettside".', icon: Calendar },
-    { title: 'Business info sync', desc: 'Lar reviews, åpningstider, samt sosiale medier vises i sanntid i nettsiden. Øker konvertering og social proof.', icon: RefreshCw },
+    { title: 'Nettside utvikling', desc: 'Skreddersydde nettsider som konverterer – raskt, gunstig og med kvalitet som skiller seg ut.', icon: Code2 },
+    { title: 'Nettside hosting', desc: 'Din nettside alltid live og sikker. Perfekt for e-handel og de som vil ha en «hands off» løsning.', icon: Server },
+    { title: 'Opprettholdelse', desc: 'Oppdateringer og små endringer uten stort opplegg. Holder nettsiden din fersk og relevant.', icon: Settings },
+    { title: 'Nettside migrasjon', desc: 'Sømløs overføring til ny hosting eller domene. Vi tar oss av alt – du fokuserer på driften.', icon: ArrowRightLeft },
+    { title: 'Nettside redesign', desc: 'Gi eksisterende nettside nytt liv. Nye funksjoner i WordPress, Shopify eller Wix – uten å starte fra scratch.', icon: Palette },
+    { title: 'Copywriting', desc: 'Tekst som selger og rangerer. Hvert ord er skrevet for å konvertere besøkende til kunder.', icon: FileText },
+    { title: 'SEO / Google Maps ranking', desc: 'Topp-plassering på Google og Maps. Mer organisk trafikk fra lokale søk – flere kunder uten annonser.', icon: Search },
+    { title: 'Nettside analystikk', desc: 'Se nøyaktig hvordan besøkende bruker nettsiden. Data som styrer beslutninger og øker salget.', icon: BarChart3 },
+    { title: 'Email markedsføring', desc: 'Bygg en lojal kundebase. Samle e-poster og send kampanjer som konverterer – særlig viktig for nettbutikker.', icon: Mail },
+    { title: 'Ecommerce', desc: 'Selg direkte på nettsiden. Kundekontoer, betaling og lager – alt du trenger for å skalere salget.', icon: ShoppingCart },
+    { title: 'Multi-språklig', desc: 'Nå flerspråklige kunder. Perfekt for bedrifter som vil vokse utover det norske markedet.', icon: Languages },
+    { title: 'Blog integrering', desc: 'Automatiske blogginnlegg som styrker SEO og posisjon. Bygg autoritet og dra mer organisk trafikk.', icon: BookOpen },
+    { title: 'Booking og kontakt skjema', desc: 'La kunder bestille og sende henvendelser enkelt. Ideelt for tjenester som ikke trenger full e-handel.', icon: Calendar },
+    { title: 'Business info sync', desc: 'Reviews, åpningstider og sosiale medier i sanntid. Øk tillit og konvertering med ekte social proof.', icon: RefreshCw },
   ];
 
   const processSteps = [
@@ -248,15 +248,13 @@ export const WebDevelopment = () => {
                   key={i}
                   className="p-6 md:p-8 border-b border-r border-white/10 group hover:bg-white/5 transition-colors"
                 >
-                  <div className="flex gap-4">
+                  <div className="flex items-center gap-3 mb-3">
                     <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center group-hover:bg-[#FF5B00]/20 transition-colors">
                       <Icon size={20} className="text-white/60 group-hover:text-[#FF5B00] transition-colors" strokeWidth={1.5} />
                     </div>
-                    <div className="min-w-0">
-                      <h3 className="text-lg font-medium text-white mb-2">{s.title}</h3>
-                      <p className="text-sm text-white/60 font-light leading-relaxed">{s.desc}</p>
-                    </div>
+                    <h3 className="text-lg font-medium text-white">{s.title}</h3>
                   </div>
+                  <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
                 </div>
               );
             })}
@@ -272,13 +270,13 @@ export const WebDevelopment = () => {
                     key={i}
                     className="w-[calc(100vw-3rem)] flex-shrink-0 snap-center p-6 rounded-2xl border border-white/10 bg-white/5"
                   >
-                    <div className="flex gap-4 mb-4">
+                    <div className="flex items-center gap-3 mb-3">
                       <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-[#FF5B00]/20 flex items-center justify-center">
                         <Icon size={24} className="text-[#FF5B00]" strokeWidth={1.5} />
                       </div>
                       <h3 className="text-xl font-medium text-white">{s.title}</h3>
                     </div>
-                    <p className="text-sm text-white/60 font-light leading-relaxed">{s.desc}</p>
+                    <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
                   </div>
                 );
               })}
