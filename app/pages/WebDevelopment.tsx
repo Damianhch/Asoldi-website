@@ -231,63 +231,14 @@ export const WebDevelopment = () => {
         </div>
       </section>
 
-      {/* Våre tjenester - 14 services grid */}
-      <section className="py-16 md:py-24 bg-[#050505]">
-        <div className="max-w-7xl mx-auto px-6 md:px-10">
-          <div className="mb-12 md:mb-16">
-            <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-2 tracking-tight">Våre tjenester</h2>
-            <p className="text-lg md:text-xl text-white/60 font-light">14 tjenester</p>
-          </div>
-
-          {/* Desktop: 4-column grid with dividers */}
-          <div className="hidden md:grid md:grid-cols-4 border-t border-l border-white/10">
-            {webServices.map((s, i) => {
-              const Icon = s.icon;
-              return (
-                <div
-                  key={i}
-                  className="p-6 md:p-8 border-b border-r border-white/10 group hover:bg-white/5 transition-colors"
-                >
-                  <div className="flex items-center gap-3 mb-3">
-                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center group-hover:bg-[#FF5B00]/20 transition-colors">
-                      <Icon size={20} className="text-white/60 group-hover:text-[#FF5B00] transition-colors" strokeWidth={1.5} />
-                    </div>
-                    <h3 className="text-lg font-medium text-white">{s.title}</h3>
-                  </div>
-                  <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Mobile: scroll wheel - 1 item at a time */}
-          <div className="md:hidden overflow-x-auto snap-x snap-mandatory scroll-smooth -mx-6 px-6 pb-4">
-            <div className="flex gap-4" style={{ width: 'max-content' }}>
-              {webServices.map((s, i) => {
-                const Icon = s.icon;
-                return (
-                  <div
-                    key={i}
-                    className="w-[calc(100vw-3rem)] flex-shrink-0 snap-center p-6 rounded-2xl border border-white/10 bg-white/5"
-                  >
-                    <div className="flex items-center gap-3 mb-3">
-                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-[#FF5B00]/20 flex items-center justify-center">
-                        <Icon size={24} className="text-[#FF5B00]" strokeWidth={1.5} />
-                      </div>
-                      <h3 className="text-xl font-medium text-white">{s.title}</h3>
-                    </div>
-                    <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      </section>
-
       {/* Case Studies */}
       <section className="py-16 md:py-24 max-w-7xl mx-auto px-6 md:px-10">
-        <div className="mb-12 md:mb-16 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          className="mb-12 md:mb-16 flex flex-col sm:flex-row sm:items-end justify-between gap-6"
+        >
           <div className="text-left">
             <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4">Case Studies</h2>
             <p className="text-lg md:text-xl text-white/60 font-light max-w-2xl">Se hvordan vi har hjulpet bedrifter med å transformere sin digitale tilstedeværelse.</p>
@@ -295,11 +246,18 @@ export const WebDevelopment = () => {
           <Link to="/clients" className="w-full sm:w-auto inline-flex items-center justify-center px-8 py-3 rounded-full border border-white/20 text-white hover:bg-white/10 transition-colors whitespace-nowrap">
             Se alle
           </Link>
-        </div>
+        </motion.div>
         
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-8">
           {caseStudies.map((study, i) => (
-            <Link to={`/clients#${study.slug}`} key={i} className="group block">
+            <motion.div
+              key={i}
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true }}
+              transition={{ delay: i * 0.1 }}
+            >
+            <Link to={`/clients#${study.slug}`} className="group block">
               <div className="aspect-[4/3] rounded-2xl overflow-hidden mb-6 relative">
                 <div className="absolute inset-0 bg-black/20 group-hover:bg-transparent transition-colors z-10" />
                 <img 
@@ -314,6 +272,7 @@ export const WebDevelopment = () => {
                 <ArrowRight className="opacity-0 -translate-x-4 group-hover:opacity-100 group-hover:translate-x-0 transition-all" />
               </h3>
             </Link>
+            </motion.div>
           ))}
         </div>
       </section>
@@ -339,8 +298,12 @@ export const WebDevelopment = () => {
                 image: '/media/Design-uten-navn6.webp',
               },
             ].map((item, i) => (
-              <div
+              <motion.div
                 key={i}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: i * 0.1 }}
                 className={`flex flex-col md:flex-row items-center gap-8 md:gap-16 ${i % 2 === 1 ? 'md:flex-row-reverse' : ''}`}
               >
                 <div className="w-full md:w-1/2 text-center md:text-left">
@@ -360,9 +323,77 @@ export const WebDevelopment = () => {
                     />
                   </div>
                 </div>
-              </div>
+              </motion.div>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Våre tjenester - 14 services grid */}
+      <section className="py-16 md:py-24 bg-[#050505]">
+        <div className="max-w-7xl mx-auto px-6 md:px-10">
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="mb-12 md:mb-16"
+          >
+            <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-2 tracking-tight">Våre tjenester</h2>
+            <p className="text-lg md:text-xl text-white/60 font-light">14 tjenester</p>
+          </motion.div>
+
+          {/* Desktop: 4-column grid with dividers */}
+          <div className="hidden md:grid md:grid-cols-4 border-t border-l border-white/10">
+            {webServices.map((s, i) => {
+              const Icon = s.icon;
+              return (
+                <motion.div
+                  key={i}
+                  initial={{ opacity: 0, y: 20 }}
+                  whileInView={{ opacity: 1, y: 0 }}
+                  viewport={{ once: true }}
+                  transition={{ delay: Math.floor(i / 4) * 0.05 + (i % 4) * 0.03 }}
+                  className="p-6 md:p-8 border-b border-r border-white/10 group hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="flex-shrink-0 w-10 h-10 rounded-lg bg-white/5 flex items-center justify-center group-hover:bg-[#FF5B00]/20 transition-colors">
+                      <Icon size={20} className="text-white/60 group-hover:text-[#FF5B00] transition-colors" strokeWidth={1.5} />
+                    </div>
+                    <h3 className="text-lg font-medium text-white">{s.title}</h3>
+                  </div>
+                  <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
+                </motion.div>
+              );
+            })}
+          </div>
+
+          {/* Mobile: scroll wheel - 1 item at a time */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            className="md:hidden overflow-x-auto snap-x snap-mandatory scroll-smooth -mx-6 px-6 pb-4"
+          >
+            <div className="flex gap-4" style={{ width: 'max-content' }}>
+              {webServices.map((s, i) => {
+                const Icon = s.icon;
+                return (
+                  <div
+                    key={i}
+                    className="w-[calc(100vw-3rem)] flex-shrink-0 snap-center p-6 rounded-2xl border border-white/10 bg-white/5"
+                  >
+                    <div className="flex items-center gap-3 mb-3">
+                      <div className="flex-shrink-0 w-12 h-12 rounded-lg bg-[#FF5B00]/20 flex items-center justify-center">
+                        <Icon size={24} className="text-[#FF5B00]" strokeWidth={1.5} />
+                      </div>
+                      <h3 className="text-xl font-medium text-white">{s.title}</h3>
+                    </div>
+                    <p className="text-sm text-white/60 font-light leading-relaxed w-full">{s.desc}</p>
+                  </div>
+                );
+              })}
+            </div>
+          </motion.div>
         </div>
       </section>
 
