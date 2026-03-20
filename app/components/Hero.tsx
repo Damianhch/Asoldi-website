@@ -12,7 +12,7 @@ export const Hero = () => {
   ];
 
   return (
-    <section id="Home" className="relative pt-20 pb-10 md:pt-32 md:pb-20 px-6 md:px-10 overflow-hidden bg-[#050505] min-h-[100dvh] lg:min-h-0 flex flex-col justify-center">
+    <section id="Home" className="relative pt-20 pb-10 md:pt-32 md:pb-20 px-6 md:px-10 overflow-hidden bg-[#050505] h-[100dvh] lg:h-auto lg:min-h-0 flex flex-col justify-center">
       {/* Decorative Line SVG */}
       <div className="absolute inset-0 w-full h-full pointer-events-none z-0">
         <svg width="100%" height="100%" viewBox="0 0 1440 800" fill="none" xmlns="http://www.w3.org/2000/svg" className="absolute top-0 left-0 w-full h-full opacity-30">
@@ -65,7 +65,7 @@ export const Hero = () => {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8 }}
-              className="relative w-full max-w-[220px] md:max-w-[400px] aspect-[5/6] md:aspect-[3/4] rounded-t-[24px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
+              className="relative w-full max-w-[240px] md:max-w-[400px] aspect-[5/5] md:aspect-[3/4] rounded-t-[24px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
             >
               <img 
                 src="/media/asoldi%20capture%202.PNG"
@@ -73,7 +73,44 @@ export const Hero = () => {
                 className="w-full h-full object-cover object-center"
               />
             </motion.div>
-            {/* CTA - mobile only, under image */}
+            {/* Social proof - mobile only, between image and CTA (1:1 copy of the bar) */}
+            <a
+              href="https://www.google.com/maps/place//data=!4m7!3m6!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1"
+              target="_blank"
+              rel="noreferrer"
+              className="lg:hidden flex items-center justify-center gap-3 hover:opacity-95 transition-opacity"
+            >
+              <div className="flex -space-x-2">
+                <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
+                  <img src="/media/christopher.avif" alt="Christopher" className="w-full h-full object-cover" />
+                </div>
+                <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
+                  <img src="/media/arman%20vestad.webp" alt="Arman" className="w-full h-full object-cover" />
+                </div>
+                <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
+                  <img src="/media/ali.PNG" alt="Ali" className="w-full h-full object-cover" />
+                </div>
+              </div>
+              <div className="flex flex-col">
+                <div className="flex items-center gap-2">
+                  <div className="flex gap-1 text-[#FF5B00]">
+                    {[...Array(5)].map((_, i) => (
+                      <Star key={i} size={12} fill="#FF5B00" strokeWidth={0} />
+                    ))}
+                  </div>
+                </div>
+                <div className="text-white font-semibold text-sm leading-tight mt-1">
+                  10+ fornøyde kunder
+                </div>
+              </div>
+              <svg width="26" height="26" viewBox="0 0 256 262" aria-hidden="true">
+                <path fill="#4285F4" d="M255.9 133.5c0-10.7-.9-18.5-2.9-26.6H130.6v48.4h72.9c-1.5 12-9.6 30.2-27.5 42.3l-.3 1.6 38.7 30 2.7.3c25.1-23.2 39.8-57.3 39.8-96.3"/>
+                <path fill="#34A853" d="M130.6 261.1c35.2 0 64.8-11.6 86.4-31.6l-41.2-31.9c-11 7.7-25.9 13.1-45.2 13.1-34.5 0-63.7-23.2-74.1-55.2l-1.5.1-40.2 31.2-.5 1.4c21.5 42.7 65.7 72.9 116.3 72.9"/>
+                <path fill="#FBBC05" d="M56.5 155.5c-2.7-8-4.2-16.6-4.2-25.5s1.5-17.5 4.1-25.5l-.1-1.7-40.7-31.7-1.3.6C5.5 89.6 0 109.4 0 130c0 20.5 5.5 40.4 14.3 58.2l42.2-32.7"/>
+                <path fill="#EB4335" d="M130.6 49.3c24.4 0 40.8 10.5 50.2 19.3l36.7-35.8C195.3 11.6 165.8 0 130.6 0 80 0 35.8 30.2 14.3 71.8l42.1 32.7c10.5-32 39.6-55.2 74.2-55.2"/>
+              </svg>
+            </a>
+            {/* CTA - mobile only, under social proof */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -84,63 +121,24 @@ export const Hero = () => {
             </motion.div>
           </div>
 
-          {/* Right Column - Stats (on desktop: hero; on mobile: below fold, visible when scrolling) */}
-          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
-            {/* Stat 1 */}
+          {/* Right Column - Stats (desktop only; mobile: social proof moved to middle) */}
+          <div className="hidden lg:flex lg:col-span-3 lg:col-start-10 flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
+            {/* Resultater - replaces social proof, styled like nr 1 */}
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ duration: 0.8, delay: 0.2 }}
               className="flex flex-col gap-2 md:gap-3"
             >
-              <a
-                href="https://www.google.com/maps/place//data=!4m7!3m6!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1"
-                target="_blank"
-                rel="noreferrer"
-                className="relative block hover:opacity-95 transition-opacity"
-              >
-                <div className="relative flex items-center justify-center md:justify-start gap-3">
-                  <div className="flex -space-x-2">
-                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
-                      <img src="/media/christopher.avif" alt="Christopher" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
-                      <img src="/media/arman%20vestad.webp" alt="Arman" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="w-8 h-8 rounded-full bg-gray-700 overflow-hidden">
-                      <img src="/media/ali.PNG" alt="Ali" className="w-full h-full object-cover" />
-                    </div>
-                  </div>
-                  <div className="flex flex-col">
-                    <div className="flex items-center gap-2">
-                      <div className="flex gap-1 text-[#FF5B00]">
-                        {[...Array(5)].map((_, i) => (
-                          <Star key={i} size={12} fill="#FF5B00" strokeWidth={0} />
-                        ))}
-                      </div>
-                    </div>
-                    <div className="text-white font-semibold text-sm leading-tight mt-1">
-                      10+ fornøyde kunder
-                    </div>
-                  </div>
-                  <div className="ml-auto">
-                    <svg width="26" height="26" viewBox="0 0 256 262" aria-hidden="true">
-                      <path fill="#4285F4" d="M255.9 133.5c0-10.7-.9-18.5-2.9-26.6H130.6v48.4h72.9c-1.5 12-9.6 30.2-27.5 42.3l-.3 1.6 38.7 30 2.7.3c25.1-23.2 39.8-57.3 39.8-96.3"/>
-                      <path fill="#34A853" d="M130.6 261.1c35.2 0 64.8-11.6 86.4-31.6l-41.2-31.9c-11 7.7-25.9 13.1-45.2 13.1-34.5 0-63.7-23.2-74.1-55.2l-1.5.1-40.2 31.2-.5 1.4c21.5 42.7 65.7 72.9 116.3 72.9"/>
-                      <path fill="#FBBC05" d="M56.5 155.5c-2.7-8-4.2-16.6-4.2-25.5s1.5-17.5 4.1-25.5l-.1-1.7-40.7-31.7-1.3.6C5.5 89.6 0 109.4 0 130c0 20.5 5.5 40.4 14.3 58.2l42.2-32.7"/>
-                      <path fill="#EB4335" d="M130.6 49.3c24.4 0 40.8 10.5 50.2 19.3l36.7-35.8C195.3 11.6 165.8 0 130.6 0 80 0 35.8 30.2 14.3 71.8l42.1 32.7c10.5-32 39.6-55.2 74.2-55.2"/>
-                    </svg>
-                  </div>
-                </div>
-
-                {/* Title + text: match bottom card sizing */}
-                <div className="mt-3 md:mt-4">
-                  <h5 className="text-xl md:text-3xl text-white font-serif italic font-normal mb-1 md:mb-2">100% fornøyd garanti</h5>
-                  <p className="text-gray-400 text-xs md:text-sm leading-relaxed max-w-[260px] mx-auto md:mx-0">
-                    Vi leverer resultater som skaper ekte verdi for våre kunder.
-                  </p>
-                </div>
-              </a>
+              <div>
+                <span className="text-[#FF5B00] text-3xl md:text-5xl font-serif italic font-bold">100%</span>
+              </div>
+              <div>
+                <h5 className="text-xl md:text-3xl text-white font-serif italic font-normal mb-1 md:mb-2">fornøyd garanti</h5>
+                <p className="text-gray-400 text-xs md:text-sm leading-relaxed max-w-[260px] mx-auto md:mx-0">
+                  Vi leverer resultater som skaper ekte verdi for våre kunder.
+                </p>
+              </div>
             </motion.div>
 
             {/* Stat 2 */}
