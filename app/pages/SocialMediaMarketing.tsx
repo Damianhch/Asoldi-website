@@ -247,6 +247,58 @@ export const SocialMediaMarketing = () => {
         </div>
       </section>
 
+      {/* Features: Facebook/Instagram, statistics, AI */}
+      <section className="py-16 md:py-24 bg-[#050505]">
+        <div className="max-w-7xl mx-auto px-6 md:px-10">
+          <div className="space-y-20 md:space-y-28">
+            {[
+              {
+                title: 'Facebook og instagram fokusert',
+                description: 'Vi spesialiserer oss på Facebook og Instagram, og sikrer at kampanjene dine er optimalisert for plattformene som betyr mest. Pga vår sterke forståelse av disse nettverkene gjør at vi kan målrette målgruppen din nøyaktig og levere innhold som driver engasjement og vekst.',
+                image: '/media/responsible-social-media-usage-447e3a-1024.jpg',
+              },
+              {
+                title: 'statistisk optimaliserte strategier',
+                description: 'Fra rekkevidde og engasjement til konverteringer sporer vi beregningene som betyr mest, og avgrenser kontinuerlig kampanjer for å oppnå målbare resultater. Vi fokuserer på det som driver vekst for din virksomhet.',
+                image: '/media/a-photo-of-a-laptop-screen-displaying-social-media-9UsF0TtySQOhlGIr-pYabA-WDNK0dcQQL6EbuWshLeu-A.jpeg',
+              },
+              {
+                title: 'AI forsterket innholdsproduksjon',
+                description: 'Ved å utnytte den nyeste AI-teknologien lager vi personlig tilpasset innhold av høy kvalitet. Dette betyr raskere behandlingstider, smartere innholdsanbefalinger og innlegg som faller i smak hos publikummet ditt. Med AI holder vi oss i forkant av trender og holder merkevaren din relevant og effektfull.',
+                image: '/media/b5a511e2-c81f-4fa2-8d69-8fd815bd268a.webp',
+              },
+            ].map((item, i) => (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ delay: i * 0.1 }}
+                className={`flex flex-col md:flex-row items-center gap-8 md:gap-16 ${i % 2 === 1 ? 'md:flex-row-reverse' : ''}`}
+              >
+                <div className="w-full md:w-1/2 text-center md:text-left">
+                  <h2 className="text-3xl md:text-4xl lg:text-5xl font-medium text-white mb-4 md:mb-6 tracking-tight">
+                    {item.title}
+                  </h2>
+                  <p className="text-base md:text-lg text-white/60 font-light leading-relaxed">
+                    {item.description}
+                  </p>
+                </div>
+                <div className="w-full md:w-1/2">
+                  <div className="rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
+                    <img
+                      src={item.image}
+                      alt={item.title}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                </div>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {/* 3-Step Process */}
       <section ref={processRef} className="py-16 md:py-24 bg-[#050505] relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-6 md:px-10">
