@@ -20,8 +20,8 @@ export const Hero = () => {
         </svg>
       </div>
 
-      <div className="max-w-[1440px] mx-auto relative z-10 flex-1 flex flex-col justify-center">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-12 items-center">
+      <div className="max-w-[1440px] mx-auto relative z-10 flex-1 flex flex-col">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-12 items-center min-h-[calc(100dvh-7rem)] lg:min-h-0">
           
           {/* Left Column - Text & Services (no CTA on mobile) */}
           <div className="lg:col-span-5 flex flex-col justify-center items-center text-center md:items-start md:text-left">
@@ -65,7 +65,7 @@ export const Hero = () => {
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8 }}
-              className="relative w-full max-w-[280px] md:max-w-[400px] aspect-[4/3] md:aspect-[3/4] rounded-t-[120px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
+              className="relative w-full max-w-[280px] md:max-w-[400px] aspect-[5/4] md:aspect-[3/4] rounded-t-[120px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
             >
               <img 
                 src="/media/asoldi%20capture%202.PNG"
@@ -125,7 +125,7 @@ export const Hero = () => {
           </div>
 
           {/* Right Column - Stats (on desktop: hero; on mobile: below fold, visible when scrolling) */}
-          <div className="lg:col-span-3 lg:col-start-10 flex flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
+          <div className="hidden lg:flex lg:col-span-3 lg:col-start-10 flex-col gap-6 md:gap-12 pl-0 md:pl-8 items-center text-center md:items-start md:text-left">
             {/* Stat 1 */}
             <motion.div 
               initial={{ opacity: 0, x: 20 }}
@@ -172,10 +172,6 @@ export const Hero = () => {
                     </svg>
                   </div>
                 </div>
-                <div className="lg:hidden mt-1 mb-1">
-                  <span className="text-[#FF5B00] text-3xl font-serif italic font-bold">resultater</span>
-                </div>
-
                 {/* Title + text: match bottom card sizing */}
                 <div className="mt-3 md:mt-4">
                   <h5 className="text-xl md:text-3xl text-white font-serif italic font-normal mb-1 md:mb-2">100% fornøyd garanti</h5>
@@ -205,6 +201,50 @@ export const Hero = () => {
             </motion.div>
           </div>
 
+        </div>
+
+        {/* Mobile stats - below the fold (visible when scrolling) */}
+        <div className="lg:hidden flex flex-col gap-8 items-center text-center pt-6 pb-4">
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.8, delay: 0.2 }}
+            className="flex flex-col gap-2 md:gap-3"
+          >
+            <a
+              href="https://www.google.com/maps/place//data=!4m7!3m6!1s0x8901df3b83305551:0x8a381599611f20d1!8m2!3d63.4339857!4d10.3978324!9m1!1b1"
+              target="_blank"
+              rel="noreferrer"
+              className="relative block hover:opacity-95 transition-opacity"
+            >
+              <div className="mt-1 mb-1">
+                <span className="text-[#FF5B00] text-3xl font-serif italic font-bold">resultater</span>
+              </div>
+              <div className="mt-3">
+                <h5 className="text-xl text-white font-serif italic font-normal mb-1">100% fornøyd garanti</h5>
+                <p className="text-gray-400 text-xs leading-relaxed max-w-[260px] mx-auto">
+                  Vi leverer resultater som skaper ekte verdi for våre kunder.
+                </p>
+              </div>
+            </a>
+          </motion.div>
+
+          <motion.div
+            initial={{ opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.8, delay: 0.3 }}
+            className="flex flex-col gap-2 md:gap-3"
+          >
+            <div>
+              <span className="text-[#FF5B00] text-3xl font-serif italic font-bold">nr 1</span>
+            </div>
+            <div>
+              <h5 className="text-xl text-white font-serif italic font-normal mb-1">Rank på google</h5>
+              <p className="text-gray-400 text-xs leading-relaxed max-w-[200px] mx-auto">
+                Få flere kunder ved å ranke høyere på google maps.
+              </p>
+            </div>
+          </motion.div>
         </div>
       </div>
     </section>
