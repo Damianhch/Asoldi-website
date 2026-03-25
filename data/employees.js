@@ -1,13 +1,10 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const EMPLOYEES_PATH = join(DATA_DIR, 'employees-dashboard.json');
+const EMPLOYEES_PATH = getDataFilePath('employees-dashboard.json');
 
 function ensureDataDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  ensurePersistentDataDir();
 }
 
 function readEmployeesFile() {

@@ -1,17 +1,14 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import bcrypt from 'bcryptjs';
+import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const USERS_PATH = join(DATA_DIR, 'users.json');
-const ADMIN_PATH = join(DATA_DIR, 'admin.json');
+const USERS_PATH = getDataFilePath('users.json');
+const ADMIN_PATH = getDataFilePath('admin.json');
 
 const SALT_ROUNDS = 12;
 
 function ensureDataDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  ensurePersistentDataDir();
 }
 
 function readUsers() {
@@ -146,24 +143,3 @@ export async function verifyEmployee(username, password) {
   return { ok: true, user: { id: user.id, username: user.username, role } };
 }
 
-/** Seed employee users for ansatt login if they don't exist. Username = email, password = FirstNamePassword. */
-const EMPLOYEE_SEED = [
-  { username: 'jonatanhetland@gmail.com', password: 'JonatanPassword' },
-  { username: 'zo.sliwinska@gmail.com', password: 'ZofiaPassword' },
-  { username: 'bjorn.skalle@sogn.no', password: 'BjørnPassword' },
-  { username: 'helenedortheaselle@gmail.com', password: 'HelenePassword' },
-  { username: 'daracha777@gmail.com', password: 'DamianPassword' },
-];
-
-export async function ensureEmployeeUsers() {
-  for (const { username, password } of EMPLOYEE_SEED) {
-    const existing = await getUserByUsername(username);
-    if (!existing) {
-      await createUser(username, password, 'employee');
-    } else {
-      if (normalizeRole(existing.role) !== 'employee') {
-        await updateUserRole(existing.id, 'employee');
-      }
-    }
-  }
-}

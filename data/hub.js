@@ -1,14 +1,11 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
-import { fileURLToPath } from 'url';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { randomBytes } from 'crypto';
+import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, '..', 'data');
-const SITES_PATH = join(DATA_DIR, 'sites.json');
+const SITES_PATH = getDataFilePath('sites.json');
 
 function ensureDataDir() {
-  if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
+  ensurePersistentDataDir();
 }
 
 function readSites() {

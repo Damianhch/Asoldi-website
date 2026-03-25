@@ -544,7 +544,6 @@ function ensureHubDefaultSite() {
 
 async function ensureData() {
   await ensureAdminExists();
-  await store.ensureEmployeeUsers();
   employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
 }

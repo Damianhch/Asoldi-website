@@ -11,3 +11,4 @@ data/users.json
 data/admin.json
 data/sites.json
 data/reset-tokens.json
+.builds/data/

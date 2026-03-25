@@ -13,7 +13,7 @@ Set these in production (e.g. Hostinger env or `.env`):
 - `ADMIN_PASSWORD` – admin password (default above; **must** change in production)
 - `ADMIN_SECRET` – secret used to sign admin JWT tokens (**set a long random string in production**)
 
-On first run, if `data/admin.json` does not exist, the server creates the default admin. After that, change the password via **Admin → “Change my password”** in the sidebar.
+On first run, if the admin data file does not exist yet, the server creates the default admin. Runtime data is stored outside the git-tracked app files by default, under `.builds/data` on the server, or in `APP_DATA_DIR` if you override it. After first login, change the password via **Admin → “Change my password”** in the sidebar.
 
 ## Users (employees)
 
@@ -90,4 +90,4 @@ Then point the “Glemt passord?” page to a form that calls these two endpoint
 
 If you use kontakt@asoldi.com (or any other domain), configure that address in your host or email provider (Hostinger, etc.) and use the same credentials in `SMTP_USER` / `SMTP_PASS`. The “from” in `sendMail` should match the domain to avoid spam issues.
 
-This setup is reusable: same admin and user store can be used on other projects; deploy with the same `data/` and env and use `yourdomain.com/admin` for each.
+This setup is reusable: same admin and user store can be used on other projects; deploy with the same persistent app data directory and env and use `yourdomain.com/admin` for each.
