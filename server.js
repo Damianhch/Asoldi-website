@@ -5,8 +5,12 @@ import { dirname, join } from 'path';
 import { existsSync } from 'fs';
 import * as store from './data/store.js';
 import * as hub from './data/hub.js';
+import * as employees from './data/employees.js';
 import * as resetTokens from './data/reset-tokens.js';
 import * as emailLib from './lib/email.js';
+import * as employeeWordPress from './lib/employee-wordpress.js';
+import * as employeeLuca from './lib/employee-luca.js';
+import * as employeeMyPhoner from './lib/employee-myphoner.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -142,6 +146,195 @@ app.post('/api/admin/change-password', adminAuth, async (req, res) => {
   if (!admin) return res.status(500).json({ message: 'Admin not found' });
   await store.setAdminCredentials(admin.username, newPassword);
   res.json({ ok: true });
+});
+
+app.get('/api/admin/employees/overview', adminAuth, async (_req, res) => {
+  const users = await store.getAllUsers();
+  employees.ensureWorkersForUsers(users);
+  const workers = employees.getWorkers();
+  const wpStatus = await employeeWordPress.testWordPressConnection().catch(() => false);
+  const lucaStatus = await employeeLuca.testLucaConnection().catch(() => ({ connected: false, error: 'Unavailable' }));
+  const myphonerStatus = await employeeMyPhoner.testMyPhonerConnection().catch(() => ({ connected: false, error: 'Unavailable' }));
+  res.json({
+    success: true,
+    stats: employees.getDashboardStats(),
+    workers,
+    workersNeedingAttention: employees.getWorkersNeedingAttention(),
+    topPerformers: employees.getTopPerformers(),
+    syncState: employees.getSyncState(),
+    integrations: {
+      wordpress: { connected: !!wpStatus },
+      luca: lucaStatus,
+      myphoner: myphonerStatus,
+    },
+  });
+});
+
+app.get('/api/admin/employees/workers', adminAuth, async (_req, res) => {
+  const users = await store.getAllUsers();
+  employees.ensureWorkersForUsers(users);
+  res.json({ success: true, workers: employees.getWorkers() });
+});
+
+app.post('/api/admin/employees/workers', adminAuth, (req, res) => {
+  const { name, email, role, status, startDate, hourlyRate, commissionPerMeeting } = req.body || {};
+  if (!name || !email) {
+    return res.status(400).json({ success: false, message: 'Name and email are required' });
+  }
+  const existing = employees.getWorkerByEmail(email);
+  if (existing) {
+    return res.status(400).json({ success: false, message: 'Worker already exists' });
+  }
+  const worker = employees.createWorker({
+    name,
+    email,
+    role: role || 'caller',
+    status: status || 'active',
+    startDate: startDate || new Date().toISOString().slice(0, 10),
+    paymentInfo: {
+      hourlyRate: Number(hourlyRate || 0),
+      commissionPerMeeting: Number(commissionPerMeeting || 0),
+    },
+  });
+  res.status(201).json({ success: true, worker });
+});
+
+app.get('/api/admin/employees/workers/:id', adminAuth, (req, res) => {
+  const worker = employees.getWorkerById(req.params.id);
+  if (!worker) return res.status(404).json({ success: false, message: 'Worker not found' });
+  res.json({ success: true, worker });
+});
+
+app.put('/api/admin/employees/workers/:id', adminAuth, (req, res) => {
+  const worker = employees.updateWorker(req.params.id, req.body || {});
+  if (!worker) return res.status(404).json({ success: false, message: 'Worker not found' });
+  res.json({ success: true, worker });
+});
+
+app.delete('/api/admin/employees/workers/:id', adminAuth, (req, res) => {
+  const ok = employees.deleteWorker(req.params.id);
+  if (!ok) return res.status(404).json({ success: false, message: 'Worker not found' });
+  res.json({ success: true });
+});
+
+app.patch('/api/admin/employees/workers/:id/checklist', adminAuth, (req, res) => {
+  const { key, value } = req.body || {};
+  const worker = employees.updateChecklistItem(req.params.id, key, value);
+  if (!worker) return res.status(400).json({ success: false, message: 'Checklist update failed' });
+  res.json({ success: true, worker });
+});
+
+app.post('/api/admin/employees/workers/:id/notes', adminAuth, (req, res) => {
+  const { content } = req.body || {};
+  if (!content || !String(content).trim()) {
+    return res.status(400).json({ success: false, message: 'Note content required' });
+  }
+  const worker = employees.addNote(req.params.id, String(content).trim(), req.admin?.username || 'admin');
+  if (!worker) return res.status(404).json({ success: false, message: 'Worker not found' });
+  res.json({ success: true, worker, note: worker.notes[worker.notes.length - 1] });
+});
+
+app.patch('/api/admin/employees/workers/:id/payment', adminAuth, (req, res) => {
+  const worker = employees.updatePaymentInfo(req.params.id, req.body || {});
+  if (!worker) return res.status(404).json({ success: false, message: 'Worker not found' });
+  res.json({ success: true, worker });
+});
+
+app.get('/api/admin/employees/payments', adminAuth, (_req, res) => {
+  const workers = employees.getWorkers();
+  res.json({
+    success: true,
+    workers,
+    stats: employees.getDashboardStats(),
+    totalOwed: workers.reduce((sum, worker) => sum + Number(worker.paymentInfo?.totalOwed || 0), 0),
+  });
+});
+
+app.get('/api/admin/employees/reports', adminAuth, (_req, res) => {
+  const workers = employees.getWorkers();
+  const activeWorkers = workers.filter((worker) => worker.status === 'active');
+  const averages = {
+    calls: activeWorkers.length ? Math.round(activeWorkers.reduce((sum, worker) => sum + Number(worker.myphonerStats?.totalCalls || 0), 0) / activeWorkers.length) : 0,
+    meetings: activeWorkers.length ? Math.round(activeWorkers.reduce((sum, worker) => sum + Number(worker.myphonerStats?.meetingsBooked || 0), 0) / activeWorkers.length) : 0,
+    hours: activeWorkers.length ? Number((activeWorkers.reduce((sum, worker) => sum + Number(worker.myphonerStats?.hoursCalled || 0), 0) / activeWorkers.length).toFixed(1)) : 0,
+    conversion: activeWorkers.length ? Number((activeWorkers.reduce((sum, worker) => sum + Number(worker.myphonerStats?.conversionRate || 0), 0) / activeWorkers.length).toFixed(1)) : 0,
+  };
+  res.json({
+    success: true,
+    stats: employees.getDashboardStats(),
+    workers,
+    topPerformers: employees.getTopPerformers(3),
+    averages,
+  });
+});
+
+app.get('/api/admin/employees/income', adminAuth, async (_req, res) => {
+  const connection = await employeeLuca.testLucaConnection();
+  if (!connection.connected) {
+    return res.json({ success: false, connected: false, error: connection.error || 'Luca not connected', invoices: [], summary: null });
+  }
+  const result = await employeeLuca.getIncomeSummary();
+  if (!result.success) {
+    return res.status(500).json({ success: false, connected: true, error: result.error || 'Failed to fetch income' });
+  }
+  employees.markSync('luca', { invoices: result.invoices?.length || 0 });
+  res.json({ success: true, connected: true, invoices: result.invoices, summary: result.summary });
+});
+
+app.get('/api/admin/employees/clients', adminAuth, async (_req, res) => {
+  const result = await employeeLuca.getCustomersWithRevenue();
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error || 'Failed to fetch clients', customers: [] });
+  }
+  res.json({ success: true, customers: result.customers });
+});
+
+app.post('/api/admin/employees/sync/wordpress', adminAuth, async (_req, res) => {
+  const result = await employeeWordPress.syncWordPressEmployees();
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error || 'Failed to sync WordPress employees' });
+  }
+  let added = 0;
+  let updated = 0;
+  for (const employee of result.employees) {
+    const existing = employees.getWorkerByEmail(employee.email);
+    employees.upsertWorkerByEmail(employee);
+    if (existing) updated += 1;
+    else added += 1;
+  }
+  employees.markSync('wordpress', { total: result.employees.length, added, updated });
+  res.json({ success: true, total: result.employees.length, added, updated, workers: employees.getWorkers() });
+});
+
+app.post('/api/admin/employees/sync/myphoner', adminAuth, async (req, res) => {
+  const interval = String(req.query.interval || 'month');
+  const workers = employees.getWorkers();
+  const result = await employeeMyPhoner.syncStatsForWorkers(workers, interval);
+  if (!result.success) {
+    return res.status(500).json({ success: false, error: result.error || 'Failed to sync MyPhoner stats' });
+  }
+  const syncedWorkers = result.results.map((entry) => employees.updateMyphonerStats(entry.workerId, entry.stats)).filter(Boolean);
+  employees.markSync('myphoner', { interval, synced: syncedWorkers.length });
+  res.json({ success: true, interval, synced: syncedWorkers.length, workers: employees.getWorkers(), results: result.results });
+});
+
+app.post('/api/admin/employees/sync/luca', adminAuth, async (_req, res) => {
+  const connection = await employeeLuca.testLucaConnection();
+  if (!connection.connected) {
+    return res.status(500).json({ success: false, error: connection.error || 'Luca not connected' });
+  }
+  const income = await employeeLuca.getIncomeSummary();
+  const customers = await employeeLuca.getCustomersWithRevenue();
+  employees.markSync('luca', {
+    invoices: income.invoices?.length || 0,
+    customers: customers.customers?.length || 0,
+  });
+  res.json({
+    success: income.success && customers.success,
+    income: income.success ? { invoices: income.invoices, summary: income.summary } : null,
+    customers: customers.success ? customers.customers : [],
+    error: income.error || customers.error || '',
+  });
 });
 
 app.post('/api/auth/login', async (req, res) => {
@@ -352,6 +545,7 @@ function ensureHubDefaultSite() {
 async function ensureData() {
   await ensureAdminExists();
   await store.ensureEmployeeUsers();
+  employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
 }
 
