@@ -142,7 +142,8 @@ export async function verifyEmployee(username, password) {
   if (!user) return { ok: false };
   const valid = await verifyPassword(password, user.passwordHash);
   const role = normalizeRole(user.role);
-  return valid ? { ok: true, user: { id: user.id, username: user.username, role } } : { ok: false };
+  if (!valid || role !== 'employee') return { ok: false };
+  return { ok: true, user: { id: user.id, username: user.username, role } };
 }
 
 /** Seed employee users for ansatt login if they don't exist. Username = email, password = FirstNamePassword. */
@@ -163,8 +164,6 @@ export async function ensureEmployeeUsers() {
       if (normalizeRole(existing.role) !== 'employee') {
         await updateUserRole(existing.id, 'employee');
       }
-      // Seeded employee accounts should always have the expected password.
-      await updateUserPassword(existing.id, password);
     }
   }
 }
