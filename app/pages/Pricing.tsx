@@ -10,14 +10,16 @@ const services = [
   "Nettsideutvikling",
   "Sosiale Medier",
   "E-post Markedsføring",
-  "Innholdsproduksjon"
+  "Innholdsproduksjon",
+  "Konsultasjon"
 ];
 
 const serviceSalesText: Record<string, { title: string, desc: string }> = {
   "Nettsideutvikling": { title: "Webutvikling", desc: "Alt du trenger for å bygge en kraftfull og skalerbar tilstedeværelse på nett." },
   "Sosiale Medier": { title: "Sosiale Medier", desc: "Alt du trenger for å vokse ditt publikum og gjøre følgere til kunder." },
   "E-post Markedsføring": { title: "E-post Markedsføring", desc: "Alt du trenger for å fange leads og pleie dem til lojale kunder." },
-  "Innholdsproduksjon": { title: "Kreativ Media", desc: "Alt du trenger for å fortelle din merkevares historie visuelt." }
+  "Innholdsproduksjon": { title: "Kreativ Media", desc: "Alt du trenger for å fortelle din merkevares historie visuelt." },
+  "Konsultasjon": { title: "Konsultasjon", desc: "Profesjonell hjelp på tvers av tjenestene våre når du trenger sparring, problemløsning og tydelige neste steg." }
 };
 
 const smmBaseData = [
@@ -241,6 +243,22 @@ const pricingData: Record<string, any[]> = {
       ],
       popular: true,
     }
+  ],
+  "Konsultasjon": [
+    {
+      name: "Konsultasjon",
+      price: "1 000,-/time eks. mva",
+      description: "Faglig hjelp med markedsføring, e-post markedsføring, webdesign og innholdsproduksjon.",
+      features: [
+        "Profesjonell hjelp på timebasis",
+        "Rådgivning for markedsføring, e-post markedsføring, webdesign og innholdsproduksjon",
+        "Hjelp med spørsmål, bekymringer og konkrete problemer",
+        "Vi går gjennom utfordringen og foreslår løsninger du kan jobbe videre med",
+        "Oppsummerende analyseskjema etter møtet",
+        "Oversikt over hva som ble diskutert og hva vi fant ut"
+      ],
+      popular: true,
+    }
   ]
 };
 
@@ -389,7 +407,7 @@ export const Pricing = () => {
                 className={`grid grid-cols-1 ${
                   activeService === "Nettsideutvikling" 
                     ? "md:grid-cols-2 lg:grid-cols-4" 
-                    : activeService === "Innholdsproduksjon"
+                    : activeService === "Innholdsproduksjon" || activeService === "Konsultasjon"
                     ? "max-w-xl mx-auto w-full"
                     : "md:grid-cols-2 lg:grid-cols-3"
                 } divide-y md:divide-y-0 md:divide-x divide-gray-200 w-full`}
