@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
+import { readFileSync, existsSync } from 'fs';
+import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 
 const TOKENS_PATH = getDataFilePath('reset-tokens.json');
 
@@ -19,7 +19,7 @@ function readTokens() {
 
 function writeTokens(tokens) {
   ensureDataDir();
-  writeFileSync(TOKENS_PATH, JSON.stringify(tokens, null, 2), 'utf8');
+  writeDataJson(TOKENS_PATH, tokens);
 }
 
 const EXPIRY_MS = 60 * 60 * 1000; // 1 hour

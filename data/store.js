@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import bcrypt from 'bcryptjs';
-import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
+import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 
 const USERS_PATH = getDataFilePath('users.json');
 const ADMIN_PATH = getDataFilePath('admin.json');
@@ -23,7 +23,7 @@ function readUsers() {
 
 function writeUsers(users) {
   ensureDataDir();
-  writeFileSync(USERS_PATH, JSON.stringify(users, null, 2), 'utf8');
+  writeDataJson(USERS_PATH, users);
 }
 
 function readAdmin() {
@@ -38,7 +38,7 @@ function readAdmin() {
 
 function writeAdmin(admin) {
   ensureDataDir();
-  writeFileSync(ADMIN_PATH, JSON.stringify(admin, null, 2), 'utf8');
+  writeDataJson(ADMIN_PATH, admin);
 }
 
 export async function hashPassword(plain) {

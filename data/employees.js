@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
-import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
+import { readFileSync, existsSync } from 'fs';
+import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 
 const EMPLOYEES_PATH = getDataFilePath('employees-dashboard.json');
 
@@ -27,7 +27,7 @@ function readEmployeesFile() {
 
 function writeEmployeesFile(data) {
   ensureDataDir();
-  writeFileSync(EMPLOYEES_PATH, JSON.stringify(data, null, 2), 'utf8');
+  writeDataJson(EMPLOYEES_PATH, data);
 }
 
 function nowIso() {

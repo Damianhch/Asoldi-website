@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { randomBytes } from 'crypto';
-import { getDataFilePath, ensurePersistentDataDir } from './storage-path.js';
+import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 
 const SITES_PATH = getDataFilePath('sites.json');
 
@@ -20,7 +20,7 @@ function readSites() {
 
 function writeSites(sites) {
   ensureDataDir();
-  writeFileSync(SITES_PATH, JSON.stringify(sites, null, 2), 'utf8');
+  writeDataJson(SITES_PATH, sites);
 }
 
 export function generateSiteKey() {
