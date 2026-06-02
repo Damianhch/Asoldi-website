@@ -15,9 +15,43 @@ function clearEmployeeToken() {
   localStorage.removeItem('employeeToken');
 }
 
+const LYDKLIPP_VISIBLE = 5;
+
+const LYDKLIPP = [
+  { file: 'lydklipp 1.wav', isNew: false },
+  { file: 'lydklipp 2.wav', isNew: false },
+  { file: 'lydklipp 3.wav', isNew: false },
+  { file: 'lydklipp 4.wav', isNew: false },
+  { file: 'domingo close call.wav', isNew: true },
+  { file: 'sando close call.wav', isNew: true },
+  { file: 'don fredo.wav', isNew: true },
+  { file: 'rosa tattoo.wav', isNew: true },
+  { file: 'smultringmannen donuthouse.wav', isNew: true },
+  { file: 'Bjørkhov cafe og bar.wav', isNew: true },
+  { file: 'zen art studio.wav', isNew: true },
+] as const;
+
+function LydklippPlayer({ file, isNew }: { file: string; isNew: boolean }) {
+  const src = `/media/${encodeURIComponent(file)}`;
+  return (
+    <div className="relative rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
+      {isNew && (
+        <span className="absolute top-3 right-3 z-10 rounded-full bg-[#FF5B00] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow-sm">
+          New
+        </span>
+      )}
+      <audio controls className="w-full" style={{ maxWidth: '100%' }}>
+        <source src={src} type="audio/wav" />
+        Din nettleser støtter ikke lydspiller.
+      </audio>
+    </div>
+  );
+}
+
 export const Ansatt = () => {
   const navigate = useNavigate();
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [lydklippExpanded, setLydklippExpanded] = useState(false);
 
   useEffect(() => {
     const t = getEmployeeToken();
@@ -210,30 +244,30 @@ export const Ansatt = () => {
           <section className="mb-10">
             <h2 className="text-xl font-semibold text-white mb-4">Lydklipp</h2>
             <div className="space-y-4">
-              <div className="rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
-                <audio controls className="w-full" style={{ maxWidth: '100%' }}>
-                  <source src="/media/lydklipp%201.wav" type="audio/wav" />
-                  Din nettleser støtter ikke lydspiller.
-                </audio>
-              </div>
-              <div className="rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
-                <audio controls className="w-full" style={{ maxWidth: '100%' }}>
-                  <source src="/media/lydklipp%202.wav" type="audio/wav" />
-                  Din nettleser støtter ikke lydspiller.
-                </audio>
-              </div>
-              <div className="rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
-                <audio controls className="w-full" style={{ maxWidth: '100%' }}>
-                  <source src="/media/lydklipp%203.wav" type="audio/wav" />
-                  Din nettleser støtter ikke lydspiller.
-                </audio>
-              </div>
-              <div className="rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
-                <audio controls className="w-full" style={{ maxWidth: '100%' }}>
-                  <source src="/media/lydklipp%204.wav" type="audio/wav" />
-                  Din nettleser støtter ikke lydspiller.
-                </audio>
-              </div>
+              {LYDKLIPP.slice(0, LYDKLIPP_VISIBLE).map((clip) => (
+                <LydklippPlayer key={clip.file} file={clip.file} isNew={clip.isNew} />
+              ))}
+              {LYDKLIPP.length > LYDKLIPP_VISIBLE && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setLydklippExpanded((open) => !open)}
+                    className="w-full text-left text-sm font-medium text-[#FF5B00] hover:text-[#ff7b2e] transition-colors py-1"
+                    aria-expanded={lydklippExpanded}
+                  >
+                    {lydklippExpanded
+                      ? 'Vis færre samtaler'
+                      : `Se ${LYDKLIPP.length - LYDKLIPP_VISIBLE} flere samtaler`}
+                  </button>
+                  {lydklippExpanded && (
+                    <div className="space-y-4">
+                      {LYDKLIPP.slice(LYDKLIPP_VISIBLE).map((clip) => (
+                        <LydklippPlayer key={clip.file} file={clip.file} isNew={clip.isNew} />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </section>
 
