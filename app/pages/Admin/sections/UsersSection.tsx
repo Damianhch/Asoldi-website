@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import type { AdminUser, UserRole } from '../shared';
+import type { AdminUser, EmployeeRoleOption } from '../shared';
+import { fromEmployeeRoleOption, toEmployeeRoleOption } from '../shared';
 
 type Props = {
   users: AdminUser[];
@@ -14,7 +15,7 @@ type Props = {
   onEditPasswordChange: (value: string) => void;
   onUpdateUser: (id: string, newUsername?: string, newPassword?: string) => void;
   onDeleteUser: (id: string) => void;
-  onRoleChange: (id: string, role: UserRole) => void;
+  onRoleChange: (id: string, option: EmployeeRoleOption) => void;
 };
 
 export function UsersSection(props: Props) {
@@ -112,7 +113,7 @@ const EditableUserRow: React.FC<{
   onEditPasswordChange: (value: string) => void;
   onUpdateUser: (id: string, newUsername?: string, newPassword?: string) => void;
   onDeleteUser: (id: string) => void;
-  onRoleChange: (id: string, role: UserRole) => void;
+  onRoleChange: (id: string, option: EmployeeRoleOption) => void;
 }> = function EditableUserRow({
   user,
   editing,
@@ -142,13 +143,14 @@ const EditableUserRow: React.FC<{
       </td>
       <td className="px-4 py-3">
         <select
-          value={user.role}
-          onChange={(e) => onRoleChange(user.id, e.target.value as UserRole)}
+          value={toEmployeeRoleOption(user)}
+          onChange={(e) => onRoleChange(user.id, e.target.value as EmployeeRoleOption)}
           disabled={userRoleSaving}
-          className="bg-[#1a1a1a] border border-white/20 text-white rounded px-2 py-1 text-sm min-w-[100px] disabled:opacity-50"
+          className="bg-[#1a1a1a] border border-white/20 text-white rounded px-2 py-1 text-sm min-w-[160px] disabled:opacity-50"
         >
           <option value="none">None</option>
-          <option value="employee">Employee</option>
+          <option value="employee-asoldi">Employee: Asoldi</option>
+          <option value="employee-ssu">Employee: SSU</option>
           <option value="client">Client</option>
         </select>
       </td>

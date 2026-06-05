@@ -65,7 +65,7 @@ export async function verifyAdmin(username, password) {
 }
 
 export async function getAllUsers() {
-  return readUsers();
+  return migrateEmployeeProducts(readUsers());
 }
 
 export async function getUserById(id) {
@@ -80,9 +80,42 @@ export async function getUserByUsername(username) {
 
 const DEFAULT_ROLE = 'none';
 const ROLES = ['employee', 'client', 'none'];
+const DEFAULT_EMPLOYEE_PRODUCT = 'asoldi';
+const EMPLOYEE_PRODUCTS = ['asoldi', 'ssu'];
 
 function normalizeRole(r) {
   return ROLES.includes(r) ? r : DEFAULT_ROLE;
+}
+
+function normalizeEmployeeProduct(user) {
+  if (normalizeRole(user.role) !== 'employee') return undefined;
+  return EMPLOYEE_PRODUCTS.includes(user.employeeProduct) ? user.employeeProduct : DEFAULT_EMPLOYEE_PRODUCT;
+}
+
+function migrateEmployeeProducts(users) {
+  let changed = false;
+  for (const user of users) {
+    if (user.role === 'employee' && !EMPLOYEE_PRODUCTS.includes(user.employeeProduct)) {
+      user.employeeProduct = DEFAULT_EMPLOYEE_PRODUCT;
+      changed = true;
+    }
+  }
+  if (changed) writeUsers(users);
+  return users;
+}
+
+export function toPublicUser(u) {
+  const role = normalizeRole(u.role);
+  const publicUser = {
+    id: u.id,
+    username: u.username,
+    createdAt: u.createdAt,
+    role,
+  };
+  if (role === 'employee') {
+    publicUser.employeeProduct = normalizeEmployeeProduct(u);
+  }
+  return publicUser;
 }
 
 export async function createUser(username, password, role = DEFAULT_ROLE) {
@@ -122,6 +155,28 @@ export async function updateUserRole(id, role) {
   const i = users.findIndex((u) => u.id === id);
   if (i === -1) return { ok: false, error: 'User not found' };
   users[i].role = normalizeRole(role);
+  if (users[i].role === 'employee') {
+    if (!EMPLOYEE_PRODUCTS.includes(users[i].employeeProduct)) {
+      users[i].employeeProduct = DEFAULT_EMPLOYEE_PRODUCT;
+    }
+  } else {
+    delete users[i].employeeProduct;
+  }
+  writeUsers(users);
+  return { ok: true };
+}
+
+export async function updateUserEmployeeProduct(id, product) {
+  if (!EMPLOYEE_PRODUCTS.includes(product)) {
+    return { ok: false, error: 'Invalid employee product' };
+  }
+  const users = readUsers();
+  const i = users.findIndex((u) => u.id === id);
+  if (i === -1) return { ok: false, error: 'User not found' };
+  if (normalizeRole(users[i].role) !== 'employee') {
+    return { ok: false, error: 'User is not an employee' };
+  }
+  users[i].employeeProduct = product;
   writeUsers(users);
   return { ok: true };
 }
@@ -140,6 +195,14 @@ export async function verifyEmployee(username, password) {
   const valid = await verifyPassword(password, user.passwordHash);
   const role = normalizeRole(user.role);
   if (!valid || role !== 'employee') return { ok: false };
-  return { ok: true, user: { id: user.id, username: user.username, role } };
+  return {
+    ok: true,
+    user: {
+      id: user.id,
+      username: user.username,
+      role,
+      employeeProduct: normalizeEmployeeProduct(user),
+    },
+  };
 }
 

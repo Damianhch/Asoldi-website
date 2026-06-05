@@ -91,12 +91,7 @@ function adminAuth(req, res, next) {
 
 app.get('/api/admin/users', adminAuth, async (_req, res) => {
   const users = await store.getAllUsers();
-  res.json(users.map((u) => ({
-    id: u.id,
-    username: u.username,
-    createdAt: u.createdAt,
-    role: u.role === 'employee' || u.role === 'client' ? u.role : 'none',
-  })));
+  res.json(users.map((u) => store.toPublicUser(u)));
 });
 
 app.post('/api/admin/users', adminAuth, async (req, res) => {
@@ -113,7 +108,7 @@ app.post('/api/admin/users', adminAuth, async (req, res) => {
 
 app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params;
-  const { username, password, role } = req.body || {};
+  const { username, password, role, employeeProduct } = req.body || {};
   if (username !== undefined) {
     const result = await store.updateUserUsername(id, username);
     if (!result.ok) return res.status(400).json({ message: result.error });
@@ -124,6 +119,10 @@ app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
   }
   if (role !== undefined && ['employee', 'client', 'none'].includes(role)) {
     const result = await store.updateUserRole(id, role);
+    if (!result.ok) return res.status(400).json({ message: result.error });
+  }
+  if (employeeProduct !== undefined && ['asoldi', 'ssu'].includes(employeeProduct)) {
+    const result = await store.updateUserEmployeeProduct(id, employeeProduct);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
   res.json({ ok: true });
@@ -347,7 +346,15 @@ app.post('/api/auth/login', async (req, res) => {
     return res.status(401).json({ message: 'Invalid username or password' });
   }
   const token = signToken({ role: 'employee', userId: result.user.id, at: Date.now() });
-  res.json({ token, user: { id: result.user.id, username: result.user.username, role: result.user.role } });
+  res.json({
+    token,
+    user: {
+      id: result.user.id,
+      username: result.user.username,
+      role: result.user.role,
+      employeeProduct: result.user.employeeProduct,
+    },
+  });
 });
 
 app.post('/api/auth/forgot-password', async (req, res) => {
@@ -420,7 +427,14 @@ app.get('/api/auth/me', employeeAuth, async (req, res) => {
   if (user.role !== 'employee') {
     return res.status(403).json({ message: 'Access denied. Employee role required.' });
   }
-  res.json({ user: { id: user.id, username: user.username, role: user.role } });
+  res.json({
+    user: {
+      id: user.id,
+      username: user.username,
+      role: user.role,
+      employeeProduct: store.toPublicUser(user).employeeProduct,
+    },
+  });
 });
 
 // --- Hub API (public: site config for client CMS)

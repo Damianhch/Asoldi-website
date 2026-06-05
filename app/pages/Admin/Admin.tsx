@@ -14,10 +14,11 @@ import {
   getToken,
   setToken,
   type AdminUser,
+  type EmployeeRoleOption,
+  fromEmployeeRoleOption,
   type Features,
   type Site,
   type Tab,
-  type UserRole,
 } from './shared';
 
 export const Admin = () => {
@@ -143,20 +144,29 @@ export const Admin = () => {
     }
   }
 
-  async function handleUserRoleChange(id: string, role: UserRole) {
+  async function handleUserRoleChange(id: string, option: EmployeeRoleOption) {
+    const { role, employeeProduct } = fromEmployeeRoleOption(option);
     setUserRoleSaving(id);
     try {
+      const body: { role: string; employeeProduct?: string } = { role };
+      if (employeeProduct) body.employeeProduct = employeeProduct;
       const res = await fetch(`${API}/admin/users/${id}`, {
         method: 'PUT',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         alert(data.message || 'Failed');
         return;
       }
-      setUsers((prev) => prev.map((user) => (user.id === id ? { ...user, role } : user)));
+      setUsers((prev) =>
+        prev.map((user) => {
+          if (user.id !== id) return user;
+          if (role !== 'employee') return { ...user, role, employeeProduct: undefined };
+          return { ...user, role, employeeProduct: employeeProduct ?? 'asoldi' };
+        }),
+      );
     } finally {
       setUserRoleSaving(null);
     }

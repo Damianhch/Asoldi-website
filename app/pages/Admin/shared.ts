@@ -23,7 +23,40 @@ export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'e
 
 export type Features = { users?: boolean; analytics?: boolean; ecommerce?: boolean };
 export type UserRole = 'employee' | 'client' | 'none';
+export type EmployeeProduct = 'asoldi' | 'ssu';
+export type EmployeeRoleOption = 'none' | 'client' | 'employee-asoldi' | 'employee-ssu';
 
+export type AdminUser = {
+  id: string;
+  username: string;
+  createdAt: string;
+  role: UserRole;
+  employeeProduct?: EmployeeProduct;
+};
+
+export function toEmployeeRoleOption(user: AdminUser): EmployeeRoleOption {
+  if (user.role === 'client') return 'client';
+  if (user.role === 'employee') {
+    return user.employeeProduct === 'ssu' ? 'employee-ssu' : 'employee-asoldi';
+  }
+  return 'none';
+}
+
+export function fromEmployeeRoleOption(option: EmployeeRoleOption): {
+  role: UserRole;
+  employeeProduct?: EmployeeProduct;
+} {
+  switch (option) {
+    case 'client':
+      return { role: 'client' };
+    case 'employee-asoldi':
+      return { role: 'employee', employeeProduct: 'asoldi' };
+    case 'employee-ssu':
+      return { role: 'employee', employeeProduct: 'ssu' };
+    default:
+      return { role: 'none' };
+  }
+}
 export type Site = {
   id: string;
   site_key: string;
@@ -31,13 +64,6 @@ export type Site = {
   name: string;
   features: Features;
   createdAt: string;
-};
-
-export type AdminUser = {
-  id: string;
-  username: string;
-  createdAt: string;
-  role: UserRole;
 };
 
 export const DEFAULT_FEATURES: Features = { users: true, analytics: false, ecommerce: false };
