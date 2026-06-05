@@ -1,13 +1,14 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   AboutUsSection,
   CalendarSection,
   InfoCards,
-  ServiceCards,
+  LydklippSection,
+  PartnersSection,
+  ProductSections,
   StatsRow,
+  WelcomeSection,
 } from './shared';
-
-const LYDKLIPP_VISIBLE = 5;
 
 const LYDKLIPP = [
   { file: 'lydklipp 1.wav', isNew: false },
@@ -23,109 +24,86 @@ const LYDKLIPP = [
   { file: 'zen art studio.wav', isNew: true },
 ] as const;
 
-const OM_OSS_STATS = [
+const STATS = [
   { value: '100', label: 'Laget nettsider til klienter' },
   { value: '300 000+', label: 'Håndterer månedlige besøkende til kunde nettsider' },
   { value: '10+', label: 'Content shoots for sosiale medier' },
   { value: '10+', label: 'År med markedsførings erfaring' },
 ] as const;
 
-const NETTSIDE_TJENESTER = [
+const PRODUCT_SECTIONS = [
   {
-    title: 'Nettside utvikling',
-    body: 'Lager selve nettsiden med ønskede tjenester og tillegg, raskt, gunstig pris, og fantastisk kvalitet.',
+    title: 'Nettside tjenester',
+    items: [
+      {
+        title: 'Nettside utvikling',
+        body: 'Lager selve nettsiden med ønskede tjenester og tillegg, raskt, gunstig pris, og fantastisk kvalitet.',
+      },
+      {
+        title: 'Nettside hosting',
+        body: 'Holder nettsiden online, viktig for de med Ecommerce behov samt avlaster ansvaret for de bedriftene som har lyst på en mer “hands of” opplevelse',
+      },
+      {
+        title: 'Opprettholdelse',
+        body: 'Oppdateringer, bilde-oppdateringer, og andre lav investerende endringer i nettsiden inngår i dette. Hvis dette og hosting er noe kunden har lyst på.',
+      },
+      {
+        title: 'Nettside migrasjon',
+        body: 'Vi overfører en gammel eller ny nettside til en valgfri hosting tjeneste for kunden, samt kan skifte domene hvis ønskelig.',
+      },
+      {
+        title: 'Nettside redesign',
+        body: 'Har bedriften en nettside fra før av kan vi redesigne den med nye funksjoner i allerede eksisterende CMS (WordPress, Shopify, Wix etc).',
+      },
+      {
+        title: 'Copywriting',
+        body: 'Dette er teksten som står på nettsiden: optimalisert til å få kunden til å kjøpe, samt Google til å ranke – all tekst er intensjonell og forteller en historie.',
+      },
+    ],
   },
   {
-    title: 'Nettside hosting',
-    body: 'Holder nettsiden online, viktig for de med Ecommerce behov samt avlaster ansvaret for de bedriftene som har lyst på en mer “hands of” opplevelse',
-  },
-  {
-    title: 'Opprettholdelse',
-    body: 'Oppdateringer, bilde-oppdateringer, og andre lav investerende endringer i nettsiden inngår i dette. Hvis dette og hosting er noe kunden har lyst på.',
-  },
-  {
-    title: 'Nettside migrasjon',
-    body: 'Vi overfører en gammel eller ny nettside til en valgfri hosting tjeneste for kunden, samt kan skifte domene hvis ønskelig.',
-  },
-  {
-    title: 'Nettside redesign',
-    body: 'Har bedriften en nettside fra før av kan vi redesigne den med nye funksjoner i allerede eksisterende CMS (WordPress, Shopify, Wix etc).',
-  },
-  {
-    title: 'Copywriting',
-    body: 'Dette er teksten som står på nettsiden: optimalisert til å få kunden til å kjøpe, samt Google til å ranke – all tekst er intensjonell og forteller en historie.',
+    title: 'Nettside utviklings tjenester',
+    items: [
+      {
+        title: 'SEO/google maps ranking',
+        body: 'En av de største fordelene med å ha en nettside er å ranke høyt på Google/Google Maps. For de som vil ha mer organisk trafikk fra spesifikke søkeord som “restaurant i Trondheim”, “frisørsalong i Trondheim” etc.',
+      },
+      {
+        title: 'Nettside analystikk',
+        body: 'Lar bedriften se hvor lenge hver kunde er på nettsiden, view count og generell statistikk – viktig for de med høye besøkstall og generelt alle.',
+      },
+      {
+        title: 'Email markedsføring',
+        body: 'Funksjon som lar bedriften se og sende meldinger til folk sine e-poster og er høyt verdsatt av nettbutikker.',
+      },
+      {
+        title: 'Ecommerce',
+        body: 'Lar bedriften selge ting på nettsiden, og lar kundene lage kontoer (samle inn info). Passer bra med email marketing.',
+      },
+      {
+        title: 'Multi-språklig',
+        body: 'Lar nettsiden være på flere språk enn bare 1 – perfekt for bedrifter som har flerspråklige kunder og vil appellere til flere.',
+      },
+      {
+        title: 'Blog integrering',
+        body: 'Lar kunden skrive blogginnlegg som automatisk blir posted til nettsiden – øker SEO og Google Maps ranking, samt forsterker posisjon i markedet.',
+      },
+      {
+        title: 'Booking og kontakt skjema',
+        body: 'Lar kunden sende en melding eller bestille. Et billigere alternativ til ecommerce – for de som “bare vil ha en simpel nettside”.',
+      },
+      {
+        title: 'Business info sync',
+        body: 'Lar reviews, åpningstider, samt sosiale medier vises i sanntid i nettsiden. Øker konvertering og social proof.',
+      },
+    ],
   },
 ] as const;
-
-const NETTSIDE_UTVIKLING = [
-  {
-    title: 'SEO/google maps ranking',
-    body: 'En av de største fordelene med å ha en nettside er å ranke høyt på Google/Google Maps. For de som vil ha mer organisk trafikk fra spesifikke søkeord som “restaurant i Trondheim”, “frisørsalong i Trondheim” etc.',
-  },
-  {
-    title: 'Nettside analystikk',
-    body: 'Lar bedriften se hvor lenge hver kunde er på nettsiden, view count og generell statistikk – viktig for de med høye besøkstall og generelt alle.',
-  },
-  {
-    title: 'Email markedsføring',
-    body: 'Funksjon som lar bedriften se og sende meldinger til folk sine e-poster og er høyt verdsatt av nettbutikker.',
-  },
-  {
-    title: 'Ecommerce',
-    body: 'Lar bedriften selge ting på nettsiden, og lar kundene lage kontoer (samle inn info). Passer bra med email marketing.',
-  },
-  {
-    title: 'Multi-språklig',
-    body: 'Lar nettsiden være på flere språk enn bare 1 – perfekt for bedrifter som har flerspråklige kunder og vil appellere til flere.',
-  },
-  {
-    title: 'Blog integrering',
-    body: 'Lar kunden skrive blogginnlegg som automatisk blir posted til nettsiden – øker SEO og Google Maps ranking, samt forsterker posisjon i markedet.',
-  },
-  {
-    title: 'Booking og kontakt skjema',
-    body: 'Lar kunden sende en melding eller bestille. Et billigere alternativ til ecommerce – for de som “bare vil ha en simpel nettside”.',
-  },
-  {
-    title: 'Business info sync',
-    body: 'Lar reviews, åpningstider, samt sosiale medier vises i sanntid i nettsiden. Øker konvertering og social proof.',
-  },
-] as const;
-
-function LydklippPlayer({ file, isNew }: { file: string; isNew: boolean }) {
-  const src = `/media/${encodeURIComponent(file)}`;
-  return (
-    <div className="relative rounded-xl bg-[#1a1a1a] border border-white/10 p-4">
-      {isNew && (
-        <span className="absolute top-3 right-3 z-10 rounded-full bg-[#FF5B00] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-white shadow-sm">
-          New
-        </span>
-      )}
-      <audio controls className="w-full" style={{ maxWidth: '100%' }}>
-        <source src={src} type="audio/wav" />
-        Din nettleser støtter ikke lydspiller.
-      </audio>
-    </div>
-  );
-}
 
 export function AnsattAsoldiContent() {
-  const [lydklippExpanded, setLydklippExpanded] = useState(false);
-
   return (
     <>
-      <section className="mb-10">
-        <h1 className="text-2xl font-bold text-white mb-2">Velkommen som telefonselger hos Asoldi</h1>
-        <p className="text-gray-400 mb-6">Under finner du all informasjon du trenger for å booke møter</p>
-        <a
-          href="https://asoldi.myphoner.com/work"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center justify-center px-5 py-2.5 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200] transition-colors"
-        >
-          Gå til ringesystem
-        </a>
-      </section>
+      <WelcomeSection title="Velkommen som telefonselger hos Asoldi" />
 
       <CalendarSection />
 
@@ -163,146 +141,103 @@ export function AnsattAsoldiContent() {
         }
       />
 
-      <section className="mb-10">
-        <h2 className="text-xl font-semibold text-white mb-4">Lydklipp</h2>
-        <div className="space-y-4">
-          {LYDKLIPP.slice(0, LYDKLIPP_VISIBLE).map((clip) => (
-            <LydklippPlayer key={clip.file} file={clip.file} isNew={clip.isNew} />
-          ))}
-          {LYDKLIPP.length > LYDKLIPP_VISIBLE && (
-            <>
-              <button
-                type="button"
-                onClick={() => setLydklippExpanded((open) => !open)}
-                className="w-full text-left text-sm font-medium text-[#FF5B00] hover:text-[#ff7b2e] transition-colors py-1"
-                aria-expanded={lydklippExpanded}
-              >
-                {lydklippExpanded
-                  ? 'Vis færre samtaler'
-                  : `Se ${LYDKLIPP.length - LYDKLIPP_VISIBLE} flere samtaler`}
-              </button>
-              {lydklippExpanded && (
-                <div className="space-y-4">
-                  {LYDKLIPP.slice(LYDKLIPP_VISIBLE).map((clip) => (
-                    <LydklippPlayer key={clip.file} file={clip.file} isNew={clip.isNew} />
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </section>
+      <LydklippSection clips={LYDKLIPP} />
 
-      <ServiceCards title="Nettside tjenester" items={NETTSIDE_TJENESTER} />
+      <ProductSections sections={PRODUCT_SECTIONS} />
 
-      <section className="mb-12">
-        <h2 className="text-xl font-semibold text-white mb-4">Nettside utviklings tjenester</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {NETTSIDE_UTVIKLING.map((item) => (
-            <div key={item.title} className="rounded-xl bg-[#1a1a1a] border border-white/10 p-6">
-              <h3 className="text-lg font-semibold text-white mb-2">{item.title}</h3>
-              <p className="text-gray-400 text-sm">{item.body}</p>
+      <StatsRow stats={STATS} />
+
+      <PartnersSection>
+        <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-white">Superhero burger og pizza</h3>
+              <p className="text-gray-400 text-sm">Restaurant</p>
             </div>
-          ))}
-        </div>
-      </section>
-
-      <StatsRow stats={OM_OSS_STATS} />
-
-      <section className="mb-8">
-        <h2 className="text-xl font-semibold text-white mb-4">Partnere og resultater</h2>
-        <div className="space-y-6">
-          <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-semibold text-white">Superhero burger og pizza</h3>
-                <p className="text-gray-400 text-sm">Restaurant</p>
-              </div>
-              <img
-                src="https://asoldi.com/wp-content/uploads/2025/12/logo.webp"
-                alt="Superhero burger og pizza"
-                className="h-12 w-auto opacity-90"
-                loading="lazy"
-              />
-            </div>
-            <div className="mt-5">
-              <p className="text-white font-semibold mb-3">Resultater:</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Lagde en simpel nettside</p>
-                  <p className="text-gray-400 text-sm">SEO/maps ranking, synced SoMe posts</p>
-                </div>
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Analystikk</p>
-                  <p className="text-gray-400 text-sm">
-                    Vi kan se over 10 000 nye månedlige besøkende og når de bouncer
-                  </p>
-                </div>
-              </div>
-            </div>
+            <img
+              src="https://asoldi.com/wp-content/uploads/2025/12/logo.webp"
+              alt="Superhero burger og pizza"
+              className="h-12 w-auto opacity-90"
+              loading="lazy"
+            />
           </div>
-
-          <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-semibold text-white">S&apos;wich restaurant</h3>
-                <p className="text-gray-400 text-sm">Restaurant</p>
+          <div className="mt-5">
+            <p className="text-white font-semibold mb-3">Resultater:</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Lagde en simpel nettside</p>
+                <p className="text-gray-400 text-sm">SEO/maps ranking, synced SoMe posts</p>
               </div>
-              <img
-                src="https://asoldi.com/wp-content/uploads/2025/12/images.png"
-                alt="S'wich restaurant"
-                className="h-12 w-auto opacity-90"
-                loading="lazy"
-              />
-            </div>
-            <div className="mt-5">
-              <p className="text-white font-semibold mb-3">Resultater:</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Lagde en simpel nettside</p>
-                  <p className="text-gray-400 text-sm">SEO/maps ranking, synced reviews/SoMe posts</p>
-                </div>
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Google maps ranking</p>
-                  <p className="text-gray-400 text-sm">
-                    Gikk fra nr 10 til nr 6 på ranking for “restaurant” i Trondheim
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
-            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-              <div>
-                <h3 className="text-lg font-semibold text-white">Svelstad gård</h3>
-                <p className="text-gray-400 text-sm">Gård</p>
-              </div>
-              <img
-                src="https://asoldi.com/wp-content/uploads/2025/12/Uten-navn-1000-x-500-px3.png"
-                alt="Svelstad gård"
-                className="h-16 w-auto rounded-lg opacity-90"
-                loading="lazy"
-              />
-            </div>
-            <div className="mt-5">
-              <p className="text-white font-semibold mb-3">Resultater:</p>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Lagde en simpel nettside</p>
-                  <p className="text-gray-400 text-sm">Branded med 1 Kontakt skjema</p>
-                </div>
-                <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                  <p className="text-white font-medium">Kontakt skjema</p>
-                  <p className="text-gray-400 text-sm">
-                    10 nye bestillinger gjennom kontakt skjema, og 400 nye besøkende første uka
-                  </p>
-                </div>
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Analystikk</p>
+                <p className="text-gray-400 text-sm">
+                  Vi kan se over 10 000 nye månedlige besøkende og når de bouncer
+                </p>
               </div>
             </div>
           </div>
         </div>
-      </section>
+
+        <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-white">S&apos;wich restaurant</h3>
+              <p className="text-gray-400 text-sm">Restaurant</p>
+            </div>
+            <img
+              src="https://asoldi.com/wp-content/uploads/2025/12/images.png"
+              alt="S'wich restaurant"
+              className="h-12 w-auto opacity-90"
+              loading="lazy"
+            />
+          </div>
+          <div className="mt-5">
+            <p className="text-white font-semibold mb-3">Resultater:</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Lagde en simpel nettside</p>
+                <p className="text-gray-400 text-sm">SEO/maps ranking, synced reviews/SoMe posts</p>
+              </div>
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Google maps ranking</p>
+                <p className="text-gray-400 text-sm">
+                  Gikk fra nr 10 til nr 6 på ranking for “restaurant” i Trondheim
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-[#1a1a1a] border border-white/10 p-6">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <h3 className="text-lg font-semibold text-white">Svelstad gård</h3>
+              <p className="text-gray-400 text-sm">Gård</p>
+            </div>
+            <img
+              src="https://asoldi.com/wp-content/uploads/2025/12/Uten-navn-1000-x-500-px3.png"
+              alt="Svelstad gård"
+              className="h-16 w-auto rounded-lg opacity-90"
+              loading="lazy"
+            />
+          </div>
+          <div className="mt-5">
+            <p className="text-white font-semibold mb-3">Resultater:</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Lagde en simpel nettside</p>
+                <p className="text-gray-400 text-sm">Branded med 1 Kontakt skjema</p>
+              </div>
+              <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                <p className="text-white font-medium">Kontakt skjema</p>
+                <p className="text-gray-400 text-sm">
+                  10 nye bestillinger gjennom kontakt skjema, og 400 nye besøkende første uka
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </PartnersSection>
     </>
   );
 }
