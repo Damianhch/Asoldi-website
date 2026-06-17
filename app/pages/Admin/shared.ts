@@ -66,6 +66,65 @@ export type Site = {
   createdAt: string;
 };
 
+export type ManageClientsView = 'clients' | 'sales';
+
+export type SalesProgression = {
+  step0AgreeMeetingTime: boolean;
+  paymentReceived: boolean;
+  domainConnected: boolean;
+  live: boolean;
+};
+
+export type SalesReminders = {
+  thankYouSentAt: string;
+  reminder24hAt: string;
+  reminder24hSentAt: string;
+  reminder1hAt: string;
+  reminder1hSentAt: string;
+  skipDueToShortNotice: boolean;
+};
+
+export type SalesCalendarMeta = {
+  eventId: string;
+  htmlLink: string;
+  meetLink: string;
+  calendarId: string;
+  syncedAt: string;
+};
+
+export type SalesWebsiteImportMeta = {
+  importedAt: string;
+  sourceRunId: string;
+  sourceStep: string;
+  sourceBaseUrl: string;
+  siteFolder: string;
+  importRoot: string;
+  previewUrl: string;
+};
+
+export type SalesClient = {
+  id: string;
+  businessName: string;
+  contactPerson: string;
+  contactEmail: string;
+  contactPhone: string;
+  meetingPlace: string;
+  businessAddress: string;
+  industry: string;
+  meetingMode: 'online' | 'in-person';
+  meetingDurationMinutes: number;
+  agreedTime: boolean;
+  meetingAt: string;
+  websiteDomain: string;
+  details: Record<string, unknown>;
+  progression: SalesProgression;
+  reminders: SalesReminders;
+  calendar: SalesCalendarMeta;
+  websiteImport: SalesWebsiteImportMeta;
+  createdAt: string;
+  updatedAt: string;
+};
+
 export const DEFAULT_FEATURES: Features = { users: true, analytics: false, ecommerce: false };
 
 export const SITE_PAGES = [

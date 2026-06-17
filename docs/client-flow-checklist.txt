@@ -1,0 +1,160 @@
+ASOLDI CLIENT FLOW + BACKEND — CHECKLIST
+Last updated: 2026-06-17
+Use [x] when done, [ ] when not done.
+
+================================================================================
+A) CLIENT FLOW (asoldi.com) — UI & FEATURES
+================================================================================
+
+LOGIN & AUTH
+[x] Role gate at /login (Kunde vs Ansatt) with light/minimal design
+[x] Client path: email-first step before password/social
+[x] Client direct signup + login (email + password)
+[x] Client forgot password page
+[x] Client reset password page
+[x] Employee login still works (separate path)
+[ ] Google login — wired in UI only; needs real OAuth credentials
+[ ] Facebook login — wired in UI only; needs real OAuth credentials
+
+ONBOARDING
+[x] Paginated questionnaire after first login (navn, bedrift, stilling, kilde)
+[x] Redirect to onboarding if profile not complete
+[x] Redirect to /kunde after onboarding complete
+
+CLIENT HOMEPAGE (/kunde)
+[x] Light theme (white/off-white, not dark homepage style)
+[x] Sidebar: Hjem + Tjenester (Nettside, E-post låst, Sosiale medier låst)
+[x] Header: Henvis, Chat, Søk, Bruker, Logg ut
+[x] To-do liste section
+[x] Markedsføringselement / ytelse showcase (nettside)
+[ ] Live performance data (currently placeholder/demo numbers)
+[ ] Refer button — functional referral flow (currently UI only)
+[ ] Chat button — connect to real chat (Tawk or other)
+[ ] Search — functional search (currently UI only)
+
+WEBSITE BUILDER (Steg 1)
+[x] Builder page (/kunde/services/website/builder or /kunde/tjenester/nettside/start)
+[x] "Har allerede en nettside?" opens 4-digit code popup
+[x] Code validation + save to backend state
+[ ] Connect builder input to Website Maker / AI pipeline (currently saves prompt only)
+
+CHECKOUT & PLANS
+[x] Plan selection page based on /pricing website products
+[x] Special "Din nettside plan" highlighted above tier plans
+[x] Trust illustrations (30 dager garanti, ingen oppstartsgebyr, 24/7 support)
+[x] Plan selection saved to backend
+[x] "Gå til checkout" button with terms checkboxes
+[ ] Full payment page (faktura / Vipps / kort) — not live yet
+[ ] Real payment provider integration (Stripe / Vipps / etc.)
+[ ] Final custom "nettside plan" pricing/content from you (placeholder today)
+
+DEPLOY & TEST
+[ ] Deploy latest Asoldi website build to production (asoldi.com)
+[ ] End-to-end smoke test: login → onboarding → home → builder → checkout
+[ ] Test on mobile/tablet layouts
+
+================================================================================
+B) ASOLDI BACKEND — SALES / ADMIN (from earlier work)
+================================================================================
+
+SALES ADMIN (admin.asoldi.com)
+[x] Clients / Sales submenu under Manage Clients
+[x] Add/edit sales clients with meeting fields
+[x] "Agreed time" toggle + step 0 progression
+[x] Progression line (payment, domain, live)
+[x] Import website from Website Maker (run ID)
+[x] Local preview of imported site
+[x] "Got the client" promote to Clients tab
+[ ] Google Calendar OAuth — connect first admin account in Admin > Sales
+[ ] SMTP verified for sales thank-you + reminder emails in production
+[ ] Full E2E test: add sales client → import run → preview → got client
+
+WEBSITE MAKER EXPORT
+[x] Export Latest Site ZIP button on run page
+[x] Shared export library (hostinger-export.mjs)
+[x] API endpoint GET /api/runs/[runId]/export
+[ ] Set WEBSITE_MAKER_BASE_URL in Asoldi deployment env
+[ ] Confirm Website Maker reachable from Asoldi server for import API
+
+================================================================================
+C) ACCESS & CREDENTIALS YOU NEED TO PROVIDE
+================================================================================
+
+Copy values into .env on the Asoldi server (never commit secrets to git).
+
+--- 1) GOOGLE OAUTH (client login) ---
+[ ] GOOGLE_CLIENT_ID=
+[ ] GOOGLE_CLIENT_SECRET=
+[ ] Authorized redirect URI(s) added in Google Cloud Console, e.g.:
+      https://asoldi.com/api/client/auth/google/callback
+      http://localhost:3000/api/client/auth/google/callback  (dev)
+
+How: Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client ID
+
+--- 2) FACEBOOK OAUTH (client login) ---
+[ ] FACEBOOK_APP_ID=
+[ ] FACEBOOK_APP_SECRET=
+[ ] Valid OAuth redirect URI(s) in Meta Developer app, e.g.:
+      https://asoldi.com/api/client/auth/facebook/callback
+
+How: developers.facebook.com → Your App → Facebook Login → Settings
+
+--- 3) SMTP (password reset + sales emails) ---
+[ ] SMTP_HOST=
+[ ] SMTP_PORT=          (usually 587 or 465)
+[ ] SMTP_USER=
+[ ] SMTP_PASS=
+[ ] SMTP_FROM=          (e.g. noreply@asoldi.com — domain must be verified)
+[ ] APP_URL=https://asoldi.com   (for correct reset links in emails)
+
+How: Use your email provider (Hostinger, Google Workspace, SendGrid, etc.)
+
+--- 4) GOOGLE CALENDAR (sales meetings — Admin > Sales) ---
+[ ] GOOGLE_CALENDAR_CLIENT_ID=
+[ ] GOOGLE_CALENDAR_CLIENT_SECRET=
+[ ] GOOGLE_CALENDAR_REDIRECT_URI=   (match server callback route)
+[ ] First connect: open Admin → Sales → Connect Google Calendar (one-time OAuth)
+
+How: Same or separate Google Cloud project; enable Calendar API
+
+--- 5) WEBSITE MAKER ↔ ASOLDI ---
+[ ] WEBSITE_MAKER_BASE_URL=         (e.g. https://your-wm-host or http://localhost:3000)
+[ ] Website Maker running and export API reachable from Asoldi server
+[ ] Optional: firewall / VPN if WM is internal only
+
+How: Set in Asoldi .env; test import from Sales tab with a real runId
+
+--- 6) PAYMENTS (when ready for live checkout) ---
+[ ] Choose provider: Stripe / Vipps / other
+[ ] Provider API keys + webhook secret
+[ ] Webhook URL configured on provider dashboard
+
+How: Tell us which provider; we wire checkout "Betal" to it
+
+--- 7) CUSTOM NETTSIDE PLAN (content from you) ---
+[ ] Business rules for when custom plan appears
+[ ] Price (or "Etter avtale")
+[ ] Feature list text for each customer segment
+
+How: Send spec; we update customWebsitePlan defaults / admin override
+
+================================================================================
+D) QUICK REFERENCE — ROUTES
+================================================================================
+
+Public login:     /login
+Client auth:      /login/kunde  (legacy)  OR flow inside /login
+Client home:      /kunde
+Onboarding:       /kunde/onboarding
+Builder:          /kunde/services/website/builder
+Checkout plans:   /kunde/services/website/checkout
+Employee:         /login/ansatt → /ansatt
+Admin sales:      admin.asoldi.com → Manage Clients → Sales
+
+================================================================================
+E) NOTES
+================================================================================
+
+- Language in client portal: Norwegian (nb-NO)
+- E-post and Sosiale medier in sidebar stay locked until you enable them
+- Daily dev log (local): website maker application/docs/daily-logs/2026-06-17.md

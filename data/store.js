@@ -206,3 +206,19 @@ export async function verifyEmployee(username, password) {
   };
 }
 
+export async function verifyClient(username, password) {
+  const user = await getUserByUsername(username);
+  if (!user) return { ok: false };
+  const valid = await verifyPassword(password, user.passwordHash);
+  const role = normalizeRole(user.role);
+  if (!valid || role !== 'client') return { ok: false };
+  return {
+    ok: true,
+    user: {
+      id: user.id,
+      username: user.username,
+      role,
+    },
+  };
+}
+

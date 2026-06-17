@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { BarChart3, FileText, Globe, LogOut, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
-import { ClientSitesSection } from './sections/ClientSitesSection';
+import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
 import { UsersSection } from './sections/UsersSection';
 import { EmployeesSection } from './sections/EmployeesSection';
@@ -348,7 +348,7 @@ export const Admin = () => {
 
         <main className="flex-1 ml-60 p-8">
           {tab === 'clients' && (
-            <ClientSitesSection
+            <ManageClientsSection
               sites={sites}
               loading={loading}
               copyKey={copyKey}

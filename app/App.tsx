@@ -5,55 +5,58 @@ import { Footer } from './components/Footer';
 import { ScrollToTop } from './components/ScrollToTop';
 import { PageLoader } from './components/PageLoader';
 import { EmployeeAuthProvider } from './contexts/EmployeeAuthContext';
+import { ClientAuthProvider } from './contexts/ClientAuthContext';
 
-// Lazy-load pages so only the current route's JS is loaded. Reduces initial bundle and speeds up first paint.
-const Home = lazy(() => import('./pages/Home').then(m => ({ default: m.Home })));
-const Pricing = lazy(() => import('./pages/Pricing').then(m => ({ default: m.Pricing })));
-const AboutUs = lazy(() => import('./pages/AboutUs').then(m => ({ default: m.AboutUs })));
-const WebDevelopment = lazy(() => import('./pages/WebDevelopment').then(m => ({ default: m.WebDevelopment })));
-const SocialMediaMarketing = lazy(() => import('./pages/SocialMediaMarketing').then(m => ({ default: m.SocialMediaMarketing })));
-const EmailMarketing = lazy(() => import('./pages/EmailMarketing').then(m => ({ default: m.EmailMarketing })));
-const PhotoVideo = lazy(() => import('./pages/PhotoVideo').then(m => ({ default: m.PhotoVideo })));
-const Clients = lazy(() => import('./pages/Clients').then(m => ({ default: m.Clients })));
-const Booking = lazy(() => import('./pages/Booking').then(m => ({ default: m.Booking })));
-const Page1000kr = lazy(() => import('./pages/1000kr').then(m => ({ default: m.Page1000kr })));
-const BliAnsatt = lazy(() => import('./pages/BliAnsatt').then(m => ({ default: m.BliAnsatt })));
-const Login = lazy(() => import('./pages/Login').then(m => ({ default: m.Login })));
-const Admin = lazy(() => import('./pages/Admin/Admin').then(m => ({ default: m.Admin })));
-const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then(m => ({ default: m.LoginForgotPassword })));
-const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then(m => ({ default: m.LoginResetPassword })));
-const Ansatt = lazy(() => import('./pages/Ansatt').then(m => ({ default: m.Ansatt })));
+const Home = lazy(() => import('./pages/Home').then((m) => ({ default: m.Home })));
+const Pricing = lazy(() => import('./pages/Pricing').then((m) => ({ default: m.Pricing })));
+const AboutUs = lazy(() => import('./pages/AboutUs').then((m) => ({ default: m.AboutUs })));
+const WebDevelopment = lazy(() => import('./pages/WebDevelopment').then((m) => ({ default: m.WebDevelopment })));
+const SocialMediaMarketing = lazy(() => import('./pages/SocialMediaMarketing').then((m) => ({ default: m.SocialMediaMarketing })));
+const EmailMarketing = lazy(() => import('./pages/EmailMarketing').then((m) => ({ default: m.EmailMarketing })));
+const PhotoVideo = lazy(() => import('./pages/PhotoVideo').then((m) => ({ default: m.PhotoVideo })));
+const Clients = lazy(() => import('./pages/Clients').then((m) => ({ default: m.Clients })));
+const Booking = lazy(() => import('./pages/Booking').then((m) => ({ default: m.Booking })));
+const Page1000kr = lazy(() => import('./pages/1000kr').then((m) => ({ default: m.Page1000kr })));
+const BliAnsatt = lazy(() => import('./pages/BliAnsatt').then((m) => ({ default: m.BliAnsatt })));
+const Personvern = lazy(() => import('./pages/legal/Personvern').then((m) => ({ default: m.Personvern })));
+const Vilkar = lazy(() => import('./pages/legal/Vilkar').then((m) => ({ default: m.Vilkar })));
+const Informasjonskapsler = lazy(() => import('./pages/legal/Informasjonskapsler').then((m) => ({ default: m.Informasjonskapsler })));
+const Login = lazy(() => import('./pages/Login').then((m) => ({ default: m.Login })));
+const EmployeeLogin = lazy(() => import('./pages/login/EmployeeLogin').then((m) => ({ default: m.EmployeeLogin })));
+const ClientAuth = lazy(() => import('./pages/login/ClientAuth').then((m) => ({ default: m.ClientAuth })));
+const ClientForgotPassword = lazy(() => import('./pages/login/ClientForgotPassword').then((m) => ({ default: m.ClientForgotPassword })));
+const ClientResetPassword = lazy(() => import('./pages/login/ClientResetPassword').then((m) => ({ default: m.ClientResetPassword })));
+const Admin = lazy(() => import('./pages/Admin/Admin').then((m) => ({ default: m.Admin })));
+const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').then((m) => ({ default: m.LoginForgotPassword })));
+const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then((m) => ({ default: m.LoginResetPassword })));
+const Ansatt = lazy(() => import('./pages/Ansatt').then((m) => ({ default: m.Ansatt })));
+const ClientOnboarding = lazy(() => import('./pages/client/ClientOnboarding').then((m) => ({ default: m.ClientOnboarding })));
+const ClientHome = lazy(() => import('./pages/client/ClientHome').then((m) => ({ default: m.ClientHome })));
+const ClientServices = lazy(() => import('./pages/client/ClientServices').then((m) => ({ default: m.ClientServices })));
+const ClientWebsiteStart = lazy(() => import('./pages/client/ClientWebsiteStart').then((m) => ({ default: m.ClientWebsiteStart })));
+const ClientWebsitePlans = lazy(() => import('./pages/client/ClientWebsitePlans').then((m) => ({ default: m.ClientWebsitePlans })));
+const ClientWebsiteCheckout = lazy(() => import('./pages/client/ClientWebsiteCheckout').then((m) => ({ default: m.ClientWebsiteCheckout })));
 
 function AppLayout() {
   const location = useLocation();
-  const isAdminArea = location.pathname === '/admin' || location.pathname === '/ansatt';
+  const hideShell = /^\/(admin|superadmin|ansatt|login|kunde)(\/|$)/.test(location.pathname);
+  const useLightShell = /^\/(login|kunde)(\/|$)/.test(location.pathname);
 
   useEffect(() => {
-    // Tawk should ONLY exist on /ansatt. If it leaks during navigation, force-remove it.
     if (location.pathname === '/ansatt') return;
-    const ids = [
-      'tawk-script',
-      'tawkchat-container',
-      'tawkchat',
-      'tawkchat-minified-wrapper',
-      'tawkchat-minified-container',
-    ];
+    const ids = ['tawk-script', 'tawkchat-container', 'tawkchat', 'tawkchat-minified-wrapper', 'tawkchat-minified-container'];
     ids.forEach((id) => {
       const el = document.getElementById(id);
       el?.parentNode?.removeChild(el);
     });
     document.querySelectorAll('iframe[src*="tawk.to"]').forEach((el) => el.parentNode?.removeChild(el));
-    // Remove any leftover nodes with id containing "tawk".
     document.querySelectorAll('[id*="tawk"], [id*="Tawk"]').forEach((el) => el.parentNode?.removeChild(el));
-    // Hide as final fallback.
     const styleId = 'hide-tawk-style';
     let style = document.getElementById(styleId) as HTMLStyleElement | null;
     if (!style) {
       style = document.createElement('style');
       style.id = styleId;
-      style.textContent = `
-        [id*="tawk"], [id*="Tawk"], iframe[src*="tawk.to"] { display: none !important; }
-      `;
+      style.textContent = '[id*="tawk"], [id*="Tawk"], iframe[src*="tawk.to"] { display: none !important; }';
       document.head.appendChild(style);
     }
     try {
@@ -67,8 +70,8 @@ function AppLayout() {
   }, [location.pathname]);
 
   return (
-    <div className="bg-[#050505] min-h-screen text-white font-sans selection:bg-white/20 overflow-x-hidden">
-      {!isAdminArea && <Navbar />}
+    <div className={`${useLightShell ? 'bg-[#F8F9FB] text-[#111827] selection:bg-black/10' : 'bg-[#050505] text-white selection:bg-white/20'} min-h-screen font-sans overflow-x-hidden`}>
+      {!hideShell && <Navbar />}
       <Suspense fallback={<PageLoader />}>
         <Routes>
           <Route path="/" element={<Home />} />
@@ -81,16 +84,30 @@ function AppLayout() {
           <Route path="/clients" element={<Clients />} />
           <Route path="/booking" element={<Booking />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/login/ansatt" element={<EmployeeLogin />} />
+          <Route path="/login/kunde" element={<ClientAuth />} />
+          <Route path="/login/kunde/forgot-password" element={<ClientForgotPassword />} />
+          <Route path="/login/kunde/reset-password" element={<ClientResetPassword />} />
           <Route path="/login/forgot-password" element={<LoginForgotPassword />} />
           <Route path="/login/reset-password" element={<LoginResetPassword />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
+          <Route path="/kunde" element={<ClientHome />} />
+          <Route path="/kunde/hjem" element={<ClientHome />} />
+          <Route path="/kunde/onboarding" element={<ClientOnboarding />} />
+          <Route path="/kunde/tjenester" element={<ClientServices />} />
+          <Route path="/kunde/tjenester/nettside/start" element={<ClientWebsiteStart />} />
+          <Route path="/kunde/tjenester/nettside/planer" element={<ClientWebsitePlans />} />
+          <Route path="/kunde/tjenester/nettside/checkout" element={<ClientWebsiteCheckout />} />
           <Route path="/1000kr" element={<Page1000kr />} />
           <Route path="/bli-ansatt" element={<BliAnsatt />} />
+          <Route path="/personvern" element={<Personvern />} />
+          <Route path="/vilkar" element={<Vilkar />} />
+          <Route path="/informasjonskapsler" element={<Informasjonskapsler />} />
         </Routes>
       </Suspense>
-      {!isAdminArea && <Footer />}
+      {!hideShell && <Footer />}
     </div>
   );
 }
@@ -99,8 +116,10 @@ export default function App() {
   return (
     <Router>
       <EmployeeAuthProvider>
-        <ScrollToTop />
-        <AppLayout />
+        <ClientAuthProvider>
+          <ScrollToTop />
+          <AppLayout />
+        </ClientAuthProvider>
       </EmployeeAuthProvider>
     </Router>
   );

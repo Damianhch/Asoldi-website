@@ -4,9 +4,11 @@ import { Button } from './Button';
 import { Menu, X, ChevronDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useEmployeeAuth } from '../contexts/EmployeeAuthContext';
+import { useClientAuth } from '../contexts/ClientAuthContext';
 
 export const Navbar = () => {
   const { isEmployee } = useEmployeeAuth();
+  const { isClient } = useClientAuth();
   const [isScrolled, setIsScrolled] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isServicesOpen, setIsServicesOpen] = useState(false);
@@ -98,11 +100,15 @@ export const Navbar = () => {
         </div>
 
         <div className="hidden lg:flex items-center gap-4">
-          {isEmployee !== true && (
+          {isClient ? (
+            <Link to="/kunde/hjem" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
+              Kundeportal
+            </Link>
+          ) : isEmployee !== true ? (
             <Link to="/login" className="text-sm font-medium text-gray-300 hover:text-[#FF5B00] transition-colors">
               Login
             </Link>
-          )}
+          ) : null}
           <Link to="/booking" className="bg-[#FF5B00] text-white px-6 py-3 rounded-full font-medium hover:bg-white hover:text-black transition-colors">
             Book konsultasjon
           </Link>
@@ -149,9 +155,11 @@ export const Navbar = () => {
               {isEmployee === true && (
                 <Link to="/ansatt" className="text-2xl font-medium text-[#FF5B00]" onClick={() => setIsMobileMenuOpen(false)}>Ansatt</Link>
               )}
-              {isEmployee !== true && (
+              {isClient ? (
+                <Link to="/kunde/hjem" className="text-xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Kundeportal</Link>
+              ) : isEmployee !== true ? (
                 <Link to="/login" className="text-xl font-medium text-white" onClick={() => setIsMobileMenuOpen(false)}>Login</Link>
-              )}
+              ) : null}
               <Link to="/booking" className="bg-[#FF5B00] text-white px-8 py-4 rounded-full font-medium text-xl mt-4" onClick={() => setIsMobileMenuOpen(false)}>
                 Book konsultasjon
               </Link>

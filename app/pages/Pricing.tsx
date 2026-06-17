@@ -5,6 +5,7 @@ import { Link, useLocation } from 'react-router-dom';
 import { SEO } from '../components/SEO';
 import { getServiceSchema } from '../structuredData';
 import { BUSINESS, SITE_URL } from '../config';
+import { WEBSITE_PRODUCTS } from '../data/websiteProducts';
 
 const services = [
   "Nettsideutvikling",
@@ -88,92 +89,7 @@ const smmBaseData = [
 ];
 
 const pricingData: Record<string, any[]> = {
-  "Nettsideutvikling": [
-    {
-      name: "Starter",
-      price: "999,-/mnd",
-      description: "Simpel og funksjonell nettside.",
-      includedFeatures: [
-        "Full nettsideutvikling",
-        "Hosting og vedlikehold",
-        "Kontaktskjema & standard seksjoner",
-        "Opptil 4 innholdsendringer/mnd",
-        "Leveringstid: 2 uker"
-      ],
-      notIncludedFeatures: [
-        "SEO optimalisering",
-        "Anmeldelser & sosiale medier synk",
-        "E-postliste innsamling",
-        "Innledende veiledningsmøte",
-        "Nettbutikk-funksjonalitet",
-        "Analyse-dashbord"
-      ]
-    },
-    {
-      name: "SEO",
-      price: "1 499,-/mnd",
-      description: "Optimalisert nettside for økt synlighet og konvertering.",
-      popular: true,
-      includedFeatures: [
-        "Full nettsideutvikling",
-        "Hosting og vedlikehold",
-        "Kontaktskjema & standard seksjoner",
-        "Opptil 4 innholdsendringer/mnd",
-        "SEO optimalisering",
-        "Anmeldelser & sosiale medier synk",
-        "E-postliste innsamling",
-        "Innledende veiledningsmøte",
-        "Leveringstid: 2 uker"
-      ],
-      notIncludedFeatures: [
-        "Nettbutikk-funksjonalitet",
-        "Analyse-dashbord",
-        "Gjennomgangsmøte"
-      ]
-    },
-    {
-      name: "Nettbutikk",
-      price: "1 999,-/mnd",
-      description: "Full nettbutikk-funksjonalitet og analyse.",
-      includedFeatures: [
-        "Full nettsideutvikling",
-        "Hosting og vedlikehold",
-        "Kontaktskjema & standard seksjoner",
-        "Opptil 4 innholdsendringer/mnd",
-        "SEO optimalisering",
-        "Anmeldelser & sosiale medier synk",
-        "E-postliste innsamling",
-        "Innledende veiledningsmøte",
-        "Nettbutikk-funksjonalitet",
-        "Analyse-dashbord",
-        "Gjennomgangsmøte",
-        "Leveringstid: 3 uker"
-      ],
-      notIncludedFeatures: []
-    },
-    {
-      name: "Skreddersydd",
-      price: "Etter avtale",
-      description: "Skreddersydde løsninger for avanserte behov.",
-      includedFeatures: [
-        "Full nettsideutvikling",
-        "Hosting og vedlikehold",
-        "Kontaktskjema & standard seksjoner",
-        "Ubegrenset innholdsendringer",
-        "SEO optimalisering",
-        "Anmeldelser & sosiale medier synk",
-        "E-postliste innsamling",
-        "Innledende veiledningsmøte",
-        "Nettbutikk-funksjonalitet",
-        "Analyse-dashbord",
-        "Gjennomgangsmøte",
-        "Skreddersydde web-applikasjoner",
-        "Avanserte API-integrasjoner",
-        "Dedikert server & prioritert support"
-      ],
-      notIncludedFeatures: []
-    }
-  ],
+  "Nettsideutvikling": WEBSITE_PRODUCTS,
   "Sosiale Medier": [],
   "E-post Markedsføring": [
     {

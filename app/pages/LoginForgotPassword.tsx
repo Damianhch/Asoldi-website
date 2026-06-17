@@ -38,10 +38,10 @@ export const LoginForgotPassword = () => {
           <title>E-post sendt – Asoldi</title>
           <meta name="robots" content="noindex,nofollow" />
         </Helmet>
-        <section className="min-h-screen pt-28 pb-20 px-6 bg-[#050505]">
-          <div className="max-w-md mx-auto text-center">
-            <h1 className="text-2xl font-bold text-white mb-4">Sjekk e-posten din</h1>
-            <p className="text-gray-400 mb-6">
+        <section className="min-h-screen bg-[#f3f4f6] grid place-items-center p-6">
+          <div className="max-w-md w-full rounded-2xl bg-white border border-[#e5e7eb] p-7 text-center">
+            <h1 className="text-2xl font-bold text-[#111827] mb-4">Sjekk e-posten din</h1>
+            <p className="text-[#6b7280] mb-6">
               Hvis e-posten finnes i systemet, har du fått en lenke for å tilbakestille passordet. Sjekk også søppelpost.
             </p>
             <Link to="/login" className="text-[#FF5B00] hover:underline">
@@ -59,10 +59,10 @@ export const LoginForgotPassword = () => {
         <title>Glemt passord – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <section className="min-h-screen pt-28 pb-20 px-6 bg-[#050505]">
-        <div className="max-w-md mx-auto">
-          <h1 className="text-2xl font-bold text-white mb-1">Glemt passord?</h1>
-          <p className="text-gray-400 text-sm mb-8">
+      <section className="min-h-screen bg-[#f3f4f6] grid place-items-center p-6">
+        <div className="max-w-md w-full rounded-2xl bg-white border border-[#e5e7eb] p-7">
+          <h1 className="text-2xl font-bold text-[#111827] mb-1">Glemt passord?</h1>
+          <p className="text-[#6b7280] text-sm mb-8">
             Skriv inn e-posten din (brukernavn) så sender vi deg en lenke for å tilbakestille passordet.
           </p>
           <form onSubmit={handleSubmit} className="space-y-6">
@@ -75,20 +75,20 @@ export const LoginForgotPassword = () => {
                 placeholder="E-post (brukernavn)"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-4 py-3 rounded-xl bg-[#0a0a0a] border border-white/20 text-white placeholder-gray-500 focus:outline-none focus:border-[#FF5B00]"
+                className="w-full px-4 py-3 rounded-xl border border-[#d1d5db] text-[#111827] placeholder-[#9ca3af] focus:outline-none focus:border-[#FF5B00]"
                 required
               />
             </div>
-            {error && <p className="text-red-400 text-sm text-center">{error}</p>}
+            {error && <p className="text-red-600 text-sm text-center">{error}</p>}
             <button
               type="submit"
               disabled={loading}
-              className="w-full py-4 rounded-xl font-semibold text-white bg-gradient-to-r from-[#FF5B00] to-[#e55200] hover:from-[#ff6b14] hover:to-[#FF5B00] transition-all disabled:opacity-50"
+              className="w-full py-4 rounded-xl font-semibold text-white bg-[#FF5B00] hover:bg-[#e55200] transition-all disabled:opacity-50"
             >
               {loading ? 'Sender…' : 'Send tilbakestillingslenke'}
             </button>
           </form>
-          <Link to="/login" className="mt-6 block text-center text-gray-400 hover:text-white text-sm">
+          <Link to="/login" className="mt-6 block text-center text-[#6b7280] hover:text-[#111827] text-sm">
             ← Tilbake til innlogging
           </Link>
         </div>

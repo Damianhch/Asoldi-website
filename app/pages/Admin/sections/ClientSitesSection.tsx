@@ -10,13 +10,18 @@ type Props = {
   onEdit: (site: Site) => void;
   onDelete: (id: string) => void;
   onCopyKey: (key: string) => void;
+  hideHeader?: boolean;
 };
 
-export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onDelete, onCopyKey }: Props) {
+export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onDelete, onCopyKey, hideHeader = false }: Props) {
   return (
     <div className="max-w-4xl">
-      <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
-      <p className="text-gray-400 text-sm mb-6">Client sites in the hub. Add a site to get a site key for client CMS.</p>
+      {!hideHeader && (
+        <>
+          <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
+          <p className="text-gray-400 text-sm mb-6">Client sites in the hub. Add a site to get a site key for client CMS.</p>
+        </>
+      )}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg font-semibold text-white">Sites</h2>
         <button
