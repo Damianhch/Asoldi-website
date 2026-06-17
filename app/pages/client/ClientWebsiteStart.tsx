@@ -31,6 +31,7 @@ export const ClientWebsiteStart = () => {
       if (!response.ok) throw new Error(data.message || 'Kunne ikke lagre kode.');
       updateProfileState(data.profile || null);
       setModalOpen(false);
+      navigate(data.redirect || '/kunde/tjenester/nettside/planer');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kunne ikke lagre kode.');
     } finally {
@@ -82,7 +83,7 @@ export const ClientWebsiteStart = () => {
           </button>
 
           {profile?.websiteBuilder?.existingWebsiteCode ? (
-            <p className="mt-3 text-xs text-[#4B5563]">Lagrert nettsidekode: {profile.websiteBuilder.existingWebsiteCode}</p>
+            <p className="mt-3 text-xs text-[#4B5563]">Lagret nettsidekode: {profile.websiteBuilder.existingWebsiteCode}</p>
           ) : null}
         </div>
 
@@ -95,13 +96,15 @@ export const ClientWebsiteStart = () => {
                   <X size={16} />
                 </button>
               </div>
-              <p className="mt-2 text-sm text-[#6B7280]">Skriv inn den 4-sifrede koden du har fått.</p>
+              <p className="mt-2 text-sm text-[#6B7280]">Skriv inn nettsidekoden du har fått fra Asoldi (2 bokstaver og 2 tall, f.eks. AB12).</p>
               <input
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D+/g, '').slice(0, 4))}
-                inputMode="numeric"
-                className="mt-4 w-full rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-[#111827] tracking-[0.35em] text-center text-2xl outline-none"
-                placeholder="0000"
+                onChange={(e) => setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4))}
+                autoCapitalize="characters"
+                autoComplete="off"
+                spellCheck={false}
+                className="mt-4 w-full rounded-xl border border-[#E5E7EB] bg-[#F9FAFB] px-4 py-3 text-[#111827] tracking-[0.4em] text-center text-2xl font-semibold uppercase outline-none"
+                placeholder="AB12"
               />
               {error ? <p className="mt-3 text-sm text-red-500">{error}</p> : null}
               <div className="mt-5 flex justify-end gap-2">

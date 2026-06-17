@@ -83,6 +83,55 @@ function defaultWebsiteBuilder() {
   };
 }
 
+function defaultPayment() {
+  return {
+    // none | processing | active | past_due | canceled | invoice_requested
+    status: 'none',
+    method: '', // card | faktura
+    planId: '',
+    planName: '',
+    amount: 0, // numeric monthly amount captured at purchase (0 = unknown)
+    currency: 'nok',
+    stripeCustomerId: '',
+    stripeSubscriptionId: '',
+    stripeSessionId: '',
+    paidAt: '',
+    updatedAt: '',
+    invoiceRequest: null, // faktura: { orgNumber, businessName, invoiceEmail, requestedAt }
+  };
+}
+
+function normalizePayment(input = {}) {
+  const base = defaultPayment();
+  const src = input && typeof input === 'object' ? input : {};
+  const amountNum = typeof src.amount === 'number'
+    ? src.amount
+    : Number.parseInt(String(src.amount ?? '').replace(/[^\d]/g, ''), 10);
+  const ir = src.invoiceRequest && typeof src.invoiceRequest === 'object'
+    ? {
+        orgNumber: sanitizeText(src.invoiceRequest.orgNumber),
+        businessName: sanitizeText(src.invoiceRequest.businessName),
+        invoiceEmail: sanitizeText(src.invoiceRequest.invoiceEmail).toLowerCase(),
+        requestedAt: sanitizeText(src.invoiceRequest.requestedAt),
+      }
+    : null;
+  return {
+    ...base,
+    status: sanitizeText(src.status) || base.status,
+    method: sanitizeText(src.method),
+    planId: sanitizeText(src.planId),
+    planName: sanitizeText(src.planName),
+    amount: Number.isFinite(amountNum) ? amountNum : 0,
+    currency: sanitizeText(src.currency) || base.currency,
+    stripeCustomerId: sanitizeText(src.stripeCustomerId),
+    stripeSubscriptionId: sanitizeText(src.stripeSubscriptionId),
+    stripeSessionId: sanitizeText(src.stripeSessionId),
+    paidAt: sanitizeText(src.paidAt),
+    updatedAt: sanitizeText(src.updatedAt),
+    invoiceRequest: ir,
+  };
+}
+
 function normalizeCustomPlan(input = {}) {
   const base = defaultCustomPlan();
   const monthlyPriceRaw = input.monthlyPrice ?? base.monthlyPrice;
@@ -109,7 +158,7 @@ function normalizeWebsiteBuilder(input = {}) {
   return {
     ...base,
     ...input,
-    existingWebsiteCode: sanitizeText(input.existingWebsiteCode || base.existingWebsiteCode).replace(/\D+/g, '').slice(0, 4),
+    existingWebsiteCode: sanitizeText(input.existingWebsiteCode || base.existingWebsiteCode).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4),
     selectedPlanId: sanitizeText(input.selectedPlanId || base.selectedPlanId),
     selectedPlanName: sanitizeText(input.selectedPlanName || base.selectedPlanName),
     selectedPlanPrice: sanitizeText(input.selectedPlanPrice || base.selectedPlanPrice),
@@ -136,6 +185,7 @@ function normalizeProfile(input = {}) {
     onboardingComplete: onboarding,
     customWebsitePlan: normalizeCustomPlan(input.customWebsitePlan),
     websiteBuilder: normalizeWebsiteBuilder(input.websiteBuilder),
+    payment: normalizePayment(input.payment),
     createdAt,
     updatedAt: sanitizeText(input.updatedAt) || createdAt,
   };
@@ -243,6 +293,10 @@ function mergeProfilePatch(current, patch = {}) {
       ...(current.websiteBuilder || {}),
       ...((patch.websiteBuilder && typeof patch.websiteBuilder === 'object') ? patch.websiteBuilder : {}),
     },
+    payment: {
+      ...(current.payment || {}),
+      ...((patch.payment && typeof patch.payment === 'object') ? patch.payment : {}),
+    },
     updatedAt: nowIso(),
   });
 }
@@ -324,7 +378,7 @@ export function setClientOnboarding(userId, data = {}) {
 }
 
 export function setClientExistingWebsiteCode(userId, code) {
-  const nextCode = sanitizeText(code).replace(/\D+/g, '').slice(0, 4);
+  const nextCode = sanitizeText(code).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4);
   return upsertClientProfile(userId, {
     websiteBuilder: {
       existingWebsiteCode: nextCode,
@@ -344,38 +398,27 @@ export function setClientSelectedWebsitePlan(userId, plan = {}) {
   });
 }
 
+export function setClientPayment(userId, patch = {}) {
+  const next = { ...patch, updatedAt: nowIso() };
+  return upsertClientProfile(userId, { payment: next }, { syncPortalState: false });
+}
+
+export function getClientProfileByStripeCustomerId(customerId) {
+  const target = sanitizeText(customerId);
+  if (!target) return null;
+  return listClientProfiles().find((entry) => entry.payment && entry.payment.stripeCustomerId === target) || null;
+}
+
 export function getClientDashboardData(profile) {
   const normalized = normalizeProfile(profile || {});
   const businessName = sanitizeText(normalized.businessName) || 'bedriften din';
-  const hasCode = Boolean(normalized.websiteBuilder?.existingWebsiteCode);
-  const selectedPlanName = sanitizeText(normalized.websiteBuilder?.selectedPlanName);
   return {
     todoList: [
       {
         id: 'setup-website',
-        title: 'Steg 1: Sett opp bedriftsnettsiden',
-        description: 'Inkluderer SEO-optimalisering, kontaktskjema, hosting og vedlikehold.',
-        actionLabel: 'Start',
-        route: '/kunde/tjenester/nettside/start',
-      },
-      {
-        id: 'website-payment',
-        title: selectedPlanName
-          ? `Din valgte plan: ${selectedPlanName}`
-          : 'Velg nettsideplan og gå til checkout',
-        description: selectedPlanName
-          ? 'Du kan når som helst oppdatere eller bytte plan i nettsidebyggeren.'
-          : 'Velg plan for å fortsette onboarding av nettsiden.',
-        actionLabel: selectedPlanName ? 'Se plan' : 'Velg plan',
-        route: '/kunde/tjenester/nettside/planer',
-      },
-      {
-        id: 'existing-site-code',
-        title: hasCode ? `Eksisterende nettsidekode: ${normalized.websiteBuilder.existingWebsiteCode}` : 'Har du allerede en nettside? Legg inn kode',
-        description: hasCode
-          ? 'Koden er lagret. Teamet vårt bruker denne når vi kobler eksisterende side.'
-          : 'Bruk 4-sifret kode for å koble eksisterende nettsideoppsett.',
-        actionLabel: hasCode ? 'Oppdater' : 'Legg inn',
+        title: 'Sett opp din nettside',
+        description: 'Kom i gang med nettsiden din – velg plan, design og innhold.',
+        actionLabel: 'Start her',
         route: '/kunde/tjenester/nettside/start',
       },
     ],

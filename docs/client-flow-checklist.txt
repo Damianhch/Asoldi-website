@@ -1,6 +1,6 @@
 ASOLDI CLIENT FLOW + BACKEND — CHECKLIST
-Last updated: 2026-06-17
-Use [x] when done, [ ] when not done.
+Last updated: 2026-06-17 (evening) — deployed to prod; Google client login LIVE
+Use [x] when done, [~] when configured-but-needs-verification, [ ] when not done.
 
 ================================================================================
 A) CLIENT FLOW (asoldi.com) — UI & FEATURES
@@ -13,8 +13,8 @@ LOGIN & AUTH
 [x] Client forgot password page
 [x] Client reset password page
 [x] Employee login still works (separate path)
-[ ] Google login — wired in UI only; needs real OAuth credentials
-[ ] Facebook login — wired in UI only; needs real OAuth credentials
+[x] Google login — LIVE in production (real OAuth; stateless signed state)
+[ ] Facebook login — NOT implemented; button hidden in prod (enable later if wanted)
 
 ONBOARDING
 [x] Paginated questionnaire after first login (navn, bedrift, stilling, kilde)
@@ -44,12 +44,14 @@ CHECKOUT & PLANS
 [x] Trust illustrations (30 dager garanti, ingen oppstartsgebyr, 24/7 support)
 [x] Plan selection saved to backend
 [x] "Gå til checkout" button with terms checkboxes
-[ ] Full payment page (faktura / Vipps / kort) — not live yet
-[ ] Real payment provider integration (Stripe / Vipps / etc.)
+[x] Card payment — embedded Stripe Checkout (monthly subscription), code-complete
+[~] Card payment LIVE — needs Stripe keys + Price ids + webhook secret in prod env
+[x] Faktura (EHF) — request form (org.nr) + Asoldi notify email; full PEPPOL TODO
+[ ] Vipps — option shown as "kommer snart" (not implemented)
 [ ] Final custom "nettside plan" pricing/content from you (placeholder today)
 
 DEPLOY & TEST
-[ ] Deploy latest Asoldi website build to production (asoldi.com)
+[x] Deploy latest Asoldi website build to production (asoldi.com)
 [ ] End-to-end smoke test: login → onboarding → home → builder → checkout
 [ ] Test on mobile/tablet layouts
 
@@ -65,16 +67,19 @@ SALES ADMIN (admin.asoldi.com)
 [x] Import website from Website Maker (run ID)
 [x] Local preview of imported site
 [x] "Got the client" promote to Clients tab
-[ ] Google Calendar OAuth — connect first admin account in Admin > Sales
-[ ] SMTP verified for sales thank-you + reminder emails in production
+[x] Sales role + dedicated /sales workspace; clients scoped to owner
+[~] Google Calendar OAuth — envs set in prod; each sales/admin user must do the
+    one-time "Connect Google Calendar" (per-user tokens, calendar.events scope)
+[~] SMTP — configured in prod (Hostinger, 465); needs one live send test
 [ ] Full E2E test: add sales client → import run → preview → got client
 
 WEBSITE MAKER EXPORT
 [x] Export Latest Site ZIP button on run page
 [x] Shared export library (hostinger-export.mjs)
 [x] API endpoint GET /api/runs/[runId]/export
-[ ] Set WEBSITE_MAKER_BASE_URL in Asoldi deployment env
-[ ] Confirm Website Maker reachable from Asoldi server for import API
+[x] Sales import via direct ZIP upload (no network needed) + URL import
+[~] WEBSITE_MAKER_BASE_URL — only needed for URL-based import; ZIP upload works without it
+[ ] (Optional) Host Website Maker at a reachable URL for one-click URL import
 
 ================================================================================
 C) ACCESS & CREDENTIALS YOU NEED TO PROVIDE
@@ -82,54 +87,52 @@ C) ACCESS & CREDENTIALS YOU NEED TO PROVIDE
 
 Copy values into .env on the Asoldi server (never commit secrets to git).
 
---- 1) GOOGLE OAUTH (client login) ---
-[ ] GOOGLE_CLIENT_ID=
-[ ] GOOGLE_CLIENT_SECRET=
-[ ] Authorized redirect URI(s) added in Google Cloud Console, e.g.:
-      https://asoldi.com/api/client/auth/google/callback
-      http://localhost:3000/api/client/auth/google/callback  (dev)
+--- 1) GOOGLE OAUTH (client login) --- DONE / LIVE
+[x] CLIENT_GOOGLE_CLIENT_ID=        (set in prod)
+[x] CLIENT_GOOGLE_CLIENT_SECRET=    (set in prod)
+[x] CLIENT_GOOGLE_REDIRECT_URI=https://asoldi.com/api/client/auth/google/callback
+[x] CLIENT_SOCIAL_DEV_MODE=0
+[x] Redirect URIs added in Google Cloud Console (prod + localhost)
 
-How: Google Cloud Console → APIs & Services → Credentials → OAuth 2.0 Client ID
+--- 2) FACEBOOK OAUTH (client login) --- OPTIONAL / NOT DONE
+[ ] Not implemented; the Facebook button is hidden until a real OAuth flow is added.
 
---- 2) FACEBOOK OAUTH (client login) ---
-[ ] FACEBOOK_APP_ID=
-[ ] FACEBOOK_APP_SECRET=
-[ ] Valid OAuth redirect URI(s) in Meta Developer app, e.g.:
-      https://asoldi.com/api/client/auth/facebook/callback
+--- 3) SMTP (password reset + sales emails) --- CONFIGURED, VERIFY LIVE
+[x] SMTP_HOST=smtp.hostinger.com
+[x] SMTP_PORT=465        (code sets secure=true automatically for 465)
+[x] SMTP_USER=contact@asoldi.com
+[x] SMTP_PASS=           (set in prod)
+[x] SMTP_FROM=Asoldi <contact@asoldi.com>
+[x] APP_URL=https://asoldi.com
+[ ] VERIFY: trigger forgot-password on asoldi.com and confirm the email arrives
 
-How: developers.facebook.com → Your App → Facebook Login → Settings
-
---- 3) SMTP (password reset + sales emails) ---
-[ ] SMTP_HOST=
-[ ] SMTP_PORT=          (usually 587 or 465)
-[ ] SMTP_USER=
-[ ] SMTP_PASS=
-[ ] SMTP_FROM=          (e.g. noreply@asoldi.com — domain must be verified)
-[ ] APP_URL=https://asoldi.com   (for correct reset links in emails)
-
-How: Use your email provider (Hostinger, Google Workspace, SendGrid, etc.)
-
---- 4) GOOGLE CALENDAR (sales meetings — Admin > Sales) ---
-[ ] GOOGLE_CALENDAR_CLIENT_ID=
-[ ] GOOGLE_CALENDAR_CLIENT_SECRET=
-[ ] GOOGLE_CALENDAR_REDIRECT_URI=   (match server callback route)
-[ ] First connect: open Admin → Sales → Connect Google Calendar (one-time OAuth)
-
-How: Same or separate Google Cloud project; enable Calendar API
+--- 4) GOOGLE CALENDAR (sales meetings) --- ENVS SET, CONNECT PER USER
+[x] GOOGLE_OAUTH_CLIENT_ID=         (set in prod)
+[x] GOOGLE_OAUTH_CLIENT_SECRET=     (set in prod)
+[x] GOOGLE_OAUTH_REDIRECT_URI=https://admin.asoldi.com/api/admin/sales/google/oauth/callback
+[x] GOOGLE_CALENDAR_ID=primary
+[x] GOOGLE_CALENDAR_TIMEZONE=Europe/Oslo
+[ ] Each sales/admin user: Admin → Sales (or /sales) → Connect Google Calendar (one-time)
+[ ] VERIFY: create a sales client with agreed time → event appears on that user's calendar
 
 --- 5) WEBSITE MAKER ↔ ASOLDI ---
-[ ] WEBSITE_MAKER_BASE_URL=         (e.g. https://your-wm-host or http://localhost:3000)
-[ ] Website Maker running and export API reachable from Asoldi server
-[ ] Optional: firewall / VPN if WM is internal only
+[x] Manual import: download export ZIP in Website Maker → "Upload ZIP" on the sales client
+[~] WEBSITE_MAKER_BASE_URL — only used for URL-based "Import site"; not needed for ZIP upload
+[ ] (Optional) Host the Website Maker at a reachable URL for one-click URL import
 
-How: Set in Asoldi .env; test import from Sales tab with a real runId
-
---- 6) PAYMENTS (when ready for live checkout) ---
-[ ] Choose provider: Stripe / Vipps / other
-[ ] Provider API keys + webhook secret
-[ ] Webhook URL configured on provider dashboard
-
-How: Tell us which provider; we wire checkout "Betal" to it
+--- 6) PAYMENTS (Stripe cards — code done, go-live steps) ---
+[x] Provider chosen: Stripe (embedded Checkout, monthly subscriptions)
+[ ] STRIPE_SECRET_KEY + STRIPE_PUBLISHABLE_KEY in prod env (sk_live_/pk_live_)
+[ ] STRIPE_PRICE_TIER_1_STANDARD / _2_SEO / _3_ECOMMERCE = each Product's price_ id
+[ ] Webhook endpoint added in Stripe -> https://asoldi.com/api/webhooks/stripe
+    events: checkout.session.completed, invoice.payment_failed,
+            customer.subscription.deleted  -> put whsec_... in STRIPE_WEBHOOK_SECRET
+[ ] One real test charge + refund to verify end-to-end (live mode)
+[ ] (Offer tier) rep-set custom plan: charges its monthly amount automatically;
+    optional customWebsitePlan.stripePriceId to bind a fixed Stripe price
+[ ] (Coupons) to discount the actual card charge, create matching Stripe promo
+    codes — local coupon UI is display-only today (coordinate w/ offer-tier agent)
+[ ] Faktura (EHF) automation: pick a PEPPOL provider (Fiken/Tripletex/etc.)
 
 --- 7) CUSTOM NETTSIDE PLAN (content from you) ---
 [ ] Business rules for when custom plan appears

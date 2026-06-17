@@ -50,13 +50,17 @@ export function ClientPortalLayout({ children, title, subtitle }: Props) {
     <div className="min-h-screen bg-[#F8F9FB] text-[#111827]">
       <div className="mx-auto max-w-[1460px] min-h-screen flex">
         <aside className="w-[220px] border-r border-[#E7E9EE] bg-[#F3F4F6] px-4 py-5">
-          <div className="flex items-center gap-3 mb-8">
+          <Link
+            to="/kunde/hjem"
+            className="flex items-center gap-3 mb-8 rounded-xl -mx-1 px-1 py-1 transition-colors hover:bg-white/70"
+            aria-label="Til hjem"
+          >
             <div className="w-10 h-10 rounded-xl bg-[#FF5B00] text-white flex items-center justify-center font-bold">A</div>
             <div>
-              <p className="text-sm font-semibold">SHB´s Marketing HUB</p>
+              <p className="text-sm font-semibold">Asoldi HUB</p>
               <p className="text-xs text-[#6B7280]">Kundeportal</p>
             </div>
-          </div>
+          </Link>
 
           <nav className="space-y-2">
             <SidebarLink to="/kunde/hjem" label="Hjem" active={isHome} />

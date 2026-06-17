@@ -12,11 +12,19 @@ type FormState = {
   discoveryChannel: string;
 };
 
+const DISCOVERY_OPTIONS = ['Fra sosiale medier', 'Referanse', 'Telefon salg', 'Annet'] as const;
+
 const QUESTION_STEPS = [
-  { key: 'name', title: 'Hva heter du?', placeholder: 'Fornavn og etternavn' },
-  { key: 'businessName', title: 'Hva heter bedriften din?', placeholder: 'Bedriftsnavn' },
-  { key: 'position', title: 'Hva er stillingen din?', placeholder: 'f.eks. Daglig leder' },
-  { key: 'discoveryChannel', title: 'Hvordan fant du oss?', placeholder: 'f.eks. Instagram, anbefaling, Google' },
+  { key: 'name', title: 'Hva heter du?', placeholder: 'Fornavn og etternavn', type: 'text' },
+  { key: 'businessName', title: 'Hva heter bedriften din?', placeholder: 'Bedriftsnavn', type: 'text' },
+  { key: 'position', title: 'Hva er stillingen din?', placeholder: 'f.eks. Daglig leder', type: 'text' },
+  {
+    key: 'discoveryChannel',
+    title: 'Hvordan fant du oss?',
+    placeholder: 'Velg et alternativ',
+    type: 'select',
+    options: DISCOVERY_OPTIONS,
+  },
 ] as const;
 
 export const ClientOnboarding = () => {
@@ -91,14 +99,32 @@ export const ClientOnboarding = () => {
 
           <div className="rounded-2xl border border-[#E5E7EB] bg-[#FAFBFC] p-6">
             <h2 className="text-xl font-semibold text-[#111827]">{current.title}</h2>
-            <input
-              type="text"
-              value={currentValue}
-              onChange={(e) => setCurrentValue(e.target.value)}
-              placeholder={current.placeholder}
-              className="mt-4 w-full rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-[#111827] outline-none focus:border-[#FF5B00]"
-              autoFocus
-            />
+            {current.type === 'select' ? (
+              <select
+                value={currentValue}
+                onChange={(e) => setCurrentValue(e.target.value)}
+                className="mt-4 w-full rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-[#111827] outline-none focus:border-[#FF5B00]"
+                autoFocus
+              >
+                <option value="" disabled>
+                  {current.placeholder}
+                </option>
+                {current.options?.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={currentValue}
+                onChange={(e) => setCurrentValue(e.target.value)}
+                placeholder={current.placeholder}
+                className="mt-4 w-full rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-[#111827] outline-none focus:border-[#FF5B00]"
+                autoFocus
+              />
+            )}
           </div>
 
           {error ? <p className="mt-5 text-sm text-red-500">{error}</p> : null}

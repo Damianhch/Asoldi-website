@@ -11,6 +11,7 @@ import * as hub from './data/hub.js';
 import * as employees from './data/employees.js';
 import * as sales from './data/sales.js';
 import * as clientPortal from './data/client-portal.js';
+import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
 import { getPersistentDataDir } from './data/storage-path.js';
 import * as emailLib from './lib/email.js';
@@ -32,6 +33,14 @@ import {
   isClientGoogleConfigured,
   resolveClientGoogleRedirectUri,
 } from './lib/client-google-auth.js';
+import {
+  getStripe,
+  isStripeConfigured,
+  getPublishableKey,
+  getWebhookSecret,
+  getStripeCurrency,
+  priceIdForPlan,
+} from './lib/stripe.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -71,6 +80,10 @@ async function ensureAdminExists() {
 }
 
 // --- API (must be before static)
+// Stripe webhook needs the raw, unparsed body to verify the signature, so it is
+// registered before the global JSON body parser below.
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
 app.use(express.json());
 
 // Rate limit forgot-password (5 per IP per 15 min)
@@ -137,7 +150,7 @@ const CLIENT_WEBSITE_PLANS = [
   {
     id: 'tier-2-seo',
     name: 'Tier 2: SEO',
-    price: '1499,-/mnd',
+    price: '1 499,-/mnd',
     setupFee: '999,- /engang',
     domainPrice: '79,-/mnd',
     emailPrice: '49,-/mnd',
@@ -152,8 +165,8 @@ const CLIENT_WEBSITE_PLANS = [
   },
   {
     id: 'tier-3-ecommerce',
-    name: 'Tier 3: Ecommerce',
-    price: '1999,-/mnd',
+    name: 'Tier 3: Nettbutikk',
+    price: '1 999,-/mnd',
     setupFee: '999,- /engang',
     domainPrice: '79,-/mnd',
     emailPrice: '49,-/mnd',
@@ -167,6 +180,10 @@ const CLIENT_WEBSITE_PLANS = [
     category: 'website',
   },
 ];
+
+function findWebsitePlan(planId) {
+  return CLIENT_WEBSITE_PLANS.find((entry) => entry.id === sanitizeText(planId)) || null;
+}
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
@@ -1132,15 +1149,289 @@ app.post('/api/client/plans/website/select', clientAuth, async (req, res) => {
   return res.json({ profile, selectedPlan });
 });
 
+// --- Stripe card checkout (embedded) -------------------------------------
+
+// Public-safe config the client portal needs to mount embedded Checkout.
+app.get('/api/client/checkout/config', clientAuth, (req, res) => {
+  const publishableKey = getPublishableKey();
+  return res.json({
+    configured: isStripeConfigured() && Boolean(publishableKey),
+    publishableKey,
+    currency: getStripeCurrency(),
+  });
+});
+
+// Resolves the client's saved plan to a Stripe subscription line item and
+// creates an embedded Checkout Session. Standard tiers use a configured Price
+// id; the rep-set offer/custom tier uses its own price id when present, else an
+// inline recurring price built from its monthly amount.
+app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => {
+  if (!isStripeConfigured()) {
+    return res.status(503).json({ message: 'Kortbetaling er ikke konfigurert enda.' });
+  }
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const builder = profile.websiteBuilder || {};
+  const type = sanitizeText(builder.selectedPlanType) || 'standard';
+
+  let lineItem = null;
+  let planName = '';
+  let amount = 0;
+
+  if (type === 'custom') {
+    const custom = profile.customWebsitePlan || {};
+    planName = sanitizeText(custom.title || custom.name) || 'Din nettside plan';
+    const priceId = sanitizeText(custom.stripePriceId);
+    if (priceId) {
+      lineItem = { price: priceId, quantity: 1 };
+    } else {
+      const monthly = typeof custom.monthlyPrice === 'number'
+        ? custom.monthlyPrice
+        : Number.parseInt(String(custom.monthlyPrice ?? '').replace(/[^\d]/g, ''), 10);
+      if (!Number.isFinite(monthly) || monthly <= 0) {
+        return res.status(400).json({
+          message: 'Denne planen har ikke en fast pris. Velg faktura, eller kontakt oss for et tilbud.',
+          code: 'no-fixed-price',
+        });
+      }
+      amount = monthly;
+      lineItem = {
+        price_data: {
+          currency: getStripeCurrency(),
+          unit_amount: Math.round(monthly * 100),
+          recurring: { interval: 'month' },
+          product_data: { name: planName },
+        },
+        quantity: 1,
+      };
+    }
+  } else {
+    const found = findWebsitePlan(builder.selectedPlanId);
+    if (!found) return res.status(400).json({ message: 'Ingen gyldig plan valgt. Velg plan først.' });
+    planName = found.name;
+    const priceId = priceIdForPlan(found.id);
+    if (!priceId) {
+      return res.status(503).json({ message: `Mangler Stripe-pris for ${found.name}. Sett STRIPE_PRICE_* i miljøet.` });
+    }
+    lineItem = { price: priceId, quantity: 1 };
+  }
+
+  const appUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  try {
+    const stripe = getStripe();
+    const sessionParams = {
+      mode: 'subscription',
+      ui_mode: 'embedded',
+      line_items: [lineItem],
+      // Shows Stripe's "Add promotion code" field in the embedded checkout so a
+      // coupon/promotion code (e.g. a 50%-off first-time code) is applied and
+      // enforced by Stripe on the actual charge.
+      allow_promotion_codes: true,
+      client_reference_id: user.id,
+      return_url: `${appUrl}/kunde/tjenester/nettside/checkout?session_id={CHECKOUT_SESSION_ID}`,
+      metadata: {
+        userId: String(user.id),
+        planId: sanitizeText(builder.selectedPlanId),
+        planName,
+        planType: type,
+        amount: String(amount || ''),
+      },
+      subscription_data: { metadata: { userId: String(user.id), planType: type } },
+    };
+    const existingCustomer = sanitizeText(profile.payment?.stripeCustomerId);
+    if (existingCustomer) {
+      sessionParams.customer = existingCustomer;
+    } else {
+      const email = normalizeEmail(profile.email || user.username);
+      if (email) sessionParams.customer_email = email;
+    }
+    const session = await stripe.checkout.sessions.create(sessionParams);
+    clientPortal.setClientPayment(user.id, {
+      status: 'processing',
+      method: 'card',
+      planId: sanitizeText(builder.selectedPlanId),
+      planName,
+      amount,
+      currency: getStripeCurrency(),
+      stripeSessionId: session.id,
+    });
+    return res.json({ clientSecret: session.client_secret });
+  } catch (error) {
+    console.error('Stripe create-session error:', error?.message || error);
+    return res.status(500).json({ message: 'Kunne ikke starte betaling. Prøv igjen.' });
+  }
+});
+
+// Lets the return page show the right status after embedded Checkout completes.
+app.get('/api/client/checkout/session-status', clientAuth, async (req, res) => {
+  if (!isStripeConfigured()) return res.status(503).json({ message: 'Stripe ikke konfigurert.' });
+  const sessionId = sanitizeText(req.query.session_id);
+  if (!sessionId) return res.status(400).json({ message: 'Mangler session_id.' });
+  try {
+    const session = await getStripe().checkout.sessions.retrieve(sessionId);
+    const ref = sanitizeText(session.client_reference_id);
+    if (ref && ref !== sanitizeText(req.client.userId)) {
+      return res.status(403).json({ message: 'Forbidden' });
+    }
+    return res.json({ status: session.status, paymentStatus: session.payment_status });
+  } catch (error) {
+    console.error('Stripe session-status error:', error?.message || error);
+    return res.status(500).json({ message: 'Kunne ikke hente status.' });
+  }
+});
+
+// Faktura (EHF) path: capture the business org details, mark the request, and
+// notify Asoldi to issue the e-invoice. Full PEPPOL/EHF automation comes later.
+app.post('/api/client/checkout/request-faktura', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const orgNumber = sanitizeText(req.body?.orgNumber).replace(/\s+/g, '');
+  if (!/^\d{9}$/.test(orgNumber)) {
+    return res.status(400).json({ message: 'Oppgi et gyldig organisasjonsnummer (9 siffer).' });
+  }
+  const businessName = sanitizeText(req.body?.businessName) || sanitizeText(profile.businessName);
+  const invoiceEmail = normalizeEmail(req.body?.invoiceEmail || profile.email || user.username);
+  const builder = profile.websiteBuilder || {};
+  const planName = builder.selectedPlanType === 'custom'
+    ? (sanitizeText(profile.customWebsitePlan?.title) || 'Din nettside plan')
+    : (findWebsitePlan(builder.selectedPlanId)?.name || sanitizeText(builder.selectedPlanName));
+
+  clientPortal.setClientPayment(user.id, {
+    status: 'invoice_requested',
+    method: 'faktura',
+    planId: sanitizeText(builder.selectedPlanId),
+    planName,
+    invoiceRequest: { orgNumber, businessName, invoiceEmail, requestedAt: new Date().toISOString() },
+  });
+
+  if (emailLib.canSendEmail()) {
+    try {
+      await emailLib.sendEmail({
+        to: process.env.SALES_NOTIFY_EMAIL || process.env.SMTP_USER || 'contact@asoldi.com',
+        subject: `[Asoldi] EHF-faktura forespurt: ${businessName || invoiceEmail}`,
+        text: [
+          'En kunde har bedt om faktura (EHF).',
+          '',
+          `Bedrift: ${businessName || '—'}`,
+          `Org.nr: ${orgNumber}`,
+          `Faktura-e-post: ${invoiceEmail || '—'}`,
+          `Plan: ${planName || '—'}`,
+          `Konto: ${user.username} (userId ${user.id})`,
+        ].join('\n'),
+      });
+    } catch (error) {
+      console.error('Faktura notify email failed:', error?.message || error);
+    }
+  }
+
+  return res.json({ ok: true });
+});
+
+// Verifies the Stripe webhook signature and reconciles subscription state onto
+// the client's profile. Registered with a raw body parser before express.json().
+async function handleStripeWebhook(req, res) {
+  const secret = getWebhookSecret();
+  if (!isStripeConfigured() || !secret) {
+    return res.status(503).send('Stripe webhook not configured');
+  }
+  const signature = req.headers['stripe-signature'];
+  let event;
+  try {
+    event = getStripe().webhooks.constructEvent(req.body, signature, secret);
+  } catch (error) {
+    console.error('Stripe webhook signature verification failed:', error?.message || error);
+    return res.status(400).send(`Webhook Error: ${error?.message || 'invalid signature'}`);
+  }
+
+  try {
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object || {};
+        const userId = sanitizeText(session.client_reference_id || session.metadata?.userId);
+        if (userId) {
+          clientPortal.setClientPayment(userId, {
+            status: 'active',
+            method: 'card',
+            planId: sanitizeText(session.metadata?.planId),
+            planName: sanitizeText(session.metadata?.planName),
+            amount: Number(session.amount_total ? session.amount_total / 100 : session.metadata?.amount || 0) || 0,
+            currency: sanitizeText(session.currency) || getStripeCurrency(),
+            stripeCustomerId: sanitizeText(session.customer),
+            stripeSubscriptionId: sanitizeText(session.subscription),
+            stripeSessionId: sanitizeText(session.id),
+            paidAt: new Date().toISOString(),
+          });
+        }
+        break;
+      }
+      case 'invoice.payment_failed': {
+        const invoice = event.data.object || {};
+        const profile = clientPortal.getClientProfileByStripeCustomerId(sanitizeText(invoice.customer));
+        if (profile) clientPortal.setClientPayment(profile.userId, { status: 'past_due' });
+        break;
+      }
+      case 'customer.subscription.deleted': {
+        const sub = event.data.object || {};
+        const profile = clientPortal.getClientProfileByStripeCustomerId(sanitizeText(sub.customer));
+        if (profile) clientPortal.setClientPayment(profile.userId, { status: 'canceled' });
+        break;
+      }
+      default:
+        break;
+    }
+  } catch (error) {
+    console.error('Stripe webhook handler error:', error?.message || error);
+  }
+
+  return res.json({ received: true });
+}
+
+app.get('/api/client/offer', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const offer = offers.getActiveOfferForUser({ userId: user.id, email: user.username });
+  if (!offer) return res.json({ offer: null });
+  const plan = findWebsitePlan(offer.planId);
+  return res.json({
+    offer: {
+      ...offer,
+      planName: offer.planName || plan?.name || '',
+      price: offer.price || plan?.price || '',
+    },
+  });
+});
+
 app.post('/api/client/website/existing-code', clientAuth, async (req, res) => {
   const user = await store.getUserById(req.client.userId);
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
-  const code = sanitizeText(req.body?.code).replace(/\D+/g, '').slice(0, 4);
+  const code = offers.normalizeCode(req.body?.code);
   if (code.length !== 4) {
-    return res.status(400).json({ message: 'Koden må være 4 sifre.' });
+    return res.status(400).json({ message: 'Koden må være 2 bokstaver og 2 tall (f.eks. AB12).' });
   }
-  const profile = clientPortal.setClientExistingWebsiteCode(user.id, code);
-  return res.json({ profile, code });
+  const offer = offers.getOfferByCode(code);
+  if (!offer) {
+    return res.status(404).json({ message: 'Fant ingen tilbud med denne koden. Sjekk at koden er riktig.' });
+  }
+  const claimed = offers.claimOffer(offer.id, { userId: user.id, email: user.username });
+  clientPortal.setClientExistingWebsiteCode(user.id, code);
+  const plan = findWebsitePlan(offer.planId);
+  if (plan) {
+    clientPortal.setClientSelectedWebsitePlan(user.id, {
+      id: plan.id,
+      name: plan.name,
+      price: plan.price,
+      type: 'standard',
+    });
+  }
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  return res.json({
+    profile,
+    code,
+    offer: claimed || offer,
+    redirect: '/kunde/tjenester/nettside/planer',
+  });
 });
 
 function issueResetTokenForUser(user, req, resetPath) {
@@ -1795,6 +2086,86 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
     site,
     movedClient: client,
   });
+});
+
+// --- Sales: search registered client portal users (to grant website offers to).
+app.get('/api/admin/sales/client-search', salesAuth, async (req, res) => {
+  const query = sanitizeText(req.query?.q).toLowerCase();
+  const allUsers = await store.getAllUsers();
+  const clientUsers = allUsers.filter((entry) => entry.role === 'client');
+  const results = clientUsers
+    .map((entry) => {
+      const profile = clientPortal.getClientProfile(entry.id);
+      return {
+        userId: entry.id,
+        email: sanitizeText(entry.username).toLowerCase(),
+        name: sanitizeText(profile?.name),
+        businessName: sanitizeText(profile?.businessName),
+        createdAt: entry.createdAt,
+      };
+    })
+    .filter((entry) => {
+      if (!query) return true;
+      return (
+        entry.email.includes(query) ||
+        entry.name.toLowerCase().includes(query) ||
+        entry.businessName.toLowerCase().includes(query)
+      );
+    })
+    .slice(0, 25);
+  res.json({ users: results });
+});
+
+// --- Sales: website offers (tier recommendation + nettsidekode) given to clients.
+app.get('/api/admin/sales/offers', salesAuth, (req, res) => {
+  const all = offers.listOffers();
+  const list = req.salesUser.isAdmin ? all : all.filter((entry) => entry.ownerId === req.salesUser.accountKey);
+  res.json({ offers: list });
+});
+
+app.post('/api/admin/sales/offers', salesAuth, (req, res) => {
+  const body = req.body || {};
+  const plan = findWebsitePlan(body.planId);
+  if (!plan) return res.status(400).json({ message: 'Velg en gyldig nettsideplan (Tier 1, 2 eller 3).' });
+
+  let previewUrl = sanitizeText(body.previewUrl);
+  let businessName = sanitizeText(body.businessName);
+  const salesClientId = sanitizeText(body.salesClientId);
+  if (salesClientId) {
+    const salesClient = sales.getSalesClientById(salesClientId);
+    if (salesClient && !canAccessSalesClient(req, salesClient)) {
+      return res.status(403).json({ message: 'Not your sales client.' });
+    }
+    if (salesClient) {
+      if (!previewUrl) previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+      if (!businessName) businessName = sanitizeText(salesClient.businessName);
+    }
+  }
+
+  const offer = offers.createOffer({
+    ownerId: req.salesUser.accountKey,
+    salesClientId,
+    planId: plan.id,
+    planName: plan.name,
+    price: plan.price,
+    note: sanitizeText(body.note),
+    businessName,
+    previewUrl,
+    targetUserId: sanitizeText(body.targetUserId),
+    targetEmail: sanitizeText(body.targetEmail),
+  });
+  res.status(201).json({ offer });
+});
+
+app.delete('/api/admin/sales/offers/:id', salesAuth, (req, res) => {
+  const offer = offers.getOfferById(req.params.id);
+  if (!offer) return res.status(404).json({ message: 'Offer not found.' });
+  if (!req.salesUser.isAdmin && offer.ownerId !== req.salesUser.accountKey) {
+    return res.status(403).json({ message: 'Not your offer.' });
+  }
+  const ok = offers.deleteOffer(offer.id);
+  if (!ok) return res.status(404).json({ message: 'Offer not found.' });
+  res.json({ ok: true });
 });
 
 // --- Booking (skip Calendly: send email to daracha777@gmail.com)

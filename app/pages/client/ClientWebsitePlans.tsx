@@ -1,45 +1,58 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
-import { CheckCircle2, Loader2 } from 'lucide-react';
+import { Check, ChevronDown, ChevronUp, ExternalLink, Loader2, Minus, Sparkles, Tag, X } from 'lucide-react';
 import { ClientPortalLayout } from '../../components/client/ClientPortalLayout';
 import { ClientRouteGuard } from '../../components/client/ClientRouteGuard';
 import { useClientAuth } from '../../contexts/ClientAuthContext';
-import { CHECKOUT_BENEFITS, CLIENT_WEBSITE_PLANS, type ClientWebsitePlan } from '../../data/clientWebsitePlans';
+import { CHECKOUT_BENEFITS, CLIENT_WEBSITE_PLANS, findWebsitePlan } from '../../data/clientWebsitePlans';
+import {
+  computeDiscount,
+  findCoupon,
+  formatPriceAmount,
+  getStoredCoupon,
+  normalizeCouponCode,
+  parsePriceAmount,
+  storeCoupon,
+  type Coupon,
+} from '../../data/coupons';
 
-type PlanResponse = {
-  customPlan: {
-    title: string;
-    subtitle: string;
-    monthlyPrice: string;
-    highlighted: boolean;
-  } | null;
-  plans: ClientWebsitePlan[];
-};
+type ClientOffer = {
+  id: string;
+  code: string;
+  planId: string;
+  planName: string;
+  price: string;
+  note: string;
+  previewUrl: string;
+} | null;
+
+const PREVIEW_FEATURE_COUNT = 4;
 
 export const ClientWebsitePlans = () => {
   const navigate = useNavigate();
-  const { token, profile, updateProfileState } = useClientAuth();
+  const { token, user, profile, updateProfileState } = useClientAuth();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [data, setData] = useState<PlanResponse | null>(null);
+  const [offer, setOffer] = useState<ClientOffer>(null);
   const [selectedPlanId, setSelectedPlanId] = useState(profile?.websiteBuilder?.selectedPlanId || 'tier-1-standard');
-  const [selectedPlanType, setSelectedPlanType] = useState(profile?.websiteBuilder?.selectedPlanType || 'standard');
   const [savingSelection, setSavingSelection] = useState(false);
+  const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({});
+
+  const [couponInput, setCouponInput] = useState('');
+  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  const [couponError, setCouponError] = useState('');
 
   useEffect(() => {
     async function load() {
       setLoading(true);
       setError('');
       try {
-        const response = await fetch('/api/client/plans/website', {
-          headers: { Authorization: `Bearer ${token}` },
-        });
+        const response = await fetch('/api/client/offer', { headers: { Authorization: `Bearer ${token}` } });
         const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.message || 'Kunne ikke laste planer.');
-        setData(payload as PlanResponse);
+        if (response.ok) setOffer((payload.offer as ClientOffer) || null);
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Kunne ikke laste planer.');
+        setError(err instanceof Error ? err.message : 'Kunne ikke laste tilbud.');
       } finally {
         setLoading(false);
       }
@@ -47,39 +60,39 @@ export const ClientWebsitePlans = () => {
     if (token) void load();
   }, [token]);
 
-  const plans = data?.plans?.length ? data.plans : CLIENT_WEBSITE_PLANS;
-  const selectedPlan = useMemo(() => {
-    if (selectedPlanType === 'custom') {
-      return {
-        id: 'custom-website-plan',
-        name: data?.customPlan?.title || 'Din nettside plan',
-        price: data?.customPlan?.monthlyPrice || 'Etter avtale',
-        description: data?.customPlan?.subtitle || 'Skreddersydd forslag tilpasset virksomheten din.',
-        features: ['Skreddersydd struktur', 'Tilpasset levering', 'Direkte oppfølging fra teamet'],
-      };
+  useEffect(() => {
+    const stored = getStoredCoupon(user?.id || '');
+    if (stored) {
+      const coupon = findCoupon(stored);
+      if (coupon) {
+        setAppliedCoupon(coupon);
+        setCouponInput(coupon.code);
+      }
     }
-    return plans.find((plan) => plan.id === selectedPlanId) || plans[0];
-  }, [selectedPlanId, selectedPlanType, data, plans]);
+  }, [user?.id]);
 
-  const planItems = selectedPlan?.features || [];
+  const offerPlan = useMemo(() => (offer ? findWebsitePlan(offer.planId) || null : null), [offer]);
+  const selectedPlan = useMemo(
+    () => findWebsitePlan(selectedPlanId) || CLIENT_WEBSITE_PLANS[0],
+    [selectedPlanId],
+  );
 
-  async function saveSelection(type: 'custom' | 'standard', planId = '') {
+  const subtotalAmount = parsePriceAmount(selectedPlan?.price || '');
+  const discountAmount = computeDiscount(subtotalAmount, appliedCoupon);
+  const totalAmount = Math.max(0, subtotalAmount - discountAmount);
+
+  async function saveSelection(planId: string) {
     setSavingSelection(true);
     setError('');
     try {
       const response = await fetch('/api/client/plans/website/select', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ type, planId }),
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ type: 'standard', planId }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || 'Kunne ikke lagre planvalg.');
-      if (payload.profile) {
-        updateProfileState(payload.profile);
-      }
+      if (payload.profile) updateProfileState(payload.profile);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kunne ikke lagre planvalg.');
     } finally {
@@ -87,129 +100,291 @@ export const ClientWebsitePlans = () => {
     }
   }
 
-  async function chooseCustomPlan() {
-    setSelectedPlanType('custom');
-    setSelectedPlanId('custom-website-plan');
-    await saveSelection('custom');
+  async function choosePlan(planId: string) {
+    setSelectedPlanId(planId);
+    await saveSelection(planId);
   }
 
-  async function chooseStandardPlan(planId: string) {
-    setSelectedPlanType('standard');
-    setSelectedPlanId(planId);
-    await saveSelection('standard', planId);
+  function applyCoupon() {
+    setCouponError('');
+    const coupon = findCoupon(couponInput);
+    if (!coupon) {
+      setAppliedCoupon(null);
+      storeCoupon(user?.id || '', '');
+      setCouponError('Ugyldig rabattkode.');
+      return;
+    }
+    setAppliedCoupon(coupon);
+    storeCoupon(user?.id || '', coupon.code);
+  }
+
+  function removeCoupon() {
+    setAppliedCoupon(null);
+    setCouponInput('');
+    setCouponError('');
+    storeCoupon(user?.id || '', '');
   }
 
   async function goToCheckout() {
-    if (selectedPlanType === 'custom') await saveSelection('custom');
-    else await saveSelection('standard', selectedPlanId);
+    await saveSelection(selectedPlanId);
     navigate('/kunde/tjenester/nettside/checkout');
+  }
+
+  function toggleExpand(id: string) {
+    setExpandedCards((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   return (
     <ClientRouteGuard>
       <Helmet>
-        <title>Kundeportal – Velg plan</title>
+        <title>Kundeportal – Handlekurv</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <ClientPortalLayout title="Bygger > Handlekurv" subtitle="Velg din nettsideplan">
+      <ClientPortalLayout title="Handlekurv" subtitle="Velg din nettsideplan">
         {loading ? (
           <div className="min-h-[280px] flex items-center justify-center text-[#6B7280]">
-            <Loader2 className="animate-spin mr-2" size={18} /> Laster planer…
+            <Loader2 className="animate-spin mr-2" size={18} /> Laster…
           </div>
         ) : (
-          <div className="grid xl:grid-cols-[1.2fr_0.8fr] gap-6">
-            <div className="space-y-6">
-              <div className="rounded-2xl border-2 border-[#FF5B00] bg-[#FFF7F2] p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-xs font-semibold text-[#FF5B00] uppercase tracking-wider">Anbefalt for deg</p>
-                    <h2 className="mt-1 text-2xl font-semibold text-[#111827]">{data?.customPlan?.title || 'Din nettside plan'}</h2>
-                    <p className="mt-2 text-sm text-[#6B7280]">{data?.customPlan?.subtitle || 'Skreddersydd løsning basert på din bedrift.'}</p>
-                  </div>
-                  <span className="rounded-xl bg-white border border-[#FFD6C2] px-3 py-1 text-sm text-[#FF5B00]">{data?.customPlan?.monthlyPrice || 'Etter avtale'}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={chooseCustomPlan}
-                  disabled={savingSelection}
-                  className={`mt-4 rounded-xl px-4 py-2 text-sm font-medium ${
-                    selectedPlanType === 'custom' ? 'bg-[#FF5B00] text-white' : 'bg-white border border-[#FFD2BC] text-[#111827]'
-                  }`}
-                >
-                  {selectedPlanType === 'custom' ? 'Valgt' : 'Velg din plan'}
-                </button>
-              </div>
-
-              <div className="rounded-2xl border border-[#E5E7EB] bg-white p-5">
-                <h3 className="text-2xl font-semibold text-[#111827]">Velg din nettside plan</h3>
-                <p className="mt-2 text-sm text-[#6B7280]">Produktene under er basert på nettsideplanene i prisoversikten.</p>
-
-                <div className="mt-5 space-y-4">
-                  {plans.map((plan) => (
-                    <div key={plan.id} className="rounded-xl border border-[#E5E7EB] bg-[#FCFCFD] p-4">
-                      <div className="flex flex-wrap items-center justify-between gap-3">
-                        <div>
-                          <p className="text-lg font-semibold text-[#111827]">{plan.name}</p>
-                          <p className="text-sm text-[#6B7280]">{plan.description}</p>
-                        </div>
-                        <div className="text-right">
-                          <p className="text-lg font-semibold text-[#111827]">{plan.price}</p>
-                          <button
-                            type="button"
-                            onClick={() => chooseStandardPlan(plan.id)}
-                            disabled={savingSelection}
-                            className={`mt-2 rounded-full border px-4 py-1.5 text-sm ${
-                              selectedPlanType === 'standard' && selectedPlanId === plan.id
-                                ? 'bg-[#111827] text-white border-[#111827]'
-                                : 'bg-white text-[#111827] border-[#D1D5DB]'
-                            }`}
-                          >
-                            {selectedPlanType === 'standard' && selectedPlanId === plan.id ? 'Valgt' : 'Velg'}
-                          </button>
-                        </div>
+          <div className="grid xl:grid-cols-[1.35fr_0.85fr] gap-6">
+            <div className="space-y-5">
+              {offer ? (
+                <div className="overflow-hidden rounded-2xl border-2 border-[#FFB68F] bg-gradient-to-br from-[#FFF3EC] via-[#FFF8F5] to-white">
+                  <div className="p-6">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <span className="inline-flex items-center gap-1.5 rounded-full bg-[#FF5B00] px-3 py-1 text-xs font-semibold text-white">
+                          <Sparkles size={13} />
+                          Ditt tilbud fra Asoldi
+                        </span>
+                        <h2 className="mt-3 text-2xl font-semibold text-[#111827]">
+                          {offer.planName || offerPlan?.name || 'Nettsideplan'}
+                        </h2>
+                        {offer.note ? <p className="mt-1 max-w-md text-sm text-[#6B7280]">{offer.note}</p> : null}
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold text-[#111827]">{offer.price || offerPlan?.price}</p>
+                        <p className="text-xs text-[#9CA3AF]">Kode: {offer.code}</p>
                       </div>
                     </div>
-                  ))}
-                </div>
-              </div>
 
-              <div className="rounded-2xl border border-[#E5E7EB] bg-white p-5">
-                <h4 className="text-2xl font-semibold text-[#111827]">Andre planer</h4>
-                <p className="mt-2 text-sm text-[#6B7280]">E-post og sosiale medier låses opp etter at nettsideplan er aktiv.</p>
-                <div className="mt-4 grid md:grid-cols-2 gap-3">
-                  <div className="rounded-xl border border-dashed border-[#D1D5DB] bg-[#F9FAFB] p-4 text-sm text-[#9CA3AF]">Tier 2: SEO (låst)</div>
-                  <div className="rounded-xl border border-dashed border-[#D1D5DB] bg-[#F9FAFB] p-4 text-sm text-[#9CA3AF]">Tier 3: Ecommerce (låst)</div>
+                    {offerPlan ? (
+                      <ul className="mt-4 grid gap-2 sm:grid-cols-2">
+                        {offerPlan.includedFeatures.slice(0, 6).map((feature) => (
+                          <li key={feature} className="flex items-start gap-2 text-sm text-[#374151]">
+                            <Check size={15} className="mt-0.5 shrink-0 text-[#FF5B00]" />
+                            <span>{feature}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      {offer.previewUrl ? (
+                        <a
+                          href={offer.previewUrl}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-2 rounded-xl border border-[#111827] bg-white px-4 py-2.5 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB]"
+                        >
+                          <ExternalLink size={15} />
+                          Forhåndsvis nettside
+                        </a>
+                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => choosePlan(offer.planId)}
+                        disabled={savingSelection}
+                        className={`inline-flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-medium disabled:opacity-50 ${
+                          selectedPlanId === offer.planId
+                            ? 'bg-[#FF5B00] text-white'
+                            : 'border border-[#FFB68F] bg-white text-[#111827] hover:bg-[#FFF3EC]'
+                        }`}
+                      >
+                        {selectedPlanId === offer.planId ? (
+                          <>
+                            <Check size={15} /> Valgt
+                          </>
+                        ) : (
+                          'Velg dette tilbudet'
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+
+              <div>
+                <h3 className="text-lg font-semibold text-[#111827]">Velg din nettsideplan</h3>
+                <p className="mt-1 text-sm text-[#6B7280]">Planene er basert på nettsideutvikling i prisoversikten vår.</p>
+
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  {CLIENT_WEBSITE_PLANS.map((plan) => {
+                    const isSelected = selectedPlanId === plan.id;
+                    const isExpanded = Boolean(expandedCards[plan.id]);
+                    const previewFeatures = plan.includedFeatures.slice(0, PREVIEW_FEATURE_COUNT);
+                    const restFeatures = plan.includedFeatures.slice(PREVIEW_FEATURE_COUNT);
+                    return (
+                      <div
+                        key={plan.id}
+                        className={`relative flex flex-col rounded-2xl border bg-white p-5 transition-colors ${
+                          isSelected ? 'border-[#FF5B00] shadow-[0_8px_24px_rgba(255,91,0,0.10)]' : 'border-[#E7E9EE] hover:border-[#D8DCE3]'
+                        }`}
+                      >
+                        {plan.popular ? (
+                          <span className="absolute right-4 top-4 rounded-full bg-[#FFE7DA] px-2.5 py-1 text-[11px] font-semibold text-[#FF5B00]">
+                            Mest populær
+                          </span>
+                        ) : null}
+
+                        <h4 className="text-base font-semibold text-[#111827]">{plan.name}</h4>
+                        <p className="mt-1 text-xs text-[#9CA3AF] min-h-[32px]">{plan.description}</p>
+
+                        <div className="mt-3 flex items-baseline gap-1">
+                          <span className="text-2xl font-bold text-[#111827]">{plan.price.replace('/mnd', '')}</span>
+                          <span className="text-sm text-[#9CA3AF]">/mnd</span>
+                        </div>
+
+                        <ul className="mt-4 space-y-2 border-t border-[#F0F2F5] pt-4">
+                          {previewFeatures.map((feature) => (
+                            <li key={feature} className="flex items-start gap-2 text-sm text-[#374151]">
+                              <Check size={15} className="mt-0.5 shrink-0 text-[#FF5B00]" />
+                              <span>{feature}</span>
+                            </li>
+                          ))}
+                          {isExpanded
+                            ? restFeatures.map((feature) => (
+                                <li key={feature} className="flex items-start gap-2 text-sm text-[#374151]">
+                                  <Check size={15} className="mt-0.5 shrink-0 text-[#FF5B00]" />
+                                  <span>{feature}</span>
+                                </li>
+                              ))
+                            : null}
+                          {isExpanded
+                            ? plan.notIncludedFeatures.map((feature) => (
+                                <li key={feature} className="flex items-start gap-2 text-sm text-[#B6BBC4]">
+                                  <Minus size={15} className="mt-0.5 shrink-0 text-[#CBD0D8]" />
+                                  <span>{feature}</span>
+                                </li>
+                              ))
+                            : null}
+                        </ul>
+
+                        {restFeatures.length || plan.notIncludedFeatures.length ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleExpand(plan.id)}
+                            className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-[#6B7280] hover:text-[#111827]"
+                          >
+                            {isExpanded ? (
+                              <>
+                                Vis mindre <ChevronUp size={14} />
+                              </>
+                            ) : (
+                              <>
+                                Les mer <ChevronDown size={14} />
+                              </>
+                            )}
+                          </button>
+                        ) : null}
+
+                        <button
+                          type="button"
+                          onClick={() => choosePlan(plan.id)}
+                          disabled={savingSelection}
+                          className={`mt-5 w-full rounded-xl py-2.5 text-sm font-medium transition-colors disabled:opacity-50 ${
+                            isSelected
+                              ? 'bg-[#FF5B00] text-white'
+                              : 'border border-[#D7DCE5] bg-white text-[#111827] hover:bg-[#F9FAFB]'
+                          }`}
+                        >
+                          {isSelected ? 'Valgt' : 'Velg'}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             </div>
 
-            <aside className="rounded-2xl border border-[#E5E7EB] bg-white p-5 h-fit">
-              <h3 className="text-2xl font-semibold text-[#111827]">{selectedPlan?.name || 'Plan'}</h3>
+            <aside className="rounded-2xl border border-[#E7E9EE] bg-white p-5 h-fit xl:sticky xl:top-6">
+              <h3 className="text-lg font-semibold text-[#111827]">Sammendrag</h3>
+              <p className="mt-1 text-sm text-[#6B7280]">{selectedPlan?.name}</p>
+
               <ul className="mt-4 space-y-2">
-                {planItems.map((item) => (
-                  <li key={item} className="flex items-start gap-2 text-sm text-[#111827]">
-                    <CheckCircle2 size={14} className="text-[#FF5B00] mt-0.5" />
+                {(selectedPlan?.includedFeatures || []).slice(0, 6).map((item) => (
+                  <li key={item} className="flex items-start gap-2 text-sm text-[#374151]">
+                    <Check size={14} className="mt-0.5 shrink-0 text-[#FF5B00]" />
                     <span>{item}</span>
                   </li>
                 ))}
               </ul>
-              <div className="mt-5 border-t border-[#E5E7EB] pt-4 text-sm">
-                <div className="flex justify-between"><span>Subtotal</span><strong>{selectedPlan?.price || '—'}</strong></div>
-                <div className="mt-1 flex justify-between"><span>Rabatt</span><strong>0,-</strong></div>
+
+              <div className="mt-5 border-t border-[#F0F2F5] pt-4 text-sm">
+                <div className="flex justify-between text-[#374151]">
+                  <span>Subtotal</span>
+                  <strong className="text-[#111827]">{selectedPlan?.price || '—'}</strong>
+                </div>
+                <div className="mt-1.5 flex justify-between text-[#374151]">
+                  <span>Rabatt{appliedCoupon ? ` (${appliedCoupon.code})` : ''}</span>
+                  <strong className={discountAmount > 0 ? 'text-emerald-600' : 'text-[#111827]'}>
+                    {discountAmount > 0 ? `- ${formatPriceAmount(discountAmount, ',-')}` : '0,-'}
+                  </strong>
+                </div>
+                <div className="mt-2.5 flex justify-between border-t border-[#F0F2F5] pt-2.5 text-base">
+                  <span className="font-semibold text-[#111827]">Total</span>
+                  <strong className="text-[#111827]">{formatPriceAmount(totalAmount)}</strong>
+                </div>
               </div>
 
-              <div className="mt-5 rounded-xl border border-[#E5E7EB] bg-[#FAFAFA] p-3 grid grid-cols-3 gap-2">
+              {/* Coupon section */}
+              <div className="mt-5 rounded-xl border border-[#E7E9EE] bg-[#FAFBFC] p-3.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-[#6B7280]">
+                  <Tag size={13} />
+                  Rabattkode
+                </label>
+                {appliedCoupon ? (
+                  <div className="mt-2 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <span className="text-sm font-medium text-emerald-700">
+                      {appliedCoupon.code} · {appliedCoupon.label}
+                    </span>
+                    <button type="button" onClick={removeCoupon} aria-label="Fjern rabattkode" className="text-emerald-700 hover:text-emerald-900">
+                      <X size={15} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={couponInput}
+                      onChange={(e) => setCouponInput(normalizeCouponCode(e.target.value))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          applyCoupon();
+                        }
+                      }}
+                      placeholder="F.eks. ASOLDI10"
+                      className="flex-1 rounded-lg border border-[#DDE2EA] bg-white px-3 py-2 text-sm uppercase outline-none focus:border-[#FF5B00]"
+                    />
+                    <button
+                      type="button"
+                      onClick={applyCoupon}
+                      className="rounded-lg bg-[#111827] px-4 py-2 text-sm font-medium text-white hover:bg-[#1F2937]"
+                    >
+                      Bruk
+                    </button>
+                  </div>
+                )}
+                {couponError ? <p className="mt-2 text-xs text-red-500">{couponError}</p> : null}
+              </div>
+
+              <div className="mt-4 grid grid-cols-3 gap-2 rounded-xl border border-[#EDEFF3] bg-[#FCFCFD] p-3">
                 {CHECKOUT_BENEFITS.map((benefit) => (
                   <div key={benefit.key} className="text-center">
-                    <img src={benefit.illustration} alt={benefit.label} className="mx-auto h-10 w-10 object-contain" />
-                    <p className="mt-2 text-[11px] text-[#4B5563] leading-4">{benefit.label}</p>
+                    <img src={benefit.illustration} alt={benefit.label} className="mx-auto h-9 w-9 object-contain" />
+                    <p className="mt-2 text-[11px] leading-4 text-[#6B7280]">{benefit.label}</p>
                   </div>
                 ))}
-              </div>
-
-              <div className="mt-4 space-y-2 text-xs text-[#6B7280]">
-                <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" /> Jeg har lest produktdetaljene.</label>
-                <label className="flex items-start gap-2"><input type="checkbox" className="mt-0.5" /> Jeg godtar vilkår og personvern.</label>
               </div>
 
               {error ? <p className="mt-3 text-sm text-red-500">{error}</p> : null}
@@ -218,7 +393,7 @@ export const ClientWebsitePlans = () => {
                 type="button"
                 onClick={goToCheckout}
                 disabled={savingSelection}
-                className="mt-5 w-full rounded-xl border border-[#111827] bg-white py-3 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB] disabled:opacity-50"
+                className="mt-5 w-full rounded-xl bg-[#FF5B00] py-3 text-sm font-semibold text-white hover:bg-[#E55200] disabled:opacity-50"
               >
                 {savingSelection ? 'Lagrer…' : 'Gå til checkout'}
               </button>

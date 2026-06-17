@@ -4,13 +4,48 @@ import {
   CheckCircle2,
   Clock3,
   ExternalLink,
+  Gift,
   Loader2,
   Pencil,
   Plus,
+  Search,
+  Tag,
+  Trash2,
   UploadCloud,
   UserRound,
+  X,
 } from 'lucide-react';
 import { API, salesAuthHeaders, type SalesClient } from '../shared';
+
+type WebsiteOffer = {
+  id: string;
+  code: string;
+  salesClientId: string;
+  planId: string;
+  planName: string;
+  price: string;
+  note: string;
+  businessName: string;
+  previewUrl: string;
+  targetUserId: string;
+  targetEmail: string;
+  claimed: boolean;
+  claimedAt: string;
+  createdAt: string;
+};
+
+type ClientUserResult = {
+  userId: string;
+  email: string;
+  name: string;
+  businessName: string;
+};
+
+const OFFER_TIERS = [
+  { id: 'tier-1-standard', name: 'Tier 1: Standard', price: '999,-/mnd' },
+  { id: 'tier-2-seo', name: 'Tier 2: SEO', price: '1 499,-/mnd' },
+  { id: 'tier-3-ecommerce', name: 'Tier 3: Nettbutikk', price: '1 999,-/mnd' },
+];
 
 type CalendarStatus = {
   configured: boolean;
@@ -120,6 +155,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
   const [runIdByClient, setRunIdByClient] = useState<Record<string, string>>({});
 
+  // Website offers (tier + nettsidekode given to a client).
+  const [offers, setOffers] = useState<WebsiteOffer[]>([]);
+  const [offerOpenId, setOfferOpenId] = useState<string | null>(null);
+  const [offerPlanId, setOfferPlanId] = useState('tier-1-standard');
+  const [offerNote, setOfferNote] = useState('');
+  const [offerSearch, setOfferSearch] = useState('');
+  const [offerResults, setOfferResults] = useState<ClientUserResult[]>([]);
+  const [offerSelectedUser, setOfferSelectedUser] = useState<ClientUserResult | null>(null);
+  const [offerSearching, setOfferSearching] = useState(false);
+  const [creatingOffer, setCreatingOffer] = useState(false);
+  const [lastCreatedCode, setLastCreatedCode] = useState<string | null>(null);
+
   const formDuration = useMemo(() => durationForMode(form.meetingMode), [form.meetingMode]);
 
   async function request(path: string, init?: RequestInit) {
@@ -153,9 +200,76 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function loadOffers() {
+    try {
+      const data = await request('/admin/sales/offers');
+      setOffers(Array.isArray(data.offers) ? data.offers : []);
+    } catch {
+      // Offers are non-critical for the main list; ignore load errors here.
+    }
+  }
+
   useEffect(() => {
     void loadSales();
+    void loadOffers();
   }, []);
+
+  function openOfferPanel(client: SalesClient) {
+    setOfferOpenId((prev) => (prev === client.id ? null : client.id));
+    setOfferPlanId('tier-1-standard');
+    setOfferNote('');
+    setOfferSearch('');
+    setOfferResults([]);
+    setOfferSelectedUser(null);
+    setLastCreatedCode(null);
+    setError('');
+  }
+
+  async function searchOfferUsers() {
+    setOfferSearching(true);
+    try {
+      const data = await request(`/admin/sales/client-search?q=${encodeURIComponent(offerSearch.trim())}`);
+      setOfferResults(Array.isArray(data.users) ? data.users : []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed searching users');
+    } finally {
+      setOfferSearching(false);
+    }
+  }
+
+  async function createOffer(client: SalesClient) {
+    setCreatingOffer(true);
+    setError('');
+    try {
+      const data = await request('/admin/sales/offers', {
+        method: 'POST',
+        body: JSON.stringify({
+          planId: offerPlanId,
+          note: offerNote,
+          salesClientId: client.id,
+          targetUserId: offerSelectedUser?.userId || '',
+          targetEmail: offerSelectedUser?.email || '',
+        }),
+      });
+      setLastCreatedCode(data.offer?.code || null);
+      setOfferNote('');
+      await loadOffers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed creating offer');
+    } finally {
+      setCreatingOffer(false);
+    }
+  }
+
+  async function deleteOffer(id: string) {
+    setError('');
+    try {
+      await request(`/admin/sales/offers/${id}`, { method: 'DELETE' });
+      await loadOffers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed deleting offer');
+    }
+  }
 
   function openCreate() {
     setEditingId(null);
@@ -376,6 +490,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               { key: 'live', done: Boolean(client.progression?.live), editable: true as const },
             ];
             const previewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
+            const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             return (
               <div key={client.id} className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5 space-y-4">
                 <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
@@ -526,6 +641,182 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     </details>
                   </div>
                 )}
+
+                <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm text-white font-medium">
+                      <Tag size={14} className="text-[#FF5B00]" />
+                      Tilbud (nettsidekode)
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openOfferPanel(client)}
+                      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200]"
+                    >
+                      <Gift size={13} />
+                      {offerOpenId === client.id ? 'Lukk' : 'Gi tilbud'}
+                    </button>
+                  </div>
+
+                  {clientOffers.length > 0 && (
+                    <div className="space-y-2">
+                      {clientOffers.map((offer) => (
+                        <div
+                          key={offer.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#1a1a1a] border border-white/10 px-3 py-2"
+                        >
+                          <div className="flex items-center gap-3 text-sm">
+                            <span className="px-2 py-1 rounded bg-[#FF5B00]/20 text-[#ff8a4d] font-mono tracking-widest text-base">{offer.code}</span>
+                            <span className="text-gray-200">{offer.planName}</span>
+                            <span className="text-gray-500">{offer.price}</span>
+                          </div>
+                          <div className="flex items-center gap-2 text-xs">
+                            <span className="text-gray-400">{offer.targetEmail || 'Ikke tildelt'}</span>
+                            <span className={`px-2 py-0.5 rounded ${offer.claimed ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/30 text-amber-300'}`}>
+                              {offer.claimed ? 'Innløst' : 'Aktiv'}
+                            </span>
+                            {offer.previewUrl && (
+                              <button
+                                type="button"
+                                onClick={() => window.open(offer.previewUrl, '_blank')}
+                                className="inline-flex items-center gap-1 text-gray-300 hover:text-white"
+                              >
+                                <ExternalLink size={12} />
+                                Forhåndsvis
+                              </button>
+                            )}
+                            <button type="button" onClick={() => void deleteOffer(offer.id)} className="text-gray-400 hover:text-red-400" aria-label="Slett tilbud">
+                              <Trash2 size={13} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {offerOpenId === client.id && (
+                    <div className="rounded-lg bg-[#1a1a1a] border border-white/10 p-4 space-y-4">
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Velg tier (anbefalt plan)</label>
+                        <div className="grid sm:grid-cols-3 gap-2">
+                          {OFFER_TIERS.map((tier) => (
+                            <button
+                              key={tier.id}
+                              type="button"
+                              onClick={() => setOfferPlanId(tier.id)}
+                              className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                                offerPlanId === tier.id ? 'border-[#FF5B00] bg-[#FF5B00]/10' : 'border-white/10 bg-black/20 hover:border-white/20'
+                              }`}
+                            >
+                              <div className="text-sm text-white">{tier.name}</div>
+                              <div className="text-xs text-gray-400">{tier.price}</div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Søk etter bruker (e-post, navn eller bedrift)</label>
+                        {offerSelectedUser ? (
+                          <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+                            <div className="text-sm">
+                              <div className="text-white">{offerSelectedUser.name || offerSelectedUser.email}</div>
+                              <div className="text-xs text-gray-400">
+                                {offerSelectedUser.email}
+                                {offerSelectedUser.businessName ? ` · ${offerSelectedUser.businessName}` : ''}
+                              </div>
+                            </div>
+                            <button type="button" onClick={() => setOfferSelectedUser(null)} className="text-gray-400 hover:text-white" aria-label="Fjern valgt bruker">
+                              <X size={15} />
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div className="flex gap-2">
+                              <input
+                                value={offerSearch}
+                                onChange={(e) => setOfferSearch(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault();
+                                    void searchOfferUsers();
+                                  }
+                                }}
+                                placeholder="Søk…"
+                                className="flex-1 px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void searchOfferUsers()}
+                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                              >
+                                {offerSearching ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+                                Søk
+                              </button>
+                            </div>
+                            {offerResults.length > 0 && (
+                              <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-white/10 divide-y divide-white/5">
+                                {offerResults.map((result) => (
+                                  <button
+                                    key={result.userId}
+                                    type="button"
+                                    onClick={() => {
+                                      setOfferSelectedUser(result);
+                                      setOfferResults([]);
+                                    }}
+                                    className="w-full text-left px-3 py-2 hover:bg-white/5"
+                                  >
+                                    <div className="text-sm text-white">{result.name || result.email}</div>
+                                    <div className="text-xs text-gray-400">
+                                      {result.email}
+                                      {result.businessName ? ` · ${result.businessName}` : ''}
+                                    </div>
+                                  </button>
+                                ))}
+                              </div>
+                            )}
+                            <p className="mt-1 text-[11px] text-gray-500">
+                              Valgfritt – uten valgt bruker kan kunden løse inn tilbudet med nettsidekoden.
+                            </p>
+                          </>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-gray-400 mb-1">Notat (valgfritt)</label>
+                        <textarea
+                          rows={2}
+                          value={offerNote}
+                          onChange={(e) => setOfferNote(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm resize-y"
+                        />
+                      </div>
+
+                      {client.websiteImport?.previewUrl ? (
+                        <p className="text-[11px] text-gray-400">Forhåndsvisning av importert nettside legges automatisk ved tilbudet.</p>
+                      ) : (
+                        <p className="text-[11px] text-gray-500">Tips: importer en nettside over for å gi kunden forhåndsvisning i tilbudet.</p>
+                      )}
+
+                      {lastCreatedCode && (
+                        <div className="rounded-lg border border-green-600/40 bg-green-900/20 px-3 py-2 text-sm text-green-200">
+                          Tilbud opprettet. Nettsidekode:{' '}
+                          <span className="font-mono tracking-widest text-base text-white">{lastCreatedCode}</span>
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => void createOffer(client)}
+                        disabled={creatingOffer}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200] disabled:opacity-50"
+                      >
+                        {creatingOffer ? <Loader2 size={14} className="animate-spin" /> : <Gift size={14} />}
+                        Opprett tilbud
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             );
           })}
