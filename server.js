@@ -25,6 +25,13 @@ import {
   getGoogleCalendarStatus,
   upsertMeetingEvent,
 } from './lib/google-calendar.js';
+import {
+  createClientGoogleAuthUrl,
+  exchangeClientGoogleCode,
+  getClientGoogleStatus,
+  isClientGoogleConfigured,
+  resolveClientGoogleRedirectUri,
+} from './lib/client-google-auth.js';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -106,6 +113,7 @@ function adminAuth(req, res, next) {
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
 const salesOAuthStates = new Map();
+const clientGoogleOAuthStates = new Map();
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
@@ -262,36 +270,131 @@ function getMeetingMinutes(client) {
   return client?.meetingMode === 'in-person' ? 60 : 30;
 }
 
-function buildOAuthState() {
+function buildOAuthState(accountKey = '') {
   const state = randomBytes(16).toString('hex');
-  salesOAuthStates.set(state, Date.now() + 10 * 60 * 1000);
+  salesOAuthStates.set(state, { accountKey: sanitizeText(accountKey), expiry: Date.now() + 10 * 60 * 1000 });
   return state;
 }
 
+// Returns the associated accountKey string on success, or null when invalid/expired.
 function consumeOAuthState(state) {
   const key = sanitizeText(state);
-  if (!key) return false;
-  const expiry = salesOAuthStates.get(key);
+  if (!key) return null;
+  const entry = salesOAuthStates.get(key);
   salesOAuthStates.delete(key);
-  if (!expiry) return false;
-  return Date.now() <= expiry;
+  if (!entry || entry.expiry <= Date.now()) return null;
+  return entry.accountKey || '';
 }
 
 function clearExpiredOAuthStates() {
   const now = Date.now();
-  for (const [state, expiry] of salesOAuthStates.entries()) {
-    if (expiry <= now) salesOAuthStates.delete(state);
+  for (const [state, entry] of salesOAuthStates.entries()) {
+    if (!entry || entry.expiry <= now) salesOAuthStates.delete(state);
   }
+  for (const [state, expiry] of clientGoogleOAuthStates.entries()) {
+    if (expiry <= now) clientGoogleOAuthStates.delete(state);
+  }
+}
+
+// Sales area is accessible to the single admin account and to users with the `sales` role.
+// Each principal gets a stable accountKey used to scope their own Google Calendar tokens.
+function salesAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload || (payload.role !== 'admin' && payload.role !== 'sales')) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (payload.role === 'admin') {
+    req.salesUser = { accountKey: `admin:${payload.username || 'admin'}`, isAdmin: true, role: 'admin' };
+  } else {
+    req.salesUser = { accountKey: `sales:${payload.userId}`, isAdmin: false, role: 'sales', userId: payload.userId };
+  }
+  next();
+}
+
+function canAccessSalesClient(req, client) {
+  if (!client) return false;
+  if (req.salesUser?.isAdmin) return true;
+  return Boolean(client.ownerId) && client.ownerId === req.salesUser?.accountKey;
+}
+
+function buildClientGoogleOAuthState() {
+  const state = randomBytes(16).toString('hex');
+  clientGoogleOAuthStates.set(state, Date.now() + 10 * 60 * 1000);
+  return state;
+}
+
+function consumeClientGoogleOAuthState(state) {
+  const key = sanitizeText(state);
+  if (!key) return false;
+  const expiry = clientGoogleOAuthStates.get(key);
+  clientGoogleOAuthStates.delete(key);
+  if (!expiry) return false;
+  return Date.now() <= expiry;
+}
+
+function sendClientOAuthSuccessPage(res, { token, redirectPath }) {
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="no"><head><meta charset="utf-8"><title>Logger inn…</title></head>
+<body><p>Logger inn…</p><script>
+  try {
+    localStorage.setItem('clientToken', ${JSON.stringify(token)});
+    window.dispatchEvent(new Event('client-auth-changed'));
+  } catch (e) {}
+  window.location.replace(${JSON.stringify(redirectPath)});
+</script></body></html>`);
+}
+
+function sendClientOAuthErrorPage(res, message) {
+  const loginPath = '/login/kunde';
+  res.status(400).setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!DOCTYPE html>
+<html lang="no"><head><meta charset="utf-8"><title>Innlogging feilet</title></head>
+<body>
+  <h2>Google-innlogging feilet</h2>
+  <p>${String(message || 'Ukjent feil').replace(/[<>&"]/g, (ch) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' }[ch] || ch))}</p>
+  <p><a href="${loginPath}">Tilbake til innlogging</a></p>
+</body></html>`);
+}
+
+async function finalizeClientGoogleSignIn(googleProfile) {
+  const email = normalizeEmail(googleProfile.email);
+  if (!isValidEmail(email)) {
+    throw new Error('Google returnerte en ugyldig e-postadresse.');
+  }
+
+  let user = await store.getUserByUsername(email);
+  if (!user) {
+    const tempPassword = randomBytes(24).toString('base64url');
+    const created = await store.createUser(email, tempPassword, 'client');
+    if (!created.ok) {
+      throw new Error(created.error || 'Kunne ikke opprette konto.');
+    }
+    user = await store.getUserById(created.user.id);
+  } else if (user.role !== 'client') {
+    throw new Error('E-posten er registrert for en annen brukertype.');
+  }
+
+  const profile = clientPortal.upsertClientProfile(user.id, {
+    email,
+    name: googleProfile.name || undefined,
+  });
+  const token = signToken({ role: 'client', userId: user.id, at: Date.now(), provider: 'google' });
+  const redirectPath = profile?.onboardingCompleted ? '/kunde/hjem' : '/kunde/onboarding';
+  return { token, redirectPath, profile };
 }
 
 async function maybeSyncCalendar(client, previousClient = null) {
   const warnings = [];
   let nextClient = client;
+  const accountKey = client.ownerId || '';
 
   if (!nextClient.agreedTime || !nextClient.meetingAt) {
     if (nextClient.calendar?.eventId) {
       try {
-        await deleteMeetingEvent(nextClient.calendar.eventId);
+        await deleteMeetingEvent(nextClient.calendar.eventId, accountKey);
       } catch (error) {
         warnings.push(`Calendar cleanup failed: ${error.message}`);
       }
@@ -303,17 +406,17 @@ async function maybeSyncCalendar(client, previousClient = null) {
   const rescheduled = sales.rescheduleSalesReminders(nextClient.id);
   nextClient = rescheduled || nextClient;
 
-  const calendarStatus = getGoogleCalendarStatus();
+  const calendarStatus = getGoogleCalendarStatus(accountKey);
   if (calendarStatus.configured && calendarStatus.connected) {
     try {
-      const calendarMeta = await upsertMeetingEvent(nextClient, previousClient?.calendar?.eventId || nextClient?.calendar?.eventId);
+      const calendarMeta = await upsertMeetingEvent(nextClient, previousClient?.calendar?.eventId || nextClient?.calendar?.eventId, accountKey);
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
     } catch (error) {
       warnings.push(`Calendar sync failed: ${error.message}`);
     }
   } else if (calendarStatus.configured && !calendarStatus.connected) {
-    warnings.push('Google Calendar is configured but not connected yet.');
+    warnings.push('Google Calendar is not connected for this salesperson yet. Connect it from the Sales page.');
   }
 
   return { client: nextClient, warnings };
@@ -415,7 +518,7 @@ app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
     const result = await store.updateUserPassword(id, password);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
-  if (role !== undefined && ['employee', 'client', 'none'].includes(role)) {
+  if (role !== undefined && ['employee', 'client', 'sales', 'none'].includes(role)) {
     const result = await store.updateUserRole(id, role);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
@@ -639,11 +742,11 @@ app.post('/api/auth/login', async (req, res) => {
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password required' });
   }
-  const result = await store.verifyEmployee(username, password);
+  const result = await store.verifyStaff(username, password);
   if (!result.ok) {
     return res.status(401).json({ message: 'Invalid username or password' });
   }
-  const token = signToken({ role: 'employee', userId: result.user.id, at: Date.now() });
+  const token = signToken({ role: result.user.role, userId: result.user.id, username: result.user.username, at: Date.now() });
   res.json({
     token,
     user: {
@@ -653,6 +756,60 @@ app.post('/api/auth/login', async (req, res) => {
       employeeProduct: result.user.employeeProduct,
     },
   });
+});
+
+app.get('/api/client/auth/google/status', (req, res) => {
+  res.json(getClientGoogleStatus(req));
+});
+
+// Which social login providers are actually configured + implemented (drives the UI buttons).
+// Facebook stays false until a real Facebook OAuth flow is implemented (no dummy in production).
+app.get('/api/client/auth/providers', (req, res) => {
+  res.json({
+    google: isClientGoogleConfigured(),
+    facebook: false,
+  });
+});
+
+app.get('/api/client/auth/google', (req, res) => {
+  try {
+    if (!isClientGoogleConfigured()) {
+      return res.status(503).json({ message: 'Google login er ikke konfigurert enda.' });
+    }
+    const redirectUri = resolveClientGoogleRedirectUri(req);
+    const state = buildClientGoogleOAuthState();
+    const authUrl = createClientGoogleAuthUrl(state, redirectUri);
+    return res.redirect(authUrl);
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed to start Google login.' });
+  }
+});
+
+app.get('/api/client/auth/google/callback', async (req, res) => {
+  const code = sanitizeText(req.query.code);
+  const state = sanitizeText(req.query.state);
+  const oauthError = sanitizeText(req.query.error);
+
+  if (oauthError) {
+    return sendClientOAuthErrorPage(res, oauthError === 'access_denied'
+      ? 'Du avbrøt Google-innloggingen.'
+      : `Google returnerte feil: ${oauthError}`);
+  }
+  if (!consumeClientGoogleOAuthState(state)) {
+    return sendClientOAuthErrorPage(res, 'Ugyldig eller utløpt OAuth-tilstand. Prøv igjen.');
+  }
+  if (!code) {
+    return sendClientOAuthErrorPage(res, 'Mangler autorisasjonskode fra Google.');
+  }
+
+  try {
+    const redirectUri = resolveClientGoogleRedirectUri(req);
+    const googleProfile = await exchangeClientGoogleCode(code, redirectUri);
+    const session = await finalizeClientGoogleSignIn(googleProfile);
+    return sendClientOAuthSuccessPage(res, session);
+  } catch (error) {
+    return sendClientOAuthErrorPage(res, error.message || 'Google-innlogging feilet.');
+  }
 });
 
 app.post('/api/client/auth/email-status', async (req, res) => {
@@ -728,6 +885,12 @@ app.post('/api/client/auth/social-signin', async (req, res) => {
   }
   if (!isValidEmail(email)) {
     return res.status(400).json({ message: 'Skriv inn en gyldig e-postadresse.' });
+  }
+  if (provider === 'google' && isClientGoogleConfigured()) {
+    return res.status(400).json({
+      message: 'Bruk Google-knappen for omdirigert innlogging.',
+      authUrl: '/api/client/auth/google',
+    });
   }
   if (!CLIENT_SOCIAL_DEV_MODE) {
     return res.status(503).json({
@@ -1327,14 +1490,14 @@ async function resolveImportedSiteRoot(importDir, preferredSiteFolder) {
   return '';
 }
 
-// --- Sales workflow (admin)
-app.get('/api/admin/sales/google/status', adminAuth, (_req, res) => {
-  res.json(getGoogleCalendarStatus());
+// --- Sales workflow (admin + sales role). Each principal scopes to their own calendar/clients.
+app.get('/api/admin/sales/google/status', salesAuth, (req, res) => {
+  res.json(getGoogleCalendarStatus(req.salesUser.accountKey));
 });
 
-app.get('/api/admin/sales/google/auth-url', adminAuth, (req, res) => {
+app.get('/api/admin/sales/google/auth-url', salesAuth, (req, res) => {
   try {
-    const state = buildOAuthState();
+    const state = buildOAuthState(req.salesUser.accountKey);
     const authUrl = createGoogleCalendarAuthUrl(state);
     res.json({ authUrl, state });
   } catch (error) {
@@ -1345,33 +1508,40 @@ app.get('/api/admin/sales/google/auth-url', adminAuth, (req, res) => {
 app.get('/api/admin/sales/google/oauth/callback', async (req, res) => {
   const code = sanitizeText(req.query.code);
   const state = sanitizeText(req.query.state);
-  if (!consumeOAuthState(state)) {
+  const accountKey = consumeOAuthState(state);
+  if (accountKey === null) {
     return res.status(400).send('<h2>Invalid or expired OAuth state.</h2>');
   }
   try {
-    await exchangeGoogleCalendarCode(code);
+    await exchangeGoogleCalendarCode(code, accountKey);
     return res.send('<html><body><h3>Google Calendar connected.</h3><script>window.close()</script></body></html>');
   } catch (error) {
     return res.status(500).send(`<h2>Google Calendar connection failed:</h2><pre>${String(error.message || error)}</pre>`);
   }
 });
 
-app.get('/api/admin/sales', adminAuth, (_req, res) => {
+app.get('/api/admin/sales', salesAuth, (req, res) => {
+  const all = sales.getSalesClients();
+  const clients = req.salesUser.isAdmin
+    ? all
+    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
   res.json({
-    clients: sales.getSalesClients(),
-    calendar: getGoogleCalendarStatus(),
+    clients,
+    calendar: getGoogleCalendarStatus(req.salesUser.accountKey),
   });
 });
 
-app.get('/api/admin/sales/:id', adminAuth, (req, res) => {
+app.get('/api/admin/sales/:id', salesAuth, (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   res.json({ client });
 });
 
-app.post('/api/admin/sales', adminAuth, async (req, res) => {
+app.post('/api/admin/sales', salesAuth, async (req, res) => {
   try {
     const payload = buildSalesInput(req.body || {}, { requireCore: true });
+    payload.ownerId = req.salesUser.accountKey;
     let client = sales.createSalesClient(payload);
     const syncResult = await maybeSyncCalendar(client, null);
     client = syncResult.client || client;
@@ -1389,10 +1559,11 @@ app.post('/api/admin/sales', adminAuth, async (req, res) => {
   }
 });
 
-app.put('/api/admin/sales/:id', adminAuth, async (req, res) => {
+app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
   try {
     const existing = sales.getSalesClientById(req.params.id);
     if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+    if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
 
     const payload = buildSalesInput(req.body || {}, { existing });
     let client = sales.updateSalesClient(req.params.id, payload);
@@ -1420,13 +1591,14 @@ app.put('/api/admin/sales/:id', adminAuth, async (req, res) => {
   }
 });
 
-app.delete('/api/admin/sales/:id', adminAuth, async (req, res) => {
+app.delete('/api/admin/sales/:id', salesAuth, async (req, res) => {
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
 
   if (existing.calendar?.eventId) {
     try {
-      await deleteMeetingEvent(existing.calendar.eventId);
+      await deleteMeetingEvent(existing.calendar.eventId, existing.ownerId || '');
     } catch {
       // Ignore remote cleanup failures; deletion in local sales store still proceeds.
     }
@@ -1441,21 +1613,25 @@ app.delete('/api/admin/sales/:id', adminAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-app.patch('/api/admin/sales/:id/progression', adminAuth, (req, res) => {
+app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   const key = sanitizeText(req.body?.key);
   const value = parseBoolean(req.body?.value, false);
   if (!key) return res.status(400).json({ message: 'Progression key is required.' });
   if (key === 'step0AgreeMeetingTime') {
     return res.status(400).json({ message: 'Step 0 is controlled by the agreed time toggle.' });
   }
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
   const updated = sales.setSalesProgress(req.params.id, key, value);
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
 });
 
-app.post('/api/admin/sales/:id/import-website', adminAuth, async (req, res) => {
+app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
   const runId = sanitizeText(req.body?.runId);
   if (!runId) return res.status(400).json({ message: 'runId is required.' });
@@ -1513,9 +1689,78 @@ app.post('/api/admin/sales/:id/import-website', adminAuth, async (req, res) => {
   }
 });
 
-app.post('/api/admin/sales/:id/got-client', adminAuth, async (req, res) => {
+// Manual upload variant: accept an exported site .zip directly (no need to reach
+// the website-maker over the network). Body is the raw ZIP bytes; metadata via query.
+app.post(
+  '/api/admin/sales/:id/import-website-upload',
+  express.raw({ type: () => true, limit: '128mb' }),
+  salesAuth,
+  async (req, res) => {
+    const client = sales.getSalesClientById(req.params.id);
+    if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+    if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+    const buffer = Buffer.isBuffer(req.body) ? req.body : null;
+    if (!buffer || buffer.length === 0) {
+      return res.status(400).json({ message: 'No ZIP received. Upload the exported site .zip file.' });
+    }
+
+    const siteFolder = sanitizeSegment(req.query.siteFolder || client.businessName || 'site', 'site');
+    const sourceRunId = sanitizeText(req.query.runId) || 'manual-upload';
+    const requestedStep = sanitizeText(req.query.step) || 'upload';
+    const baseUrl = sanitizeText(req.query.baseUrl) || `https://asoldi.com/${siteFolder}`;
+
+    let zip;
+    try {
+      zip = new AdmZip(buffer);
+      const entries = zip.getEntries();
+      if (!entries.length) {
+        return res.status(400).json({ message: 'ZIP archive is empty.' });
+      }
+      // Reject path-traversal ("zip slip") entries before extracting anything.
+      for (const entry of entries) {
+        if (path.isAbsolute(entry.entryName) || entry.entryName.split(/[\\/]/).includes('..')) {
+          return res.status(400).json({ message: 'ZIP contains unsafe file paths and was rejected.' });
+        }
+      }
+    } catch {
+      return res.status(400).json({ message: 'Uploaded file is not a valid ZIP archive.' });
+    }
+
+    try {
+      const importDir = join(SALES_IMPORTS_ROOT, client.id);
+      await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
+      await fs.mkdir(importDir, { recursive: true });
+
+      zip.extractAllTo(importDir, true);
+
+      const siteRoot = await resolveImportedSiteRoot(importDir, siteFolder);
+      if (!siteRoot) {
+        await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
+        return res.status(400).json({ message: 'ZIP did not contain an index.html site root.' });
+      }
+
+      const updated = sales.setSalesWebsiteImport(client.id, {
+        importedAt: new Date().toISOString(),
+        sourceRunId,
+        sourceStep: requestedStep,
+        sourceBaseUrl: baseUrl,
+        siteFolder: path.basename(siteRoot),
+        importRoot: siteRoot,
+        previewUrl: getSalesPreviewUrl(client.id),
+      });
+
+      res.json({ ok: true, client: updated });
+    } catch (error) {
+      res.status(500).json({ message: error.message || 'Failed importing uploaded website bundle.' });
+    }
+  }
+);
+
+app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
   const site = hub.createSite({
     name: client.businessName || 'New client',

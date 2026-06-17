@@ -27,7 +27,7 @@ export const EmployeeLogin = () => {
       }
       if (data.token) localStorage.setItem('employeeToken', data.token);
       window.dispatchEvent(new Event('employee-auth-changed'));
-      navigate('/ansatt', { replace: true });
+      navigate(data?.user?.role === 'sales' ? '/sales' : '/ansatt', { replace: true });
     } catch {
       setError('Noe gikk galt. Prøv igjen.');
     } finally {

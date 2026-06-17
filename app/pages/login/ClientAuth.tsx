@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { ArrowLeft, ArrowRight, Facebook, Loader2, Lock, Mail, User } from 'lucide-react';
@@ -24,8 +24,23 @@ export const ClientAuth = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
+  const [providers, setProviders] = useState<{ google: boolean; facebook: boolean }>({ google: false, facebook: false });
 
   const emailNormalized = useMemo(() => normalizeEmail(email), [email]);
+  const hasSocial = providers.google || providers.facebook;
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/client/auth/providers')
+      .then((r) => r.json())
+      .then((data) => {
+        if (active) setProviders({ google: Boolean(data?.google), facebook: Boolean(data?.facebook) });
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, []);
 
   async function finalizeSession(data: any) {
     if (!data?.token) throw new Error('Mangler token fra server.');
@@ -121,6 +136,11 @@ export const ClientAuth = () => {
   }
 
   async function socialSignIn(provider: 'google' | 'facebook') {
+    if (provider === 'google') {
+      setError('');
+      window.location.href = '/api/client/auth/google';
+      return;
+    }
     if (!isEmail(email)) {
       setError('Skriv inn e-post først for å fortsette med sosial innlogging.');
       return;
@@ -181,31 +201,39 @@ export const ClientAuth = () => {
                   : 'Opprett ny konto med passord eller sosial innlogging.'}
             </p>
 
-            <div className="mt-6 space-y-3">
-              <button
-                type="button"
-                onClick={() => socialSignIn('google')}
-                disabled={loading}
-                className="w-full rounded-xl border border-[#D7DCE5] bg-white px-4 py-3 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB] disabled:opacity-50"
-              >
-                Fortsett med Google
-              </button>
-              <button
-                type="button"
-                onClick={() => socialSignIn('facebook')}
-                disabled={loading}
-                className="w-full rounded-xl border border-[#D7DCE5] bg-white px-4 py-3 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB] disabled:opacity-50 inline-flex justify-center items-center gap-2"
-              >
-                <Facebook size={16} />
-                Fortsett med Facebook
-              </button>
-            </div>
+            {hasSocial && (
+              <>
+                <div className="mt-6 space-y-3">
+                  {providers.google && (
+                    <button
+                      type="button"
+                      onClick={() => socialSignIn('google')}
+                      disabled={loading}
+                      className="w-full rounded-xl border border-[#D7DCE5] bg-white px-4 py-3 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB] disabled:opacity-50"
+                    >
+                      Fortsett med Google
+                    </button>
+                  )}
+                  {providers.facebook && (
+                    <button
+                      type="button"
+                      onClick={() => socialSignIn('facebook')}
+                      disabled={loading}
+                      className="w-full rounded-xl border border-[#D7DCE5] bg-white px-4 py-3 text-sm font-medium text-[#111827] hover:bg-[#F9FAFB] disabled:opacity-50 inline-flex justify-center items-center gap-2"
+                    >
+                      <Facebook size={16} />
+                      Fortsett med Facebook
+                    </button>
+                  )}
+                </div>
 
-            <div className="my-6 flex items-center gap-3 text-xs text-[#9CA3AF]">
-              <div className="h-px flex-1 bg-[#E5E7EB]" />
-              <span>ELLER</span>
-              <div className="h-px flex-1 bg-[#E5E7EB]" />
-            </div>
+                <div className="my-6 flex items-center gap-3 text-xs text-[#9CA3AF]">
+                  <div className="h-px flex-1 bg-[#E5E7EB]" />
+                  <span>ELLER</span>
+                  <div className="h-px flex-1 bg-[#E5E7EB]" />
+                </div>
+              </>
+            )}
 
             {stage === 'email' && (
               <form onSubmit={submitEmail} className="space-y-4">

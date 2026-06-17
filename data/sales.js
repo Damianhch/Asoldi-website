@@ -114,6 +114,7 @@ function normalizeSalesClient(raw = {}) {
 
   return {
     id: sanitizeText(raw.id) || makeId(),
+    ownerId: sanitizeText(raw.ownerId),
     businessName: sanitizeText(raw.businessName),
     contactPerson: sanitizeText(raw.contactPerson),
     contactEmail: sanitizeText(raw.contactEmail),

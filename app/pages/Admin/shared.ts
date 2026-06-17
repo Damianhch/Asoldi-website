@@ -4,6 +4,16 @@ export function getToken() {
   return localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken');
 }
 
+// Sales workspace (role=sales) authenticates with the staff token; the admin panel uses the admin token.
+export function getSalesToken() {
+  return localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken') || localStorage.getItem('employeeToken');
+}
+
+export function salesAuthHeaders() {
+  const token = getSalesToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function setToken(token: string) {
   localStorage.setItem('adminToken', token);
   localStorage.setItem('superAdminToken', token);
@@ -22,9 +32,9 @@ export function authHeaders() {
 export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees';
 
 export type Features = { users?: boolean; analytics?: boolean; ecommerce?: boolean };
-export type UserRole = 'employee' | 'client' | 'none';
+export type UserRole = 'employee' | 'client' | 'sales' | 'none';
 export type EmployeeProduct = 'asoldi' | 'ssu';
-export type EmployeeRoleOption = 'none' | 'client' | 'employee-asoldi' | 'employee-ssu';
+export type EmployeeRoleOption = 'none' | 'client' | 'sales' | 'employee-asoldi' | 'employee-ssu';
 
 export type AdminUser = {
   id: string;
@@ -36,6 +46,7 @@ export type AdminUser = {
 
 export function toEmployeeRoleOption(user: AdminUser): EmployeeRoleOption {
   if (user.role === 'client') return 'client';
+  if (user.role === 'sales') return 'sales';
   if (user.role === 'employee') {
     return user.employeeProduct === 'ssu' ? 'employee-ssu' : 'employee-asoldi';
   }
@@ -49,6 +60,8 @@ export function fromEmployeeRoleOption(option: EmployeeRoleOption): {
   switch (option) {
     case 'client':
       return { role: 'client' };
+    case 'sales':
+      return { role: 'sales' };
     case 'employee-asoldi':
       return { role: 'employee', employeeProduct: 'asoldi' };
     case 'employee-ssu':

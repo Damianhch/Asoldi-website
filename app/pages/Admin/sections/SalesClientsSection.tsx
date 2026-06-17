@@ -10,7 +10,7 @@ import {
   UploadCloud,
   UserRound,
 } from 'lucide-react';
-import { API, authHeaders, type SalesClient } from '../shared';
+import { API, salesAuthHeaders, type SalesClient } from '../shared';
 
 type CalendarStatus = {
   configured: boolean;
@@ -124,7 +124,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
   async function request(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
-      ...authHeaders(),
+      ...salesAuthHeaders(),
       ...(init?.headers as Record<string, string> || {}),
     };
     if (init?.body && !headers['Content-Type']) {
@@ -266,6 +266,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed importing website');
+    } finally {
+      setImportingId(null);
+    }
+  }
+
+  async function uploadWebsiteZip(client: SalesClient, file: File) {
+    setImportingId(client.id);
+    setError('');
+    try {
+      const siteFolder = encodeURIComponent(client.businessName || 'site');
+      await request(`/admin/sales/${client.id}/import-website-upload?siteFolder=${siteFolder}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/zip' },
+        body: file,
+      });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed uploading website ZIP');
     } finally {
       setImportingId(null);
     }
@@ -434,6 +452,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {importingId === client.id ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
                       Import site
                     </button>
+                    <label
+                      className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15 cursor-pointer ${importingId === client.id ? 'opacity-50 pointer-events-none' : ''}`}
+                      title="Upload an exported site .zip from the Website Maker"
+                    >
+                      <UploadCloud size={14} />
+                      Upload ZIP
+                      <input
+                        type="file"
+                        accept=".zip,application/zip,application/x-zip-compressed"
+                        className="hidden"
+                        disabled={importingId === client.id}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = '';
+                          if (file) void uploadWebsiteZip(client, file);
+                        }}
+                      />
+                    </label>
                   </div>
                 </div>
 
