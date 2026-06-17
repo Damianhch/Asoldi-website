@@ -112,8 +112,6 @@ function adminAuth(req, res, next) {
 
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
-const salesOAuthStates = new Map();
-const clientGoogleOAuthStates = new Map();
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
@@ -270,30 +268,57 @@ function getMeetingMinutes(client) {
   return client?.meetingMode === 'in-person' ? 60 : 30;
 }
 
+// Stateless OAuth state. Signed with ADMIN_SECRET (same value across every
+// worker process) so the callback can validate a state issued by any process
+// and it survives app restarts — unlike an in-memory store, which breaks under
+// Passenger/PM2 multi-process or idle-restart hosting.
+const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+
+function signOAuthState(purpose, payload = {}) {
+  const body = Buffer.from(
+    JSON.stringify({
+      p: String(purpose || ''),
+      d: payload && typeof payload === 'object' ? payload : {},
+      t: Date.now(),
+      n: randomBytes(8).toString('hex'),
+    })
+  ).toString('base64url');
+  const sig = createHmac('sha256', ADMIN_SECRET).update(`${purpose}.${body}`).digest('base64url');
+  return `${body}.${sig}`;
+}
+
+// Returns the payload object on success, or null when invalid/expired/tampered.
+function verifyOAuthState(purpose, state, maxAgeMs = OAUTH_STATE_TTL_MS) {
+  const raw = sanitizeText(state);
+  const dot = raw.lastIndexOf('.');
+  if (dot <= 0) return null;
+  const body = raw.slice(0, dot);
+  const sig = raw.slice(dot + 1);
+  const expect = createHmac('sha256', ADMIN_SECRET).update(`${purpose}.${body}`).digest('base64url');
+  if (sig.length !== expect.length) return null;
+  let diff = 0;
+  for (let i = 0; i < sig.length; i += 1) diff |= sig.charCodeAt(i) ^ expect.charCodeAt(i);
+  if (diff !== 0) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (!parsed || parsed.p !== String(purpose || '')) return null;
+  if (!Number.isFinite(parsed.t) || Date.now() - parsed.t > maxAgeMs) return null;
+  return parsed.d && typeof parsed.d === 'object' ? parsed.d : {};
+}
+
 function buildOAuthState(accountKey = '') {
-  const state = randomBytes(16).toString('hex');
-  salesOAuthStates.set(state, { accountKey: sanitizeText(accountKey), expiry: Date.now() + 10 * 60 * 1000 });
-  return state;
+  return signOAuthState('sales-calendar', { accountKey: sanitizeText(accountKey) });
 }
 
 // Returns the associated accountKey string on success, or null when invalid/expired.
 function consumeOAuthState(state) {
-  const key = sanitizeText(state);
-  if (!key) return null;
-  const entry = salesOAuthStates.get(key);
-  salesOAuthStates.delete(key);
-  if (!entry || entry.expiry <= Date.now()) return null;
-  return entry.accountKey || '';
-}
-
-function clearExpiredOAuthStates() {
-  const now = Date.now();
-  for (const [state, entry] of salesOAuthStates.entries()) {
-    if (!entry || entry.expiry <= now) salesOAuthStates.delete(state);
-  }
-  for (const [state, expiry] of clientGoogleOAuthStates.entries()) {
-    if (expiry <= now) clientGoogleOAuthStates.delete(state);
-  }
+  const data = verifyOAuthState('sales-calendar', state);
+  if (!data) return null;
+  return sanitizeText(data.accountKey) || '';
 }
 
 // Sales area is accessible to the single admin account and to users with the `sales` role.
@@ -320,18 +345,11 @@ function canAccessSalesClient(req, client) {
 }
 
 function buildClientGoogleOAuthState() {
-  const state = randomBytes(16).toString('hex');
-  clientGoogleOAuthStates.set(state, Date.now() + 10 * 60 * 1000);
-  return state;
+  return signOAuthState('client-login', {});
 }
 
 function consumeClientGoogleOAuthState(state) {
-  const key = sanitizeText(state);
-  if (!key) return false;
-  const expiry = clientGoogleOAuthStates.get(key);
-  clientGoogleOAuthStates.delete(key);
-  if (!expiry) return false;
-  return Date.now() <= expiry;
+  return verifyOAuthState('client-login', state) !== null;
 }
 
 function sendClientOAuthSuccessPage(res, { token, redirectPath }) {
@@ -485,7 +503,6 @@ async function sendDueSalesReminders() {
 function startSalesReminderLoop() {
   if (salesReminderInterval) return;
   salesReminderInterval = setInterval(() => {
-    clearExpiredOAuthStates();
     sendDueSalesReminders().catch((error) => console.error('Sales reminder tick failed:', error));
   }, SALES_REMINDER_POLL_MS);
 }
