@@ -115,6 +115,14 @@ export type SalesWebsiteImportMeta = {
   previewUrl: string;
 };
 
+export type SalesMakerRunMeta = {
+  runId: string;
+  dashboardUrl: string;
+  previewUrl: string;
+  industry: string;
+  createdAt: string;
+};
+
 export type SalesClient = {
   id: string;
   businessName: string;
@@ -134,6 +142,7 @@ export type SalesClient = {
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;
   websiteImport: SalesWebsiteImportMeta;
+  makerRun: SalesMakerRunMeta;
   createdAt: string;
   updatedAt: string;
 };

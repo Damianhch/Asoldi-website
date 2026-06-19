@@ -82,6 +82,17 @@ function normalizeWebsiteImport(value = {}) {
   };
 }
 
+function normalizeMakerRun(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    runId: sanitizeText(input.runId),
+    dashboardUrl: sanitizeText(input.dashboardUrl),
+    previewUrl: sanitizeText(input.previewUrl),
+    industry: sanitizeText(input.industry),
+    createdAt: sanitizeText(input.createdAt),
+  };
+}
+
 function normalizeCalendar(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
@@ -132,6 +143,7 @@ function normalizeSalesClient(raw = {}) {
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
     websiteImport: normalizeWebsiteImport(raw.websiteImport),
+    makerRun: normalizeMakerRun(raw.makerRun),
     createdAt,
     updatedAt,
   };
@@ -220,6 +232,9 @@ export function updateSalesClient(id, updates = {}) {
     websiteImport: updates.websiteImport
       ? { ...current.websiteImport, ...updates.websiteImport }
       : current.websiteImport,
+    makerRun: updates.makerRun
+      ? { ...current.makerRun, ...updates.makerRun }
+      : current.makerRun,
     reminders: updates.reminders
       ? { ...current.reminders, ...updates.reminders }
       : current.reminders,
@@ -253,6 +268,10 @@ export function setSalesCalendar(id, calendarPatch = {}) {
 
 export function setSalesWebsiteImport(id, importPatch = {}) {
   return updateSalesClient(id, { websiteImport: importPatch });
+}
+
+export function setSalesMakerRun(id, makerPatch = {}) {
+  return updateSalesClient(id, { makerRun: makerPatch });
 }
 
 export function rescheduleSalesReminders(id, nowMs = Date.now()) {

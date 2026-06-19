@@ -1997,6 +1997,60 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   }
 });
 
+// Auto-create a run in the Website Maker (server-to-server) pre-filled with the
+// client's business name + industry, then store the runId + maker links so the
+// rep can "Open in maker" and "Preview" without manual export/import.
+app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+  // Idempotent: if a run already exists for this client, return it as-is.
+  if (client.makerRun?.runId) {
+    return res.json({ ok: true, client, alreadyExists: true });
+  }
+
+  const base = sanitizeText(process.env.WEBSITE_MAKER_BASE_URL).replace(/\/+$/, '');
+  if (!base) {
+    return res.status(503).json({ message: 'Website Maker is not configured (WEBSITE_MAKER_BASE_URL missing).' });
+  }
+  const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
+
+  try {
+    const response = await fetch(`${base}/api/runs/v2`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(apiKey ? { 'x-api-key': apiKey } : {}),
+      },
+      body: JSON.stringify({
+        businessName: client.businessName || 'Untitled client run',
+        industry: client.industry || '',
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      return res.status(502).json({ message: data.error || data.message || `Website Maker error (${response.status}).` });
+    }
+    const runId = sanitizeText(data.runId);
+    if (!runId) {
+      return res.status(502).json({ message: 'Website Maker did not return a runId.' });
+    }
+
+    const updated = sales.setSalesMakerRun(client.id, {
+      runId,
+      dashboardUrl: `${base}/run/${encodeURIComponent(runId)}`,
+      previewUrl: `${base}/preview/${encodeURIComponent(runId)}/step/3/view?route=/`,
+      industry: client.industry || '',
+      createdAt: new Date().toISOString(),
+    });
+
+    res.json({ ok: true, client: updated });
+  } catch (error) {
+    res.status(502).json({ message: error.message || 'Failed reaching the Website Maker.' });
+  }
+});
+
 // Manual upload variant: accept an exported site .zip directly (no need to reach
 // the website-maker over the network). Body is the raw ZIP bytes; metadata via query.
 app.post(

@@ -59,7 +59,7 @@ DEPLOY & TEST
 B) ASOLDI BACKEND — SALES / ADMIN (from earlier work)
 ================================================================================
 
-SALES ADMIN (admin.asoldi.com)
+SALES ADMIN (asoldi.com/admin)
 [x] Clients / Sales submenu under Manage Clients
 [x] Add/edit sales clients with meeting fields
 [x] "Agreed time" toggle + step 0 progression
@@ -109,7 +109,7 @@ Copy values into .env on the Asoldi server (never commit secrets to git).
 --- 4) GOOGLE CALENDAR (sales meetings) --- ENVS SET, CONNECT PER USER
 [x] GOOGLE_OAUTH_CLIENT_ID=         (set in prod)
 [x] GOOGLE_OAUTH_CLIENT_SECRET=     (set in prod)
-[x] GOOGLE_OAUTH_REDIRECT_URI=https://admin.asoldi.com/api/admin/sales/google/oauth/callback
+[x] GOOGLE_OAUTH_REDIRECT_URI=https://asoldi.com/api/admin/sales/google/oauth/callback
 [x] GOOGLE_CALENDAR_ID=primary
 [x] GOOGLE_CALENDAR_TIMEZONE=Europe/Oslo
 [ ] Each sales/admin user: Admin → Sales (or /sales) → Connect Google Calendar (one-time)
@@ -152,7 +152,7 @@ Onboarding:       /kunde/onboarding
 Builder:          /kunde/services/website/builder
 Checkout plans:   /kunde/services/website/checkout
 Employee:         /login/ansatt → /ansatt
-Admin sales:      admin.asoldi.com → Manage Clients → Sales
+Admin sales:      asoldi.com/admin → Manage Clients → Sales
 
 ================================================================================
 E) NOTES
