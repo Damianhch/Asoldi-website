@@ -1925,9 +1925,6 @@ app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   const key = sanitizeText(req.body?.key);
   const value = parseBoolean(req.body?.value, false);
   if (!key) return res.status(400).json({ message: 'Progression key is required.' });
-  if (key === 'step0AgreeMeetingTime') {
-    return res.status(400).json({ message: 'Step 0 is controlled by the agreed time toggle.' });
-  }
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
@@ -2010,9 +2007,11 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     return res.json({ ok: true, client, alreadyExists: true });
   }
 
-  const base = sanitizeText(process.env.WEBSITE_MAKER_BASE_URL).replace(/\/+$/, '');
+  // Prefer the URL the operator typed in the Sales UI; fall back to env. This lets
+  // local testing target a maker on http://localhost:3000 without redeploying.
+  const base = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL).replace(/\/+$/, '');
   if (!base) {
-    return res.status(503).json({ message: 'Website Maker is not configured (WEBSITE_MAKER_BASE_URL missing).' });
+    return res.status(503).json({ message: 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).' });
   }
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
@@ -2026,6 +2025,8 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       body: JSON.stringify({
         businessName: client.businessName || 'Untitled client run',
         industry: client.industry || '',
+        source: 'sales',
+        salesContact: client.contactPerson || '',
       }),
     });
     const data = await response.json().catch(() => ({}));

@@ -83,6 +83,7 @@ export type ManageClientsView = 'clients' | 'sales';
 
 export type SalesProgression = {
   step0AgreeMeetingTime: boolean;
+  contractSigned: boolean;
   paymentReceived: boolean;
   domainConnected: boolean;
   live: boolean;

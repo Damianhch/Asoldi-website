@@ -3,7 +3,7 @@ import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './stora
 
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
-const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'paymentReceived', 'domainConnected', 'live'];
+const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
 
 function ensureDataDir() {
   ensurePersistentDataDir();
@@ -62,7 +62,11 @@ function emptyReminders() {
 function normalizeProgression(value = {}, agreedTime = false) {
   const input = value && typeof value === 'object' ? value : {};
   return {
-    step0AgreeMeetingTime: Boolean(agreedTime),
+    // Toggleable directly from the card; defaults to the agreed-time flag on
+    // first creation but, once stored, the explicit toggle value wins.
+    step0AgreeMeetingTime:
+      input.step0AgreeMeetingTime !== undefined ? Boolean(input.step0AgreeMeetingTime) : Boolean(agreedTime),
+    contractSigned: Boolean(input.contractSigned),
     paymentReceived: Boolean(input.paymentReceived),
     domainConnected: Boolean(input.domainConnected),
     live: Boolean(input.live),

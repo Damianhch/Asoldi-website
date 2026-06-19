@@ -132,8 +132,11 @@ function formatWhen(value = '') {
   return date.toLocaleString('nb-NO');
 }
 
+type ProgressionKey = 'step0AgreeMeetingTime' | 'contractSigned' | 'paymentReceived' | 'domainConnected' | 'live';
+
 function formatStepLabel(value: string) {
-  if (value === 'step0AgreeMeetingTime') return 'Step 0: Agree meeting time';
+  if (value === 'step0AgreeMeetingTime') return 'Agree meeting time';
+  if (value === 'contractSigned') return 'Contract signed';
   if (value === 'paymentReceived') return 'Payment received';
   if (value === 'domainConnected') return 'Domain connected';
   return 'Live';
@@ -353,7 +356,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function toggleProgress(client: SalesClient, key: 'paymentReceived' | 'domainConnected' | 'live') {
+  async function toggleProgress(client: SalesClient, key: ProgressionKey) {
     setProgressBusyKey(`${client.id}:${key}`);
     setError('');
     try {
@@ -419,7 +422,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingRunId(client.id);
     setError('');
     try {
-      await request(`/admin/sales/${client.id}/create-maker-run`, { method: 'POST' });
+      await request(`/admin/sales/${client.id}/create-maker-run`, {
+        method: 'POST',
+        body: JSON.stringify({ websiteMakerBaseUrl }),
+      });
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed creating website run');
@@ -508,11 +514,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
           {clients.map((client) => {
             const step0Done = Boolean(client.progression?.step0AgreeMeetingTime);
-            const timeline = [
-              { key: 'step0AgreeMeetingTime', done: step0Done, editable: false },
-              { key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived), editable: true as const },
-              { key: 'domainConnected', done: Boolean(client.progression?.domainConnected), editable: true as const },
-              { key: 'live', done: Boolean(client.progression?.live), editable: true as const },
+            const timeline: { key: ProgressionKey; done: boolean }[] = [
+              { key: 'step0AgreeMeetingTime', done: step0Done },
+              { key: 'contractSigned', done: Boolean(client.progression?.contractSigned) },
+              { key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived) },
+              { key: 'domainConnected', done: Boolean(client.progression?.domainConnected) },
+              { key: 'live', done: Boolean(client.progression?.live) },
             ];
             const importedPreviewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
@@ -555,13 +562,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     <button
                       key={step.key}
                       type="button"
-                      disabled={!step.editable || progressBusyKey === `${client.id}:${step.key}`}
-                      onClick={() => step.editable && void toggleProgress(client, step.key as 'paymentReceived' | 'domainConnected' | 'live')}
-                      className={`px-2 py-1 rounded-md text-[11px] border transition-colors ${
+                      disabled={progressBusyKey === `${client.id}:${step.key}`}
+                      onClick={() => void toggleProgress(client, step.key)}
+                      className={`px-2 py-1 rounded-md text-[11px] border transition-colors hover:border-[#FF5B00]/40 disabled:opacity-60 ${
                         step.done
                           ? 'bg-green-900/40 border-green-600/40 text-green-300'
                           : 'bg-black/20 border-white/10 text-gray-400'
-                      } ${step.editable ? 'hover:border-[#FF5B00]/40 disabled:opacity-60' : 'cursor-default'}`}
+                      }`}
                     >
                       {step.done ? <CheckCircle2 size={11} className="inline mr-1" /> : null}
                       {formatStepLabel(step.key)}
