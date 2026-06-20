@@ -4,6 +4,7 @@ import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './stora
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
 const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
+const SALES_STATUSES = ['active', 'not-sold'];
 
 function ensureDataDir() {
   ensurePersistentDataDir();
@@ -19,6 +20,12 @@ function makeId() {
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
+}
+
+function normalizeSalesStatus(value = '') {
+  const raw = sanitizeText(value).toLowerCase();
+  if (SALES_STATUSES.includes(raw)) return raw;
+  return 'active';
 }
 
 function normalizeMeetingMode(value) {
@@ -97,6 +104,14 @@ function normalizeMakerRun(value = {}) {
   };
 }
 
+function normalizeArchive(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    archivedAt: sanitizeText(input.archivedAt),
+    reason: sanitizeText(input.reason),
+  };
+}
+
 function normalizeCalendar(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
@@ -126,6 +141,8 @@ function normalizeSalesClient(raw = {}) {
   const meetingAt = agreedTime ? sanitizeText(raw.meetingAt) : '';
   const createdAt = sanitizeText(raw.createdAt) || nowIso();
   const updatedAt = sanitizeText(raw.updatedAt) || createdAt;
+  const status = normalizeSalesStatus(raw.status);
+  const archive = normalizeArchive(raw.archive);
 
   return {
     id: sanitizeText(raw.id) || makeId(),
@@ -148,6 +165,8 @@ function normalizeSalesClient(raw = {}) {
     calendar: normalizeCalendar(raw.calendar),
     websiteImport: normalizeWebsiteImport(raw.websiteImport),
     makerRun: normalizeMakerRun(raw.makerRun),
+    status,
+    archive: status === 'not-sold' ? archive : normalizeArchive(),
     createdAt,
     updatedAt,
   };
@@ -239,6 +258,9 @@ export function updateSalesClient(id, updates = {}) {
     makerRun: updates.makerRun
       ? { ...current.makerRun, ...updates.makerRun }
       : current.makerRun,
+    archive: updates.archive
+      ? { ...current.archive, ...updates.archive }
+      : current.archive,
     reminders: updates.reminders
       ? { ...current.reminders, ...updates.reminders }
       : current.reminders,
@@ -276,6 +298,26 @@ export function setSalesWebsiteImport(id, importPatch = {}) {
 
 export function setSalesMakerRun(id, makerPatch = {}) {
   return updateSalesClient(id, { makerRun: makerPatch });
+}
+
+export function setSalesStatus(id, status, archivePatch = {}) {
+  const normalizedStatus = normalizeSalesStatus(status);
+  if (normalizedStatus === 'not-sold') {
+    return updateSalesClient(id, {
+      status: normalizedStatus,
+      archive: {
+        archivedAt: sanitizeText(archivePatch.archivedAt) || nowIso(),
+        reason: sanitizeText(archivePatch.reason),
+      },
+    });
+  }
+  return updateSalesClient(id, {
+    status: normalizedStatus,
+    archive: {
+      archivedAt: '',
+      reason: '',
+    },
+  });
 }
 
 export function rescheduleSalesReminders(id, nowMs = Date.now()) {

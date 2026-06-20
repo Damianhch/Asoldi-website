@@ -124,6 +124,11 @@ export type SalesMakerRunMeta = {
   createdAt: string;
 };
 
+export type SalesArchiveMeta = {
+  archivedAt: string;
+  reason: string;
+};
+
 export type SalesClient = {
   id: string;
   businessName: string;
@@ -144,6 +149,8 @@ export type SalesClient = {
   calendar: SalesCalendarMeta;
   websiteImport: SalesWebsiteImportMeta;
   makerRun: SalesMakerRunMeta;
+  status: 'active' | 'not-sold';
+  archive: SalesArchiveMeta;
   createdAt: string;
   updatedAt: string;
 };

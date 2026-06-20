@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  ArchiveX,
   CalendarClock,
   CheckCircle2,
   ExternalLink,
@@ -10,6 +11,7 @@ import {
   Search,
   Tag,
   Trash2,
+  Undo2,
   UploadCloud,
   UserRound,
   Wand2,
@@ -132,6 +134,13 @@ function formatWhen(value = '') {
   return date.toLocaleString('nb-NO');
 }
 
+function formatDateTime(value = '') {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString('nb-NO');
+}
+
 type ProgressionKey = 'step0AgreeMeetingTime' | 'contractSigned' | 'paymentReceived' | 'domainConnected' | 'live';
 
 function formatStepLabel(value: string) {
@@ -156,6 +165,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
+  const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
   const [runIdByClient, setRunIdByClient] = useState<Record<string, string>>({});
 
@@ -172,6 +182,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [lastCreatedCode, setLastCreatedCode] = useState<string | null>(null);
 
   const formDuration = useMemo(() => durationForMode(form.meetingMode), [form.meetingMode]);
+  const activeClients = useMemo(
+    () => clients.filter((client) => client.status !== 'not-sold'),
+    [clients]
+  );
+  const archivedClients = useMemo(
+    () => clients.filter((client) => client.status === 'not-sold'),
+    [clients]
+  );
 
   async function request(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
@@ -448,6 +466,38 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function markNotSold(client: SalesClient) {
+    const label = client.businessName || 'this client';
+    const reasonInput = window.prompt(`Optional reason for archiving "${label}" as not sold:`, '');
+    if (reasonInput === null) return;
+    setStatusBusyId(`not-sold:${client.id}`);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/not-sold`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reasonInput }),
+      });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed archiving client as not sold');
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
+
+  async function restoreArchivedClient(client: SalesClient) {
+    setStatusBusyId(`restore:${client.id}`);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/restore`, { method: 'POST' });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed restoring archived client');
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
+
   async function connectGoogleCalendar() {
     setError('');
     try {
@@ -512,7 +562,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
-          {clients.map((client) => {
+          {activeClients.map((client) => {
             const step0Done = Boolean(client.progression?.step0AgreeMeetingTime);
             const timeline: { key: ProgressionKey; done: boolean }[] = [
               { key: 'step0AgreeMeetingTime', done: step0Done },
@@ -623,15 +673,26 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   >
                     {expanded ? 'Hide details' : 'Details & tools'}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => promoteClient(client)}
-                    disabled={promotingId === client.id}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
-                  >
-                    {promotingId === client.id ? <Loader2 size={13} className="animate-spin" /> : null}
-                    Got the client
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => promoteClient(client)}
+                      disabled={promotingId === client.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                    >
+                      {promotingId === client.id ? <Loader2 size={13} className="animate-spin" /> : null}
+                      Got the client
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void markNotSold(client)}
+                      disabled={statusBusyId === `not-sold:${client.id}`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                    >
+                      {statusBusyId === `not-sold:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
+                      Not sold
+                    </button>
+                  </div>
                 </div>
 
                 {expanded && (
@@ -907,11 +968,56 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             );
           })}
 
-          {clients.length === 0 && (
+          {activeClients.length === 0 && (
             <div className="lg:col-span-2 2xl:col-span-3 rounded-2xl bg-[#2a2a2a] border border-white/10 p-8 text-center text-gray-400">
-              No sales clients yet. Click <strong className="text-white">Add client</strong> to start.
+              No active sales clients right now. Click <strong className="text-white">Add client</strong> to start.
             </div>
           )}
+        </div>
+      )}
+
+      {archivedClients.length > 0 && (
+        <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-white font-semibold">Archived (Not sold)</h3>
+            <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
+              {archivedClients.length} archived
+            </span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+            {archivedClients.map((client) => (
+              <div key={client.id} className="rounded-xl bg-black/20 border border-white/10 p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-white truncate">{client.businessName || 'Unnamed business'}</div>
+                    <div className="text-xs text-gray-400 truncate">{client.contactPerson || 'No contact person'}</div>
+                  </div>
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-red-900/30 text-red-300 border border-red-700/30">
+                    Not sold
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400">
+                  Archived: {formatDateTime(client.archive?.archivedAt || client.updatedAt)}
+                </div>
+                {client.archive?.reason ? (
+                  <div className="text-xs text-gray-300">
+                    Reason: {client.archive.reason}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">No reason added.</div>
+                )}
+                <button
+                  type="button"
+                  onClick={() => void restoreArchivedClient(client)}
+                  disabled={statusBusyId === `restore:${client.id}`}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                >
+                  {statusBusyId === `restore:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
+                  Restore to active
+                </button>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 

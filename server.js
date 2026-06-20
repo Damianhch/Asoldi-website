@@ -189,6 +189,20 @@ function sanitizeText(value = '') {
   return String(value ?? '').trim();
 }
 
+function normalizeHttpBaseUrl(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    const cleanPath = String(parsed.pathname || '').replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.host}${cleanPath}`;
+  } catch {
+    return '';
+  }
+}
+
 function normalizeMeetingMode(value) {
   const raw = sanitizeText(value).toLowerCase();
   if (raw === 'in-person' || raw === 'in_person' || raw === 'inperson' || raw === 'physical') return 'in-person';
@@ -1933,6 +1947,28 @@ app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   res.json({ client: updated });
 });
 
+app.post('/api/admin/sales/:id/not-sold', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  const reason = sanitizeText(req.body?.reason);
+  const updated = sales.setSalesStatus(req.params.id, 'not-sold', {
+    reason,
+    archivedAt: new Date().toISOString(),
+  });
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
+app.post('/api/admin/sales/:id/restore', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  const updated = sales.setSalesStatus(req.params.id, 'active');
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
 app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
@@ -1944,8 +1980,13 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   const siteFolder = sanitizeSegment(req.body?.siteFolder || client.businessName || 'site', 'site');
   const requestedStep = sanitizeText(req.body?.step || 'latest') || 'latest';
   const baseUrl = sanitizeText(req.body?.baseUrl || `https://asoldi.com/${siteFolder}`);
-  const websiteMakerBaseUrl = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL || 'http://localhost:3000');
-  const exportUrl = `${websiteMakerBaseUrl.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(runId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(baseUrl)}&siteFolder=${encodeURIComponent(siteFolder)}`;
+  const websiteMakerBaseUrl = normalizeHttpBaseUrl(
+    req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL || 'http://localhost:3000'
+  );
+  if (!websiteMakerBaseUrl) {
+    return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
+  }
+  const exportUrl = `${websiteMakerBaseUrl}/api/runs/${encodeURIComponent(runId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(baseUrl)}&siteFolder=${encodeURIComponent(siteFolder)}`;
 
   try {
     const response = await fetch(exportUrl, { method: 'GET' });
@@ -2009,9 +2050,13 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
 
   // Prefer the URL the operator typed in the Sales UI; fall back to env. This lets
   // local testing target a maker on http://localhost:3000 without redeploying.
-  const base = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL).replace(/\/+$/, '');
-  if (!base) {
+  const baseRaw = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL);
+  if (!baseRaw) {
     return res.status(503).json({ message: 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).' });
+  }
+  const base = normalizeHttpBaseUrl(baseRaw);
+  if (!base) {
+    return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
   }
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
