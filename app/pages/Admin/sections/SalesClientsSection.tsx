@@ -5,14 +5,15 @@ import {
   CheckCircle2,
   ExternalLink,
   Gift,
+  Link2,
   Loader2,
   Pencil,
   Plus,
+  RefreshCw,
   Search,
   Tag,
   Trash2,
   Undo2,
-  UploadCloud,
   UserRound,
   Wand2,
   X,
@@ -161,7 +162,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [importingId, setImportingId] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [linkingRunId, setLinkingRunId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -274,18 +276,22 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingOffer(true);
     setError('');
     try {
+      const selectedRunId = String(runIdByClient[client.id] || client.makerRun?.runId || '').trim();
       const data = await request('/admin/sales/offers', {
         method: 'POST',
         body: JSON.stringify({
           planId: offerPlanId,
           note: offerNote,
           salesClientId: client.id,
+          runId: selectedRunId,
+          websiteMakerBaseUrl,
           targetUserId: offerSelectedUser?.userId || '',
           targetEmail: offerSelectedUser?.email || '',
         }),
       });
       setLastCreatedCode(data.offer?.code || null);
       setOfferNote('');
+      await loadSales();
       await loadOffers();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed creating offer');
@@ -393,13 +399,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function importWebsite(client: SalesClient) {
-    const runId = String(runIdByClient[client.id] || '').trim();
+  async function syncWebsiteFromMaker(client: SalesClient) {
+    const fallbackRunId = String(runIdByClient[client.id] || '').trim();
+    const linkedRunId = String(client.makerRun?.runId || '').trim();
+    const runId = linkedRunId || fallbackRunId;
     if (!runId) {
-      setError('Enter Website Maker run ID before importing.');
+      setError('Create or link a Website Maker run before syncing.');
       return;
     }
-    setImportingId(client.id);
+    setSyncingId(client.id);
     setError('');
     try {
       await request(`/admin/sales/${client.id}/import-website`, {
@@ -408,31 +416,40 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           runId,
           websiteMakerBaseUrl,
           siteFolder: client.businessName || 'site',
+          step: 'latest',
         }),
       });
       await loadSales();
+      await loadOffers();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed importing website');
+      setError(err instanceof Error ? err.message : 'Failed syncing website from maker');
     } finally {
-      setImportingId(null);
+      setSyncingId(null);
     }
   }
 
-  async function uploadWebsiteZip(client: SalesClient, file: File) {
-    setImportingId(client.id);
+  async function linkMakerRun(client: SalesClient) {
+    const runId = String(runIdByClient[client.id] || '').trim();
+    if (!runId) {
+      setError('Enter an existing Website Maker run ID before linking.');
+      return;
+    }
+    setLinkingRunId(client.id);
     setError('');
     try {
-      const siteFolder = encodeURIComponent(client.businessName || 'site');
-      await request(`/admin/sales/${client.id}/import-website-upload?siteFolder=${siteFolder}`, {
+      await request(`/admin/sales/${client.id}/link-maker-run`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/zip' },
-        body: file,
+        body: JSON.stringify({
+          runId,
+          websiteMakerBaseUrl,
+        }),
       });
+      setRunIdByClient((prev) => ({ ...prev, [client.id]: '' }));
       await loadSales();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed uploading website ZIP');
+      setError(err instanceof Error ? err.message : 'Failed linking Website Maker run');
     } finally {
-      setImportingId(null);
+      setLinkingRunId(null);
     }
   }
 
@@ -521,7 +538,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-white">Sales clients</h2>
-            <p className="text-sm text-gray-400 mt-1">Add meetings, sync Google Calendar, import website bundles, and move won clients to the Clients tab.</p>
+            <p className="text-sm text-gray-400 mt-1">Add meetings, sync Google Calendar, sync previews from Website Maker, and move won clients to the Clients tab.</p>
           </div>
           <div className="flex items-center gap-3">
             <button type="button" onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]">
@@ -643,7 +660,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
                       >
                         <ExternalLink size={13} />
-                        Preview
+                        Maker preview
                       </button>
                     </>
                   ) : (
@@ -744,51 +761,45 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     </div>
 
                     <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
-                      <div className="text-sm text-white font-medium">Import existing site (manual)</div>
+                      <div className="text-sm text-white font-medium">Sync website preview from Maker</div>
                       <div className="flex flex-wrap items-center gap-2">
                         <input
                           value={runIdByClient[client.id] || ''}
                           onChange={(e) => setRunIdByClient((prev) => ({ ...prev, [client.id]: e.target.value }))}
-                          placeholder="Run ID for import"
-                          className="px-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm min-w-[180px] flex-1"
+                          placeholder={client.makerRun?.runId ? `Linked run: ${client.makerRun.runId}` : 'Existing run ID (optional)'}
+                          className="px-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm min-w-[220px] flex-1"
                         />
                         <button
                           type="button"
-                          onClick={() => importWebsite(client)}
-                          disabled={importingId === client.id}
+                          onClick={() => void linkMakerRun(client)}
+                          disabled={linkingRunId === client.id}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
                         >
-                          {importingId === client.id ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
-                          Import site
+                          {linkingRunId === client.id ? <Loader2 size={14} className="animate-spin" /> : <Link2 size={14} />}
+                          Link run
                         </button>
-                        <label
-                          className={`inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 cursor-pointer ${importingId === client.id ? 'opacity-50 pointer-events-none' : ''}`}
-                          title="Upload an exported site .zip from the Website Maker"
+                        <button
+                          type="button"
+                          onClick={() => void syncWebsiteFromMaker(client)}
+                          disabled={syncingId === client.id}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
                         >
-                          <UploadCloud size={14} />
-                          Upload ZIP
-                          <input
-                            type="file"
-                            accept=".zip,application/zip,application/x-zip-compressed"
-                            className="hidden"
-                            disabled={importingId === client.id}
-                            onChange={(e) => {
-                              const file = e.target.files?.[0];
-                              e.target.value = '';
-                              if (file) void uploadWebsiteZip(client, file);
-                            }}
-                          />
-                        </label>
+                          {syncingId === client.id ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+                          Sync latest from Maker
+                        </button>
                         <button
                           type="button"
                           onClick={() => window.open(importedPreviewUrl, '_blank')}
-                          disabled={!client.websiteImport?.importRoot}
+                          disabled={!client.websiteImport?.previewUrl}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
                         >
                           <ExternalLink size={14} />
-                          Preview import
+                          Preview website
                         </button>
                       </div>
+                      <p className="text-[11px] text-gray-500">
+                        ZIP upload is removed from this flow. Sync pulls the latest exported site directly from the linked run.
+                      </p>
                     </div>
 
                     <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
@@ -916,12 +927,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                                 ) : !offerSearching ? (
                                   <p className="mt-2 text-xs text-gray-500">
                                     {offerSearch.trim()
-                                      ? 'Ingen registrerte kunder matcher søket.'
-                                      : 'Ingen registrerte kundekontoer ennå.'}
+                                      ? 'Ingen klientbrukere matcher søket.'
+                                      : 'Ingen klientbrukere funnet ennå.'}
                                   </p>
                                 ) : null}
                                 <p className="mt-1 text-[11px] text-gray-500">
-                                  Velg en innlogget kunde for å sende tilbudet rett i to-do listen deres. Uten valgt bruker kan kunden løse inn tilbudet med nettsidekoden.
+                                  Kun brukere med klient-innlogging vises her. Velg en bruker for å sende tilbudet rett i to-do-listen deres. Uten valgt bruker kan kunden løse inn tilbudet med nettsidekoden.
                                 </p>
                               </>
                             )}
@@ -940,7 +951,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           {client.websiteImport?.previewUrl ? (
                             <p className="text-[11px] text-gray-400">Forhåndsvisning av importert nettside legges automatisk ved tilbudet.</p>
                           ) : (
-                            <p className="text-[11px] text-gray-500">Tips: importer en nettside over for å gi kunden forhåndsvisning i tilbudet.</p>
+                            <p className="text-[11px] text-gray-500">Tips: synkroniser nettstedet fra Maker over for å gi kunden forhåndsvisning i tilbudet.</p>
                           )}
 
                           {lastCreatedCode && (

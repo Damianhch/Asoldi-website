@@ -295,6 +295,230 @@ function getSalesPreviewUrl(clientId) {
   return `/sales-preview/${encodeURIComponent(clientId)}/`;
 }
 
+function httpStatusFromError(error, fallback = 500) {
+  const status = Number(error?.status);
+  if (Number.isFinite(status) && status >= 400 && status <= 599) return status;
+  return fallback;
+}
+
+function makeHttpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function inferWebsiteMakerBaseUrlFromClient(client = null) {
+  const candidates = [
+    sanitizeText(client?.makerRun?.dashboardUrl),
+    sanitizeText(client?.makerRun?.previewUrl),
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const parsed = new URL(candidate);
+      const normalized = normalizeHttpBaseUrl(`${parsed.protocol}//${parsed.host}`);
+      if (normalized) return normalized;
+    } catch {
+      // Ignore malformed URLs saved in historical client records.
+    }
+  }
+  return '';
+}
+
+function resolveWebsiteMakerBaseUrl(value = '', client = null) {
+  const candidates = [
+    value,
+    process.env.WEBSITE_MAKER_BASE_URL,
+    inferWebsiteMakerBaseUrlFromClient(client),
+    'http://localhost:3000',
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeHttpBaseUrl(candidate);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+function getWebsiteMakerAuthHeaders() {
+  const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
+  return apiKey ? { 'x-api-key': apiKey } : {};
+}
+
+function parseMakerErrorMessage(payloadBuffer, fallbackMessage) {
+  try {
+    const maybeJson = JSON.parse(payloadBuffer.toString('utf8'));
+    return sanitizeText(maybeJson?.error || maybeJson?.message) || fallbackMessage;
+  } catch {
+    return fallbackMessage;
+  }
+}
+
+function buildMakerRunLinks(websiteMakerBaseUrl, runId) {
+  return {
+    dashboardUrl: `${websiteMakerBaseUrl}/run/${encodeURIComponent(runId)}`,
+    previewUrl: `${websiteMakerBaseUrl}/preview/${encodeURIComponent(runId)}/step/3/view?route=/`,
+  };
+}
+
+function resolveSalesClientPreviewUrl(salesClientId = '') {
+  const clientId = sanitizeText(salesClientId);
+  if (!clientId) return '';
+  const client = sales.getSalesClientById(clientId);
+  return sanitizeText(client?.websiteImport?.previewUrl);
+}
+
+function hydrateOfferPreviewFromSalesImport(offer, { persist = false } = {}) {
+  const source = offer && typeof offer === 'object' ? offer : null;
+  if (!source) return null;
+  const currentPreview = sanitizeText(source.previewUrl);
+  if (currentPreview) return source;
+
+  const linkedPreview = resolveSalesClientPreviewUrl(source.salesClientId);
+  if (!linkedPreview) return source;
+  if (persist && source.id) {
+    const patched = offers.updateOffer(source.id, { previewUrl: linkedPreview });
+    if (patched) return patched;
+  }
+  return {
+    ...source,
+    previewUrl: linkedPreview,
+  };
+}
+
+async function fetchMakerRunRecord({ websiteMakerBaseUrl, runId }) {
+  const targetRunId = sanitizeText(runId);
+  if (!targetRunId) {
+    throw makeHttpError(400, 'Run ID is required.');
+  }
+  const response = await fetch(
+    `${websiteMakerBaseUrl}/api/runs/${encodeURIComponent(targetRunId)}`,
+    { method: 'GET', headers: getWebsiteMakerAuthHeaders() }
+  );
+  const payloadBuffer = Buffer.from(await response.arrayBuffer());
+  if (!response.ok) {
+    const fallback = `Website Maker run lookup failed (${response.status})`;
+    throw makeHttpError(
+      response.status === 404 ? 404 : 502,
+      parseMakerErrorMessage(payloadBuffer, fallback)
+    );
+  }
+  try {
+    return JSON.parse(payloadBuffer.toString('utf8'));
+  } catch {
+    throw makeHttpError(502, 'Website Maker returned an invalid run response.');
+  }
+}
+
+async function syncSalesClientFromMakerRun({
+  client,
+  runId = '',
+  step = 'latest',
+  siteFolder = '',
+  baseUrl = '',
+  websiteMakerBaseUrl = '',
+} = {}) {
+  const targetClient = client && typeof client === 'object' ? client : null;
+  if (!targetClient?.id) {
+    throw makeHttpError(404, 'Sales client not found.');
+  }
+
+  const resolvedRunId = sanitizeText(runId) || sanitizeText(targetClient.makerRun?.runId);
+  if (!resolvedRunId) {
+    throw makeHttpError(400, 'No Website Maker run is linked yet. Create or link a run first.');
+  }
+
+  const resolvedSiteFolder = sanitizeSegment(siteFolder || targetClient.businessName || 'site', 'site');
+  const requestedStep = sanitizeText(step || 'latest') || 'latest';
+  const sourceBaseUrl = sanitizeText(baseUrl || `https://asoldi.com/${resolvedSiteFolder}`);
+  const makerBaseUrl = resolveWebsiteMakerBaseUrl(websiteMakerBaseUrl, targetClient);
+  if (!makerBaseUrl) {
+    throw makeHttpError(400, 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).');
+  }
+
+  const exportUrl = `${makerBaseUrl}/api/runs/${encodeURIComponent(resolvedRunId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(sourceBaseUrl)}&siteFolder=${encodeURIComponent(resolvedSiteFolder)}`;
+  const response = await fetch(exportUrl, {
+    method: 'GET',
+    headers: getWebsiteMakerAuthHeaders(),
+  });
+  const payloadBuffer = Buffer.from(await response.arrayBuffer());
+  if (!response.ok) {
+    const fallback = `Website export failed (${response.status})`;
+    throw makeHttpError(
+      response.status === 404 ? 404 : 502,
+      parseMakerErrorMessage(payloadBuffer, fallback)
+    );
+  }
+
+  let zip;
+  try {
+    zip = new AdmZip(payloadBuffer);
+    const entries = zip.getEntries();
+    if (!entries.length) {
+      throw makeHttpError(502, 'Website Maker export ZIP was empty.');
+    }
+    for (const entry of entries) {
+      if (path.isAbsolute(entry.entryName) || entry.entryName.split(/[\\/]/).includes('..')) {
+        throw makeHttpError(502, 'Website Maker export ZIP contains unsafe file paths.');
+      }
+    }
+  } catch (error) {
+    if (error?.status) throw error;
+    throw makeHttpError(502, 'Website Maker export is not a valid ZIP archive.');
+  }
+
+  const importDir = join(SALES_IMPORTS_ROOT, targetClient.id);
+  await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
+  await fs.mkdir(importDir, { recursive: true });
+  zip.extractAllTo(importDir, true);
+
+  const siteRoot = await resolveImportedSiteRoot(importDir, resolvedSiteFolder);
+  if (!siteRoot) {
+    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
+    throw makeHttpError(502, 'Imported ZIP did not contain an index.html site root.');
+  }
+
+  const exportStep = sanitizeText(response.headers.get('x-export-step')) || requestedStep;
+
+  const makerRunCreatedAt = sanitizeText(targetClient.makerRun?.createdAt) || new Date().toISOString();
+  const makerRunIndustry = sanitizeText(targetClient.makerRun?.industry) || sanitizeText(targetClient.industry);
+  const existingRunId = sanitizeText(targetClient.makerRun?.runId);
+  const existingDashboardUrl = sanitizeText(targetClient.makerRun?.dashboardUrl);
+  const existingPreviewUrl = sanitizeText(targetClient.makerRun?.previewUrl);
+  if (
+    existingRunId !== resolvedRunId ||
+    !existingDashboardUrl ||
+    !existingPreviewUrl
+  ) {
+    sales.setSalesMakerRun(targetClient.id, {
+      runId: resolvedRunId,
+      ...buildMakerRunLinks(makerBaseUrl, resolvedRunId),
+      industry: makerRunIndustry,
+      createdAt: makerRunCreatedAt,
+    });
+  }
+
+  const updatedClient = sales.setSalesWebsiteImport(targetClient.id, {
+    importedAt: new Date().toISOString(),
+    sourceRunId: resolvedRunId,
+    sourceStep: exportStep,
+    sourceBaseUrl,
+    siteFolder: path.basename(siteRoot),
+    importRoot: siteRoot,
+    previewUrl: getSalesPreviewUrl(targetClient.id),
+  });
+  if (!updatedClient) {
+    throw makeHttpError(404, 'Sales client not found.');
+  }
+
+  return {
+    runId: resolvedRunId,
+    sourceStep: exportStep,
+    sourceExportUrl: exportUrl,
+    websiteMakerBaseUrl: makerBaseUrl,
+    client: updatedClient,
+  };
+}
+
 function getMeetingMinutes(client) {
   return client?.meetingMode === 'in-person' ? 60 : 30;
 }
@@ -1405,8 +1629,9 @@ async function handleStripeWebhook(req, res) {
 app.get('/api/client/offer', clientAuth, async (req, res) => {
   const user = await store.getUserById(req.client.userId);
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
-  const offer = offers.getActiveOfferForUser({ userId: user.id, email: user.username });
+  let offer = offers.getActiveOfferForUser({ userId: user.id, email: user.username });
   if (!offer) return res.json({ offer: null });
+  offer = hydrateOfferPreviewFromSalesImport(offer, { persist: true });
   const plan = findWebsitePlan(offer.planId);
   return res.json({
     offer: {
@@ -1973,65 +2198,66 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  try {
+    const syncResult = await syncSalesClientFromMakerRun({
+      client,
+      runId: req.body?.runId,
+      step: req.body?.step || 'latest',
+      siteFolder: req.body?.siteFolder || client.businessName || 'site',
+      baseUrl: req.body?.baseUrl,
+      websiteMakerBaseUrl: req.body?.websiteMakerBaseUrl,
+    });
+    res.json({
+      ok: true,
+      client: syncResult.client,
+      runId: syncResult.runId,
+      sourceStep: syncResult.sourceStep,
+      sourceExportUrl: syncResult.sourceExportUrl,
+    });
+  } catch (error) {
+    res.status(httpStatusFromError(error, 500)).json({ message: error.message || 'Failed importing website bundle.' });
+  }
+});
+
+app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
   const runId = sanitizeText(req.body?.runId);
-  if (!runId) return res.status(400).json({ message: 'runId is required.' });
+  if (!runId) {
+    return res.status(400).json({ message: 'Run ID is required.' });
+  }
 
-  const siteFolder = sanitizeSegment(req.body?.siteFolder || client.businessName || 'site', 'site');
-  const requestedStep = sanitizeText(req.body?.step || 'latest') || 'latest';
-  const baseUrl = sanitizeText(req.body?.baseUrl || `https://asoldi.com/${siteFolder}`);
-  const websiteMakerBaseUrl = normalizeHttpBaseUrl(
-    req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL || 'http://localhost:3000'
-  );
+  const websiteMakerBaseUrl = resolveWebsiteMakerBaseUrl(req.body?.websiteMakerBaseUrl, client);
   if (!websiteMakerBaseUrl) {
     return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
   }
-  const exportUrl = `${websiteMakerBaseUrl}/api/runs/${encodeURIComponent(runId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(baseUrl)}&siteFolder=${encodeURIComponent(siteFolder)}`;
 
   try {
-    const response = await fetch(exportUrl, { method: 'GET' });
-    const payloadBuffer = Buffer.from(await response.arrayBuffer());
-    if (!response.ok) {
-      let errorMessage = `Website export failed (${response.status})`;
-      try {
-        const maybeJson = JSON.parse(payloadBuffer.toString('utf8'));
-        errorMessage = maybeJson.error || maybeJson.message || errorMessage;
-      } catch {
-        // Keep fallback error text.
-      }
-      return res.status(400).json({ message: errorMessage });
-    }
-
-    const importDir = join(SALES_IMPORTS_ROOT, client.id);
-    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-    await fs.mkdir(importDir, { recursive: true });
-
-    const zip = new AdmZip(payloadBuffer);
-    zip.extractAllTo(importDir, true);
-
-    const siteRoot = await resolveImportedSiteRoot(importDir, siteFolder);
-    if (!siteRoot) {
-      return res.status(500).json({ message: 'Imported ZIP did not contain an index.html site root.' });
-    }
-
-    const exportStep = sanitizeText(response.headers.get('x-export-step')) || requestedStep;
-    const updated = sales.setSalesWebsiteImport(client.id, {
-      importedAt: new Date().toISOString(),
-      sourceRunId: runId,
-      sourceStep: exportStep,
-      sourceBaseUrl: baseUrl,
-      siteFolder: path.basename(siteRoot),
-      importRoot: siteRoot,
-      previewUrl: getSalesPreviewUrl(client.id),
+    const run = await fetchMakerRunRecord({ websiteMakerBaseUrl, runId });
+    const answers = run?.answers && typeof run.answers === 'object' ? run.answers : {};
+    const mergedIndustry =
+      sanitizeText(client.industry) ||
+      sanitizeText(client.makerRun?.industry) ||
+      sanitizeText(answers?.industry);
+    const updated = sales.setSalesMakerRun(client.id, {
+      runId,
+      ...buildMakerRunLinks(websiteMakerBaseUrl, runId),
+      industry: mergedIndustry,
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
     });
-
+    if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
     res.json({
       ok: true,
       client: updated,
-      sourceExportUrl: exportUrl,
+      run: {
+        id: sanitizeText(run?.id) || runId,
+        intakeStatus: sanitizeText(run?.metadata?.intakeStatus),
+      },
     });
   } catch (error) {
-    res.status(500).json({ message: error.message || 'Failed importing website bundle.' });
+    res.status(httpStatusFromError(error, 502)).json({ message: error.message || 'Failed linking run from Website Maker.' });
   }
 });
 
@@ -2085,8 +2311,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
 
     const updated = sales.setSalesMakerRun(client.id, {
       runId,
-      dashboardUrl: `${base}/run/${encodeURIComponent(runId)}`,
-      previewUrl: `${base}/preview/${encodeURIComponent(runId)}/step/3/view?route=/`,
+      ...buildMakerRunLinks(base, runId),
       industry: client.industry || '',
       createdAt: new Date().toISOString(),
     });
@@ -2097,73 +2322,14 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   }
 });
 
-// Manual upload variant: accept an exported site .zip directly (no need to reach
-// the website-maker over the network). Body is the raw ZIP bytes; metadata via query.
-app.post(
-  '/api/admin/sales/:id/import-website-upload',
-  express.raw({ type: () => true, limit: '128mb' }),
-  salesAuth,
-  async (req, res) => {
-    const client = sales.getSalesClientById(req.params.id);
-    if (!client) return res.status(404).json({ message: 'Sales client not found.' });
-    if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
-
-    const buffer = Buffer.isBuffer(req.body) ? req.body : null;
-    if (!buffer || buffer.length === 0) {
-      return res.status(400).json({ message: 'No ZIP received. Upload the exported site .zip file.' });
-    }
-
-    const siteFolder = sanitizeSegment(req.query.siteFolder || client.businessName || 'site', 'site');
-    const sourceRunId = sanitizeText(req.query.runId) || 'manual-upload';
-    const requestedStep = sanitizeText(req.query.step) || 'upload';
-    const baseUrl = sanitizeText(req.query.baseUrl) || `https://asoldi.com/${siteFolder}`;
-
-    let zip;
-    try {
-      zip = new AdmZip(buffer);
-      const entries = zip.getEntries();
-      if (!entries.length) {
-        return res.status(400).json({ message: 'ZIP archive is empty.' });
-      }
-      // Reject path-traversal ("zip slip") entries before extracting anything.
-      for (const entry of entries) {
-        if (path.isAbsolute(entry.entryName) || entry.entryName.split(/[\\/]/).includes('..')) {
-          return res.status(400).json({ message: 'ZIP contains unsafe file paths and was rejected.' });
-        }
-      }
-    } catch {
-      return res.status(400).json({ message: 'Uploaded file is not a valid ZIP archive.' });
-    }
-
-    try {
-      const importDir = join(SALES_IMPORTS_ROOT, client.id);
-      await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-      await fs.mkdir(importDir, { recursive: true });
-
-      zip.extractAllTo(importDir, true);
-
-      const siteRoot = await resolveImportedSiteRoot(importDir, siteFolder);
-      if (!siteRoot) {
-        await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-        return res.status(400).json({ message: 'ZIP did not contain an index.html site root.' });
-      }
-
-      const updated = sales.setSalesWebsiteImport(client.id, {
-        importedAt: new Date().toISOString(),
-        sourceRunId,
-        sourceStep: requestedStep,
-        sourceBaseUrl: baseUrl,
-        siteFolder: path.basename(siteRoot),
-        importRoot: siteRoot,
-        previewUrl: getSalesPreviewUrl(client.id),
-      });
-
-      res.json({ ok: true, client: updated });
-    } catch (error) {
-      res.status(500).json({ message: error.message || 'Failed importing uploaded website bundle.' });
-    }
-  }
-);
+app.post('/api/admin/sales/:id/import-website-upload', salesAuth, (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  return res.status(410).json({
+    message: 'Manual ZIP upload is deprecated. Use "Sync latest from Maker" instead.',
+  });
+});
 
 app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
@@ -2193,6 +2359,10 @@ app.get('/api/admin/sales/client-search', salesAuth, async (req, res) => {
   const query = sanitizeText(req.query?.q).toLowerCase();
   const allUsers = await store.getAllUsers();
   const clientUsers = allUsers.filter((entry) => entry.role === 'client');
+  const queryTerms = query
+    .split(/\s+/)
+    .map((term) => term.trim())
+    .filter(Boolean);
   const results = clientUsers
     .map((entry) => {
       const profile = clientPortal.getClientProfile(entry.id);
@@ -2204,13 +2374,11 @@ app.get('/api/admin/sales/client-search', salesAuth, async (req, res) => {
         createdAt: entry.createdAt,
       };
     })
+    .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime())
     .filter((entry) => {
-      if (!query) return true;
-      return (
-        entry.email.includes(query) ||
-        entry.name.toLowerCase().includes(query) ||
-        entry.businessName.toLowerCase().includes(query)
-      );
+      if (!queryTerms.length) return true;
+      const haystack = `${entry.email} ${entry.name.toLowerCase()} ${entry.businessName.toLowerCase()}`;
+      return queryTerms.every((term) => haystack.includes(term));
     })
     .slice(0, 25);
   res.json({ users: results });
@@ -2219,11 +2387,14 @@ app.get('/api/admin/sales/client-search', salesAuth, async (req, res) => {
 // --- Sales: website offers (tier recommendation + nettsidekode) given to clients.
 app.get('/api/admin/sales/offers', salesAuth, (req, res) => {
   const all = offers.listOffers();
-  const list = req.salesUser.isAdmin ? all : all.filter((entry) => entry.ownerId === req.salesUser.accountKey);
+  const visible = req.salesUser.isAdmin
+    ? all
+    : all.filter((entry) => entry.ownerId === req.salesUser.accountKey);
+  const list = visible.map((entry) => hydrateOfferPreviewFromSalesImport(entry, { persist: true }));
   res.json({ offers: list });
 });
 
-app.post('/api/admin/sales/offers', salesAuth, (req, res) => {
+app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
   const body = req.body || {};
   const plan = findWebsitePlan(body.planId);
   if (!plan) return res.status(400).json({ message: 'Velg en gyldig nettsideplan (Tier 1, 2 eller 3).' });
@@ -2232,13 +2403,41 @@ app.post('/api/admin/sales/offers', salesAuth, (req, res) => {
   let businessName = sanitizeText(body.businessName);
   const salesClientId = sanitizeText(body.salesClientId);
   if (salesClientId) {
-    const salesClient = sales.getSalesClientById(salesClientId);
+    let salesClient = sales.getSalesClientById(salesClientId);
     if (salesClient && !canAccessSalesClient(req, salesClient)) {
       return res.status(403).json({ message: 'Not your sales client.' });
     }
     if (salesClient) {
-      if (!previewUrl) previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
       if (!businessName) businessName = sanitizeText(salesClient.businessName);
+      if (!previewUrl) {
+        previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+      }
+      if (!previewUrl) {
+        try {
+          const syncResult = await syncSalesClientFromMakerRun({
+            client: salesClient,
+            runId: body.runId,
+            websiteMakerBaseUrl: body.websiteMakerBaseUrl,
+            siteFolder: body.siteFolder || salesClient.businessName || 'site',
+            step: body.step || 'latest',
+            baseUrl: body.baseUrl,
+          });
+          salesClient = syncResult.client;
+          previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+        } catch (error) {
+          return res.status(httpStatusFromError(error, 400)).json({
+            message:
+              error.message ||
+              'Kunne ikke synkronisere nettside-forhåndsvisning fra Website Maker.',
+          });
+        }
+      }
+      if (!previewUrl) {
+        return res.status(400).json({
+          message:
+            'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først.',
+        });
+      }
     }
   }
 
