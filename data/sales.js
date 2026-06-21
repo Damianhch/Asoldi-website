@@ -4,7 +4,7 @@ import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './stora
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
 const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
-const SALES_STATUSES = ['active', 'not-sold'];
+const SALES_STATUSES = ['active', 'not-sold', 'secondary'];
 
 function ensureDataDir() {
   ensurePersistentDataDir();
@@ -176,7 +176,7 @@ function normalizeSalesClient(raw = {}) {
     websiteImport: normalizeWebsiteImport(raw.websiteImport),
     makerRun: normalizeMakerRun(raw.makerRun),
     status,
-    archive: status === 'not-sold' ? archive : normalizeArchive(),
+    archive: status === 'not-sold' || status === 'secondary' ? archive : normalizeArchive(),
     createdAt,
     updatedAt,
   };
@@ -312,7 +312,7 @@ export function setSalesMakerRun(id, makerPatch = {}) {
 
 export function setSalesStatus(id, status, archivePatch = {}) {
   const normalizedStatus = normalizeSalesStatus(status);
-  if (normalizedStatus === 'not-sold') {
+  if (normalizedStatus === 'not-sold' || normalizedStatus === 'secondary') {
     return updateSalesClient(id, {
       status: normalizedStatus,
       archive: {

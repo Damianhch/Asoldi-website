@@ -231,11 +231,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
   const formDuration = useMemo(() => durationForMode(form.meetingMode), [form.meetingMode]);
   const activeClients = useMemo(
-    () => clients.filter((client) => client.status !== 'not-sold'),
+    () => clients.filter((client) => client.status === 'active'),
     [clients]
   );
   const archivedClients = useMemo(
     () => clients.filter((client) => client.status === 'not-sold'),
+    [clients]
+  );
+  const secondaryClients = useMemo(
+    () => clients.filter((client) => client.status === 'secondary'),
     [clients]
   );
 
@@ -595,6 +599,25 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed archiving client as not sold');
+    } finally {
+      setStatusBusyId(null);
+    }
+  }
+
+  async function markSecondary(client: SalesClient) {
+    const label = client.businessName || 'this client';
+    const reasonInput = window.prompt(`Optional note for moving "${label}" to Sekundært:`, '');
+    if (reasonInput === null) return;
+    setStatusBusyId(`secondary:${client.id}`);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/secondary`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: reasonInput }),
+      });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed moving client to Sekundært');
     } finally {
       setStatusBusyId(null);
     }
@@ -960,6 +983,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {statusBusyId === `not-sold:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
                       Not sold
                     </button>
+                    <button
+                      type="button"
+                      onClick={() => void markSecondary(client)}
+                      disabled={statusBusyId === `secondary:${client.id}`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                    >
+                      {statusBusyId === `secondary:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
+                      Ikke interresert i nettside
+                    </button>
                   </div>
                 </div>
 
@@ -1297,6 +1329,53 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   >
                     {deletingArchivedId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                     Delete permanently
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {secondaryClients.length > 0 && (
+        <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-white font-semibold">Sekundært (Ikke interresert i nettside)</h3>
+            <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
+              {secondaryClients.length} clients
+            </span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+            {secondaryClients.map((client) => (
+              <div key={client.id} className="rounded-xl bg-black/20 border border-white/10 p-3 space-y-2">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium text-white truncate">{client.businessName || 'Unnamed business'}</div>
+                    <div className="text-xs text-gray-400 truncate">{client.contactPerson || 'No contact person'}</div>
+                  </div>
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-amber-900/30 text-amber-300 border border-amber-700/30">
+                    Sekundært
+                  </span>
+                </div>
+                <div className="text-xs text-gray-400">
+                  Moved: {formatDateTime(client.archive?.archivedAt || client.updatedAt)}
+                </div>
+                {client.archive?.reason ? (
+                  <div className="text-xs text-gray-300">
+                    Note: {client.archive.reason}
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500">No note added.</div>
+                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void restoreArchivedClient(client)}
+                    disabled={statusBusyId === `restore:${client.id}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                  >
+                    {statusBusyId === `restore:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
+                    Restore to active
                   </button>
                 </div>
               </div>

@@ -2550,6 +2550,19 @@ app.post('/api/admin/sales/:id/not-sold', salesAuth, (req, res) => {
   res.json({ client: updated });
 });
 
+app.post('/api/admin/sales/:id/secondary', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  const reason = sanitizeText(req.body?.reason);
+  const updated = sales.setSalesStatus(req.params.id, 'secondary', {
+    reason,
+    archivedAt: new Date().toISOString(),
+  });
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
 app.post('/api/admin/sales/:id/restore', salesAuth, (req, res) => {
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });

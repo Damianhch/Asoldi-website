@@ -156,7 +156,7 @@ export type SalesClient = {
   calendar: SalesCalendarMeta;
   websiteImport: SalesWebsiteImportMeta;
   makerRun: SalesMakerRunMeta;
-  status: 'active' | 'not-sold';
+  status: 'active' | 'not-sold' | 'secondary';
   archive: SalesArchiveMeta;
   createdAt: string;
   updatedAt: string;
