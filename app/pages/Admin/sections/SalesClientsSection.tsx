@@ -51,6 +51,7 @@ const OFFER_TIERS = [
   { id: 'tier-2-seo', name: 'Tier 2: SEO', price: '1 499,-/mnd' },
   { id: 'tier-3-ecommerce', name: 'Tier 3: Nettbutikk', price: '1 999,-/mnd' },
 ];
+const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 
 type CalendarStatus = {
   configured: boolean;
@@ -158,6 +159,30 @@ function formatStepLabel(value: string) {
   return 'Live';
 }
 
+function normalizeHttpBaseUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw);
+  const looksLocal = /^(localhost|127\.0\.0\.1|0\.0\.0\.0)(:\d+)?(\/|$)/i.test(raw);
+  const withProtocol = hasProtocol ? raw : `${looksLocal ? 'http' : 'https'}://${raw}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    const cleanPath = String(parsed.pathname || '').replace(/\/+$/, '');
+    return `${parsed.protocol}//${parsed.host}${cleanPath}`;
+  } catch {
+    return '';
+  }
+}
+
+function buildMakerRunUrl(baseUrl = '', runId = '', mode: 'dashboard' | 'preview' = 'dashboard') {
+  const base = normalizeHttpBaseUrl(baseUrl);
+  const id = String(runId || '').trim();
+  if (!base || !id) return '';
+  if (mode === 'preview') return `${base}/preview/${encodeURIComponent(id)}/step/3/view?route=/`;
+  return `${base}/run/${encodeURIComponent(id)}`;
+}
+
 export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [clients, setClients] = useState<SalesClient[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<CalendarStatus | null>(null);
@@ -175,6 +200,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
@@ -246,6 +272,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     void loadSales();
     void loadOffers();
   }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(MAKER_BASE_URL_STORAGE_KEY);
+      if (!stored) return;
+      const normalized = normalizeHttpBaseUrl(stored);
+      if (normalized) setWebsiteMakerBaseUrl(normalized);
+    } catch {
+      // Ignore storage access issues.
+    }
+  }, []);
+
+  useEffect(() => {
+    const normalized = normalizeHttpBaseUrl(websiteMakerBaseUrl);
+    if (!normalized) return;
+    try {
+      window.localStorage.setItem(MAKER_BASE_URL_STORAGE_KEY, normalized);
+    } catch {
+      // Ignore storage access issues.
+    }
+  }, [websiteMakerBaseUrl]);
 
   // Live (debounced) search of registered client accounts while an offer panel
   // is open. Runs with an empty query on open so the rep immediately sees the
@@ -589,6 +636,30 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function startMakerTunnel() {
+    setStartingMakerTunnel(true);
+    setError('');
+    try {
+      const normalizedCurrent = normalizeHttpBaseUrl(websiteMakerBaseUrl);
+      const localTarget = normalizedCurrent && /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(normalizedCurrent)
+        ? normalizedCurrent
+        : 'http://localhost:3000';
+      const data = await request('/admin/sales/maker-tunnel/start', {
+        method: 'POST',
+        body: JSON.stringify({
+          targetUrl: localTarget,
+        }),
+      });
+      const tunnelUrl = normalizeHttpBaseUrl(String(data.websiteMakerBaseUrl || data.tunnelUrl || ''));
+      if (!tunnelUrl) throw new Error('Tunnel started, but no valid URL was returned.');
+      setWebsiteMakerBaseUrl(tunnelUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Website Maker tunnel');
+    } finally {
+      setStartingMakerTunnel(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
@@ -608,12 +679,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         <div className="mt-4 grid md:grid-cols-[1fr_auto] gap-4 items-end">
           <div>
             <label className="text-xs text-gray-500">Website Maker URL</label>
-            <input
-              value={websiteMakerBaseUrl}
-              onChange={(e) => setWebsiteMakerBaseUrl(e.target.value)}
-              className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white"
-              placeholder="http://localhost:3000"
-            />
+            <div className="mt-1 flex flex-col sm:flex-row gap-2">
+              <input
+                value={websiteMakerBaseUrl}
+                onChange={(e) => setWebsiteMakerBaseUrl(e.target.value)}
+                className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white"
+                placeholder="http://localhost:3000"
+              />
+              <button
+                type="button"
+                onClick={() => void startMakerTunnel()}
+                disabled={startingMakerTunnel}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+                title="Start a new local cloudflared tunnel and auto-fill this URL"
+              >
+                <RefreshCw size={14} className={startingMakerTunnel ? 'animate-spin' : ''} />
+                New tunnel URL
+              </button>
+            </div>
             <p className="mt-2 text-[11px] text-gray-500">
               Automatic welcome/reminder emails are currently disabled. Use the manual send buttons on each client card.
             </p>
@@ -650,7 +733,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             ];
             const importedPreviewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
-            const hasRun = Boolean(client.makerRun?.runId);
+            const makerRunId = String(client.makerRun?.runId || '').trim();
+            const hasRun = Boolean(makerRunId);
+            const dynamicDashboardUrl = buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard');
+            const dynamicPreviewUrl = buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'preview');
+            const makerDashboardUrl = dynamicDashboardUrl || String(client.makerRun?.dashboardUrl || '').trim();
+            const makerPreviewUrl = dynamicPreviewUrl || String(client.makerRun?.previewUrl || '').trim();
             const expanded = expandedId === client.id;
             return (
               <div key={client.id} className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-col gap-3">
@@ -708,16 +796,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     <>
                       <button
                         type="button"
-                        onClick={() => window.open(client.makerRun.dashboardUrl, '_blank')}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        onClick={() => window.open(makerDashboardUrl, '_blank')}
+                        disabled={!makerDashboardUrl}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
                       >
                         <ExternalLink size={13} />
                         Open in maker
                       </button>
                       <button
                         type="button"
-                        onClick={() => window.open(client.makerRun.previewUrl, '_blank')}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        onClick={() => window.open(makerPreviewUrl, '_blank')}
+                        disabled={!makerPreviewUrl}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
                       >
                         <ExternalLink size={13} />
                         Maker preview

@@ -1,5 +1,6 @@
 import express from 'express';
 import { createHmac, randomBytes } from 'crypto';
+import { spawn } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -126,8 +127,17 @@ function adminAuth(req, res, next) {
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
 const SALES_EMAIL_AUTOSEND_ENABLED = String(process.env.SALES_EMAIL_AUTOSEND || '0') === '1';
+const DEFAULT_MAKER_LOCAL_URL = String(process.env.WEBSITE_MAKER_LOCAL_URL || 'http://localhost:3000').trim() || 'http://localhost:3000';
+const CLOUDFLARED_WINDOWS_CANDIDATES = [
+  'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
+  'C:\\Program Files\\cloudflared\\cloudflared.exe',
+];
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
+let makerTunnelProcess = null;
+let makerTunnelUrl = '';
+let makerTunnelTargetUrl = '';
+let makerTunnelStartedAt = '';
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
 
 const CLIENT_WEBSITE_PLANS = [
@@ -202,6 +212,121 @@ function normalizeHttpBaseUrl(value = '') {
   } catch {
     return '';
   }
+}
+
+function resolveCloudflaredBinary() {
+  const envPath = sanitizeText(process.env.CLOUDFLARED_BIN);
+  if (envPath) return envPath;
+  if (process.platform === 'win32') {
+    for (const candidate of CLOUDFLARED_WINDOWS_CANDIDATES) {
+      if (existsSync(candidate)) return candidate;
+    }
+  }
+  return 'cloudflared';
+}
+
+async function stopMakerTunnelProcess() {
+  const child = makerTunnelProcess;
+  if (!child || child.killed) {
+    makerTunnelProcess = null;
+    return;
+  }
+  await new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const timeout = setTimeout(done, 4000);
+    child.once('exit', () => {
+      clearTimeout(timeout);
+      done();
+    });
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        });
+        killer.once('error', () => done());
+      } else {
+        child.kill('SIGTERM');
+      }
+    } catch {
+      done();
+    }
+  });
+  makerTunnelProcess = null;
+}
+
+async function restartMakerTunnel(targetUrl = DEFAULT_MAKER_LOCAL_URL) {
+  const normalizedTarget = normalizeHttpBaseUrl(targetUrl) || DEFAULT_MAKER_LOCAL_URL;
+  await stopMakerTunnelProcess();
+
+  const binary = resolveCloudflaredBinary();
+  return await new Promise((resolve, reject) => {
+    const child = spawn(binary, ['tunnel', '--url', normalizedTarget], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    makerTunnelProcess = child;
+    let settled = false;
+    let outputBuffer = '';
+
+    const finishSuccess = (url) => {
+      if (settled) return;
+      settled = true;
+      makerTunnelUrl = url;
+      makerTunnelTargetUrl = normalizedTarget;
+      makerTunnelStartedAt = new Date().toISOString();
+      resolve({
+        url,
+        targetUrl: normalizedTarget,
+        startedAt: makerTunnelStartedAt,
+      });
+    };
+
+    const finishError = (message) => {
+      if (settled) return;
+      settled = true;
+      if (makerTunnelProcess === child) makerTunnelProcess = null;
+      try {
+        if (!child.killed) child.kill();
+      } catch {
+        // Ignore cleanup errors.
+      }
+      reject(new Error(message));
+    };
+
+    const onData = (chunk) => {
+      const text = String(chunk || '');
+      if (!text) return;
+      outputBuffer = `${outputBuffer}${text}`;
+      if (outputBuffer.length > 12_000) outputBuffer = outputBuffer.slice(-12_000);
+      const matches = outputBuffer.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/ig);
+      if (matches?.length) finishSuccess(matches[matches.length - 1]);
+    };
+
+    const timeout = setTimeout(() => {
+      finishError('Timed out waiting for cloudflared to provide a tunnel URL.');
+    }, 25_000);
+
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.once('error', (error) => {
+      clearTimeout(timeout);
+      finishError(`Failed to start cloudflared: ${error.message}`);
+    });
+    child.once('exit', (code) => {
+      clearTimeout(timeout);
+      if (!settled) {
+        finishError(`cloudflared exited before creating a tunnel URL (exit code ${code ?? 'unknown'}).`);
+      } else if (makerTunnelProcess === child) {
+        makerTunnelProcess = null;
+      }
+    });
+  });
 }
 
 function normalizeMeetingMode(value) {
@@ -2211,6 +2336,33 @@ app.get('/api/admin/sales/google/oauth/callback', async (req, res) => {
   } catch (error) {
     return res.status(500).send(`<h2>Google Calendar connection failed:</h2><pre>${String(error.message || error)}</pre>`);
   }
+});
+
+app.post('/api/admin/sales/maker-tunnel/start', salesAuth, async (req, res) => {
+  const targetUrl = sanitizeText(req.body?.targetUrl || req.body?.websiteMakerLocalUrl || DEFAULT_MAKER_LOCAL_URL);
+  try {
+    const tunnel = await restartMakerTunnel(targetUrl);
+    res.json({
+      ok: true,
+      tunnelUrl: tunnel.url,
+      websiteMakerBaseUrl: tunnel.url,
+      targetUrl: tunnel.targetUrl,
+      startedAt: tunnel.startedAt,
+    });
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to start Website Maker tunnel.' });
+  }
+});
+
+app.get('/api/admin/sales/maker-tunnel/status', salesAuth, (_req, res) => {
+  res.json({
+    ok: true,
+    running: Boolean(makerTunnelProcess && !makerTunnelProcess.killed),
+    tunnelUrl: makerTunnelUrl,
+    websiteMakerBaseUrl: makerTunnelUrl,
+    targetUrl: makerTunnelTargetUrl,
+    startedAt: makerTunnelStartedAt,
+  });
 });
 
 app.get('/api/admin/sales', salesAuth, (req, res) => {
