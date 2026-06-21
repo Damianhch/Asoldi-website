@@ -183,6 +183,17 @@ function buildMakerRunUrl(baseUrl = '', runId = '', mode: 'dashboard' | 'preview
   return `${base}/run/${encodeURIComponent(id)}`;
 }
 
+function toOrigin(baseUrl = '') {
+  const normalized = normalizeHttpBaseUrl(baseUrl);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '';
+  }
+}
+
 export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [clients, setClients] = useState<SalesClient[]>([]);
   const [calendarStatus, setCalendarStatus] = useState<CalendarStatus | null>(null);
@@ -644,14 +655,74 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const localTarget = normalizedCurrent && /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(normalizedCurrent)
         ? normalizedCurrent
         : 'http://localhost:3000';
-      const data = await request('/admin/sales/maker-tunnel/start', {
-        method: 'POST',
-        body: JSON.stringify({
-          targetUrl: localTarget,
-        }),
+      const localOrigin = toOrigin(localTarget) || 'http://localhost:3000';
+      const popupUrl = new URL('/local-tunnel', localOrigin);
+      popupUrl.searchParams.set('returnOrigin', window.location.origin);
+      popupUrl.searchParams.set('targetUrl', localTarget);
+
+      const popup = window.open(
+        popupUrl.toString(),
+        'asoldi-maker-local-tunnel',
+        'width=620,height=740'
+      );
+      if (!popup) {
+        throw new Error('Popup blocked. Please allow popups and try again.');
+      }
+
+      const tunnelUrl = await new Promise<string>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          window.removeEventListener('message', onMessage);
+          window.clearTimeout(timeoutId);
+          window.clearInterval(closeWatcherId);
+        };
+        const finish = (handler: () => void) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          handler();
+        };
+        const timeoutId = window.setTimeout(() => {
+          finish(() =>
+            reject(
+              new Error(
+                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again.'
+              )
+            )
+          );
+        }, 45_000);
+        const closeWatcherId = window.setInterval(() => {
+          if (!popup.closed) return;
+          finish(() =>
+            reject(
+              new Error(
+                'Tunnel popup was closed before completion. Re-open it with "New tunnel URL" and let it finish.'
+              )
+            )
+          );
+        }, 450);
+
+        const onMessage = (event: MessageEvent) => {
+          if (event.origin !== localOrigin) return;
+          const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
+          if (!payload) return;
+          if (payload.type === 'asoldi-maker-tunnel-error') {
+            const message = String(payload.message || 'Failed starting local tunnel.');
+            finish(() => reject(new Error(message)));
+            return;
+          }
+          if (payload.type === 'asoldi-maker-tunnel-ready') {
+            const next = normalizeHttpBaseUrl(String(payload.tunnelUrl || ''));
+            if (!next) {
+              finish(() => reject(new Error('Local tunnel returned an invalid URL.')));
+              return;
+            }
+            finish(() => resolve(next));
+          }
+        };
+
+        window.addEventListener('message', onMessage);
       });
-      const tunnelUrl = normalizeHttpBaseUrl(String(data.websiteMakerBaseUrl || data.tunnelUrl || ''));
-      if (!tunnelUrl) throw new Error('Tunnel started, but no valid URL was returned.');
       setWebsiteMakerBaseUrl(tunnelUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Website Maker tunnel');

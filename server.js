@@ -1,6 +1,6 @@
 import express from 'express';
 import { createHmac, randomBytes } from 'crypto';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
@@ -216,13 +216,63 @@ function normalizeHttpBaseUrl(value = '') {
 
 function resolveCloudflaredBinary() {
   const envPath = sanitizeText(process.env.CLOUDFLARED_BIN);
-  if (envPath) return envPath;
+  if (envPath && existsSync(envPath)) return envPath;
+
+  const candidates = new Set(CLOUDFLARED_WINDOWS_CANDIDATES);
+  const programFilesX86 = sanitizeText(process.env['ProgramFiles(x86)']);
+  const programFiles = sanitizeText(process.env.ProgramFiles);
+  const localAppData = sanitizeText(process.env.LOCALAPPDATA);
+  const userProfile = sanitizeText(process.env.USERPROFILE);
+  if (programFilesX86) candidates.add(`${programFilesX86}\\cloudflared\\cloudflared.exe`);
+  if (programFiles) candidates.add(`${programFiles}\\cloudflared\\cloudflared.exe`);
+  if (programFiles) candidates.add(`${programFiles}\\Cloudflare\\Cloudflared\\cloudflared.exe`);
+  if (localAppData) candidates.add(`${localAppData}\\Programs\\cloudflared\\cloudflared.exe`);
+  candidates.add('C:\\ProgramData\\chocolatey\\bin\\cloudflared.exe');
+  if (userProfile) candidates.add(`${userProfile}\\scoop\\shims\\cloudflared.exe`);
+  if (userProfile) candidates.add(`${userProfile}\\.cloudflared\\cloudflared.exe`);
+
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+
   if (process.platform === 'win32') {
-    for (const candidate of CLOUDFLARED_WINDOWS_CANDIDATES) {
-      if (existsSync(candidate)) return candidate;
+    try {
+      const probe = spawnSync('where.exe', ['cloudflared'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      });
+      const hits = String(probe.stdout || '')
+        .split(/\r?\n/)
+        .map((entry) => entry.trim())
+        .filter(Boolean);
+      for (const hit of hits) {
+        if (existsSync(hit)) return hit;
+      }
+    } catch {
+      // Ignore detection failures and continue to generic probe.
+    }
+  } else {
+    try {
+      const probe = spawnSync('which', ['cloudflared'], {
+        encoding: 'utf8',
+      });
+      const hit = String(probe.stdout || '').split(/\r?\n/).map((entry) => entry.trim()).find(Boolean);
+      if (hit && existsSync(hit)) return hit;
+    } catch {
+      // Ignore detection failures and continue to generic probe.
     }
   }
-  return 'cloudflared';
+
+  try {
+    const probe = spawnSync('cloudflared', ['--version'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    if (probe.status === 0) return 'cloudflared';
+  } catch {
+    // No-op
+  }
+  return '';
 }
 
 async function stopMakerTunnelProcess() {
@@ -265,6 +315,11 @@ async function restartMakerTunnel(targetUrl = DEFAULT_MAKER_LOCAL_URL) {
   await stopMakerTunnelProcess();
 
   const binary = resolveCloudflaredBinary();
+  if (!binary) {
+    throw new Error(
+      'cloudflared was not found on this backend host. Install cloudflared, or set CLOUDFLARED_BIN to the executable path. If you are using a hosted backend, start this from your local backend to create a local tunnel.'
+    );
+  }
   return await new Promise((resolve, reject) => {
     const child = spawn(binary, ['tunnel', '--url', normalizedTarget], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -316,6 +371,12 @@ async function restartMakerTunnel(targetUrl = DEFAULT_MAKER_LOCAL_URL) {
     child.stderr?.on('data', onData);
     child.once('error', (error) => {
       clearTimeout(timeout);
+      if (error?.code === 'ENOENT') {
+        finishError(
+          `Failed to start cloudflared: executable not found (${binary}). Install cloudflared or set CLOUDFLARED_BIN.`
+        );
+        return;
+      }
       finishError(`Failed to start cloudflared: ${error.message}`);
     });
     child.once('exit', (code) => {
