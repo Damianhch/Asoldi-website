@@ -178,6 +178,7 @@ function normalizeProfile(input = {}) {
     name,
     fullName: name,
     businessName: sanitizeText(input.businessName),
+    businessOrgNumber: sanitizeText(input.businessOrgNumber || input.organizationNumber),
     position: sanitizeText(input.position),
     discoveryChannel: source,
     source,
@@ -371,6 +372,7 @@ export function setClientOnboarding(userId, data = {}) {
   return upsertClientProfile(userId, {
     name: sanitizeText(data.name || data.fullName),
     businessName: sanitizeText(data.businessName),
+    businessOrgNumber: sanitizeText(data.businessOrgNumber || data.organizationNumber),
     position: sanitizeText(data.position),
     discoveryChannel: sanitizeText(data.discoveryChannel || data.source),
     onboardingCompleted: true,

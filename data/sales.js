@@ -135,6 +135,17 @@ function normalizeReminders(value = {}) {
   };
 }
 
+function normalizeSalesDetails(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    instagramUrl: sanitizeText(input.instagramUrl),
+    facebookUrl: sanitizeText(input.facebookUrl),
+    proffUrl: sanitizeText(input.proffUrl),
+    otherLinks: sanitizeText(input.otherLinks),
+    googleBusinessProfile: sanitizeText(input.googleBusinessProfile),
+  };
+}
+
 function normalizeSalesClient(raw = {}) {
   const meetingMode = normalizeMeetingMode(raw.meetingMode);
   const agreedTime = Boolean(raw.agreedTime);
@@ -152,14 +163,13 @@ function normalizeSalesClient(raw = {}) {
     contactEmail: sanitizeText(raw.contactEmail),
     contactPhone: sanitizeText(raw.contactPhone),
     meetingPlace: sanitizeText(raw.meetingPlace),
-    businessAddress: sanitizeText(raw.businessAddress),
     industry: sanitizeText(raw.industry),
     meetingMode,
     meetingDurationMinutes: durationForMode(meetingMode),
     agreedTime,
     meetingAt,
     websiteDomain: sanitizeText(raw.websiteDomain),
-    details: raw.details && typeof raw.details === 'object' ? raw.details : {},
+    details: normalizeSalesDetails(raw.details),
     progression: normalizeProgression(raw.progression, agreedTime),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),

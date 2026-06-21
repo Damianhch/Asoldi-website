@@ -18,6 +18,7 @@ LOGIN & AUTH
 
 ONBOARDING
 [x] Paginated questionnaire after first login (navn, bedrift, stilling, kilde)
+[x] Bedriftsvalg via BRREG-søk (navn/org.nr) i business name-steget
 [x] Redirect to onboarding if profile not complete
 [x] Redirect to /kunde after onboarding complete
 
@@ -62,8 +63,14 @@ B) ASOLDI BACKEND — SALES / ADMIN (from earlier work)
 SALES ADMIN (asoldi.com/admin)
 [x] Clients / Sales submenu under Manage Clients
 [x] Add/edit sales clients with meeting fields
+[x] Sales form cleaned: removed address + removed website goals/package/additional text fields
+[x] Sales links fields added: Instagram, Facebook, proff.no, other links, Google Business Profile
 [x] "Agreed time" toggle + step 0 progression
 [x] Progression line (payment, domain, live)
+[x] Archived clients: restore + permanent delete
+[x] Manual email controls on sales cards: Send welcome email + Send reminder
+[~] Automatic sales emails are disabled by default (manual-only) until templates are finalized
+[x] Sales -> Maker draft now sends business name/industry and social link context for QuickFill
 [x] Import website from Website Maker (run ID)
 [x] Local preview of imported site
 [x] "Got the client" promote to Clients tab
@@ -72,6 +79,9 @@ SALES ADMIN (asoldi.com/admin)
     one-time "Connect Google Calendar" (per-user tokens, calendar.events scope)
 [~] SMTP — configured in prod (Hostinger, 465); needs one live send test
 [ ] Full E2E test: add sales client → import run → preview → got client
+[ ] Finalize welcome email templates (separate online/in-person wording + approved copy)
+[ ] Finalize reminder email templates and cadence (24h/1h or custom)
+[ ] Re-enable optional automatic reminder sending only after template/timing signoff
 
 WEBSITE MAKER EXPORT
 [x] Export Latest Site ZIP button on run page

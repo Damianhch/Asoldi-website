@@ -129,6 +129,14 @@ export type SalesArchiveMeta = {
   reason: string;
 };
 
+export type SalesClientDetails = {
+  instagramUrl: string;
+  facebookUrl: string;
+  proffUrl: string;
+  otherLinks: string;
+  googleBusinessProfile: string;
+};
+
 export type SalesClient = {
   id: string;
   businessName: string;
@@ -136,14 +144,13 @@ export type SalesClient = {
   contactEmail: string;
   contactPhone: string;
   meetingPlace: string;
-  businessAddress: string;
   industry: string;
   meetingMode: 'online' | 'in-person';
   meetingDurationMinutes: number;
   agreedTime: boolean;
   meetingAt: string;
   websiteDomain: string;
-  details: Record<string, unknown>;
+  details: SalesClientDetails;
   progression: SalesProgression;
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;

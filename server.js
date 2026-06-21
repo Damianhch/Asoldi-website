@@ -125,6 +125,7 @@ function adminAuth(req, res, next) {
 
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
+const SALES_EMAIL_AUTOSEND_ENABLED = String(process.env.SALES_EMAIL_AUTOSEND || '0') === '1';
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
@@ -254,27 +255,58 @@ function clientTokenFromRequest(req) {
   return bearer || fallbackHeader || '';
 }
 
+function normalizeSalesDetailLinks(value = {}, fallback = {}) {
+  const base = fallback && typeof fallback === 'object' ? fallback : {};
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    instagramUrl: sanitizeText(input.instagramUrl ?? base.instagramUrl),
+    facebookUrl: sanitizeText(input.facebookUrl ?? base.facebookUrl),
+    proffUrl: sanitizeText(input.proffUrl ?? base.proffUrl),
+    otherLinks: sanitizeText(input.otherLinks ?? base.otherLinks),
+    googleBusinessProfile: sanitizeText(input.googleBusinessProfile ?? base.googleBusinessProfile),
+  };
+}
+
+function buildSalesRelevantLinks(details = {}) {
+  const links = [];
+  const pushUnique = (value) => {
+    const next = sanitizeText(value);
+    if (!next || links.includes(next)) return;
+    links.push(next);
+  };
+  pushUnique(details.instagramUrl);
+  pushUnique(details.facebookUrl);
+  pushUnique(details.proffUrl);
+  const other = sanitizeText(details.otherLinks);
+  if (other) {
+    other
+      .split(/\r?\n|,/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .forEach(pushUnique);
+  }
+  return links.join('\n');
+}
+
 function buildSalesInput(body = {}, { existing = null, requireCore = false } = {}) {
   const source = body && typeof body === 'object' ? body : {};
   const mode = normalizeMeetingMode(source.meetingMode ?? existing?.meetingMode ?? 'online');
   const agreedTime = parseBoolean(source.agreedTime, existing?.agreedTime ?? false);
   const meetingAt = agreedTime ? sanitizeText(source.meetingAt ?? existing?.meetingAt) : '';
+  const meetingPlaceRaw = sanitizeText(source.meetingPlace ?? existing?.meetingPlace);
 
   const payload = {
     businessName: sanitizeText(source.businessName ?? existing?.businessName),
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
     contactPhone: sanitizeText(source.contactPhone ?? existing?.contactPhone),
-    meetingPlace: sanitizeText(source.meetingPlace ?? existing?.meetingPlace),
-    businessAddress: sanitizeText(source.businessAddress ?? source.address ?? existing?.businessAddress),
+    meetingPlace: mode === 'online' ? '' : meetingPlaceRaw,
     industry: sanitizeText(source.industry ?? existing?.industry),
     meetingMode: mode,
     agreedTime,
     meetingAt,
     websiteDomain: sanitizeText(source.websiteDomain ?? existing?.websiteDomain),
-    details: source.details && typeof source.details === 'object'
-      ? source.details
-      : existing?.details || {},
+    details: normalizeSalesDetailLinks(source.details, existing?.details),
   };
 
   if (requireCore) {
@@ -289,6 +321,78 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     throw new Error('Meeting date/time must be a valid ISO date.');
   }
   return payload;
+}
+
+function formatBrregAddress(input = {}) {
+  const source = input && typeof input === 'object' ? input : {};
+  const lines = Array.isArray(source.adresse) ? source.adresse.map((entry) => sanitizeText(entry)).filter(Boolean) : [];
+  const postNumber = sanitizeText(source.postnummer);
+  const postPlace = sanitizeText(source.poststed);
+  const postal = [postNumber, postPlace].filter(Boolean).join(' ');
+  const parts = [...lines];
+  if (postal) parts.push(postal);
+  return parts.join(', ');
+}
+
+function mapBrregEntity(entity = {}) {
+  const source = entity && typeof entity === 'object' ? entity : {};
+  return {
+    organizationNumber: sanitizeText(source.organisasjonsnummer),
+    name: sanitizeText(source.navn),
+    address: formatBrregAddress(source.forretningsadresse || source.postadresse || {}),
+  };
+}
+
+async function fetchBrregEntities(url, signal) {
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+    signal,
+  });
+  if (!response.ok) return [];
+  const payload = await response.json().catch(() => ({}));
+  const list = Array.isArray(payload?._embedded?.enheter) ? payload._embedded.enheter : [];
+  return list.map(mapBrregEntity).filter((entry) => entry.name);
+}
+
+async function searchBrregBusinesses(queryText = '') {
+  const query = sanitizeText(queryText);
+  if (query.length < 2) return [];
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 7000);
+  try {
+    const digits = query.replace(/\D+/g, '');
+    const requests = [
+      fetchBrregEntities(
+        `https://data.brreg.no/enhetsregisteret/api/enheter?navn=${encodeURIComponent(query)}&size=10`,
+        controller.signal
+      ),
+    ];
+    if (digits.length >= 3) {
+      requests.push(
+        fetchBrregEntities(
+          `https://data.brreg.no/enhetsregisteret/api/enheter?organisasjonsnummer=${encodeURIComponent(digits)}&size=10`,
+          controller.signal
+        )
+      );
+    }
+    const groups = await Promise.allSettled(requests);
+    const merged = [];
+    const seen = new Set();
+    for (const result of groups) {
+      if (result.status !== 'fulfilled') continue;
+      for (const entry of result.value) {
+        const key = entry.organizationNumber || entry.name.toLowerCase();
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push(entry);
+      }
+    }
+    return merged.slice(0, 15);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function getSalesPreviewUrl(clientId) {
@@ -711,7 +815,32 @@ async function sendSalesThankYou(client, { force = false } = {}) {
   return { sent: true, client: updated || client };
 }
 
+async function sendSalesReminderNow(client, kind = '24h') {
+  if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
+  if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
+  if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
+  const reminderKind = kind === '1h' ? '1h' : '24h';
+  const message = buildSalesReminderEmail(client, client.calendar || {}, reminderKind);
+  await emailLib.sendEmail({
+    to: client.contactEmail,
+    subject: message.subject,
+    text: message.text,
+    html: message.html,
+  });
+  const updated = sales.markSalesReminderSent(client.id, reminderKind);
+  return { sent: true, client: updated || client, kind: reminderKind };
+}
+
+function salesEmailFailureMessage(reason = '') {
+  if (reason === 'meeting-not-scheduled') return 'Meeting date/time must be set before sending this email.';
+  if (reason === 'missing-email') return 'Client contact email is missing.';
+  if (reason === 'smtp-not-configured') return 'SMTP is not configured.';
+  if (reason === 'already-sent') return 'Email was already sent.';
+  return 'Could not send email.';
+}
+
 async function sendDueSalesReminders() {
+  if (!SALES_EMAIL_AUTOSEND_ENABLED) return;
   if (salesReminderLoopRunning) return;
   if (!emailLib.canSendEmail()) return;
   salesReminderLoopRunning = true;
@@ -756,6 +885,7 @@ async function sendDueSalesReminders() {
 }
 
 function startSalesReminderLoop() {
+  if (!SALES_EMAIL_AUTOSEND_ENABLED) return;
   if (salesReminderInterval) return;
   salesReminderInterval = setInterval(() => {
     sendDueSalesReminders().catch((error) => console.error('Sales reminder tick failed:', error));
@@ -1319,11 +1449,25 @@ app.put('/api/client/profile', clientAuth, async (req, res) => {
   const profile = clientPortal.upsertClientProfile(user.id, {
     name: sanitizeText(body.name),
     businessName: sanitizeText(body.businessName),
+    businessOrgNumber: sanitizeText(body.businessOrgNumber || body.organizationNumber),
     position: sanitizeText(body.position),
     discoveryChannel: sanitizeText(body.discoveryChannel),
     onboardingCompleted: parseBoolean(body.onboardingCompleted, true),
   });
   return res.json({ profile });
+});
+
+app.get('/api/client/brreg-search', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const query = sanitizeText(req.query?.q);
+  if (query.length < 2) return res.json({ results: [] });
+  try {
+    const results = await searchBrregBusinesses(query);
+    return res.json({ results });
+  } catch (error) {
+    return res.status(502).json({ message: error.message || 'Failed searching BRREG.' });
+  }
 });
 
 app.get('/api/client/dashboard', clientAuth, async (req, res) => {
@@ -1943,6 +2087,7 @@ app.put('/api/client-auth/profile', clientAuthV2, async (req, res) => {
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'User not found' });
   const fullName = sanitizeText(req.body?.fullName || '');
   const businessName = sanitizeText(req.body?.businessName || '');
+  const businessOrgNumber = sanitizeText(req.body?.businessOrgNumber || req.body?.organizationNumber || '');
   const position = sanitizeText(req.body?.position || '');
   const source = sanitizeText(req.body?.source || '');
   const onboardingComplete = parseBoolean(req.body?.onboardingComplete, false);
@@ -1952,6 +2097,7 @@ app.put('/api/client-auth/profile', clientAuthV2, async (req, res) => {
     email: user.username,
     fullName,
     businessName,
+    businessOrgNumber,
     position,
     source,
     onboardingComplete,
@@ -2093,13 +2239,16 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     const syncResult = await maybeSyncCalendar(client, null);
     client = syncResult.client || client;
 
-    const thankYou = await sendSalesThankYou(client, { force: false });
+    const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
+      ? await sendSalesThankYou(client, { force: false })
+      : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
 
     res.status(201).json({
       client,
       warnings: syncResult.warnings || [],
       thankYouSent: Boolean(thankYou?.sent),
+      autoEmailEnabled: SALES_EMAIL_AUTOSEND_ENABLED,
     });
   } catch (error) {
     res.status(400).json({ message: error.message || 'Failed to create sales client.' });
@@ -2125,13 +2274,16 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
     const syncResult = await maybeSyncCalendar(client, existing);
     client = syncResult.client || client;
 
-    const thankYou = await sendSalesThankYou(client, { force: meetingChanged });
+    const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
+      ? await sendSalesThankYou(client, { force: meetingChanged })
+      : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
 
     res.json({
       client,
       warnings: syncResult.warnings || [],
       thankYouSent: Boolean(thankYou?.sent),
+      autoEmailEnabled: SALES_EMAIL_AUTOSEND_ENABLED,
     });
   } catch (error) {
     res.status(400).json({ message: error.message || 'Failed to update sales client.' });
@@ -2192,6 +2344,67 @@ app.post('/api/admin/sales/:id/restore', salesAuth, (req, res) => {
   const updated = sales.setSalesStatus(req.params.id, 'active');
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
+});
+
+app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) => {
+  try {
+    let client = sales.getSalesClientById(req.params.id);
+    if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+    if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+    const syncResult = await maybeSyncCalendar(client, client);
+    client = syncResult.client || client;
+    const sentResult = await sendSalesThankYou(client, { force: true });
+    client = sentResult.client || client;
+    if (!sentResult.sent) {
+      return res.status(400).json({
+        message: salesEmailFailureMessage(sentResult.reason),
+        reason: sentResult.reason || '',
+        client,
+        warnings: syncResult.warnings || [],
+      });
+    }
+    return res.json({
+      ok: true,
+      sent: true,
+      client,
+      warnings: syncResult.warnings || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed sending welcome email.' });
+  }
+});
+
+app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
+  try {
+    let client = sales.getSalesClientById(req.params.id);
+    if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+    if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+    const requestedKind = sanitizeText(req.body?.kind || '24h');
+    const reminderKind = requestedKind === '1h' ? '1h' : '24h';
+    const syncResult = await maybeSyncCalendar(client, client);
+    client = syncResult.client || client;
+    const sentResult = await sendSalesReminderNow(client, reminderKind);
+    client = sentResult.client || client;
+    if (!sentResult.sent) {
+      return res.status(400).json({
+        message: salesEmailFailureMessage(sentResult.reason),
+        reason: sentResult.reason || '',
+        client,
+        warnings: syncResult.warnings || [],
+      });
+    }
+    return res.json({
+      ok: true,
+      sent: true,
+      kind: reminderKind,
+      client,
+      warnings: syncResult.warnings || [],
+    });
+  } catch (error) {
+    return res.status(500).json({ message: error.message || 'Failed sending reminder email.' });
+  }
 });
 
 app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
@@ -2269,11 +2482,6 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
-  // Idempotent: if a run already exists for this client, return it as-is.
-  if (client.makerRun?.runId) {
-    return res.json({ ok: true, client, alreadyExists: true });
-  }
-
   // Prefer the URL the operator typed in the Sales UI; fall back to env. This lets
   // local testing target a maker on http://localhost:3000 without redeploying.
   const baseRaw = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL);
@@ -2287,24 +2495,44 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
   try {
+    const salesDetails = normalizeSalesDetailLinks(client.details || {});
+    const relevantLinks = buildSalesRelevantLinks(salesDetails);
+    const quickFillLinks = {
+      instagramProfile: salesDetails.instagramUrl || '',
+      facebookProfile: salesDetails.facebookUrl || '',
+      proffLink: salesDetails.proffUrl || '',
+      googleBusinessProfile: salesDetails.googleBusinessProfile || '',
+      customLink: '',
+    };
+    const answersPatch = {
+      businessName: client.businessName || '',
+      industry: client.industry || '',
+      googleBusinessProfile: salesDetails.googleBusinessProfile || '',
+      relevantLinks,
+    };
+    const existingRunId = sanitizeText(client.makerRun?.runId);
+    const requestBody = {
+      existingRunId,
+      businessName: client.businessName || 'Untitled client run',
+      industry: client.industry || '',
+      source: 'sales',
+      salesContact: client.contactPerson || '',
+      answers: answersPatch,
+      quickFillLinks,
+    };
     const response = await fetch(`${base}/api/runs/v2`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(apiKey ? { 'x-api-key': apiKey } : {}),
       },
-      body: JSON.stringify({
-        businessName: client.businessName || 'Untitled client run',
-        industry: client.industry || '',
-        source: 'sales',
-        salesContact: client.contactPerson || '',
-      }),
+      body: JSON.stringify(requestBody),
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
       return res.status(502).json({ message: data.error || data.message || `Website Maker error (${response.status}).` });
     }
-    const runId = sanitizeText(data.runId);
+    const runId = sanitizeText(data.runId || existingRunId);
     if (!runId) {
       return res.status(502).json({ message: 'Website Maker did not return a runId.' });
     }
@@ -2313,10 +2541,10 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       runId,
       ...buildMakerRunLinks(base, runId),
       industry: client.industry || '',
-      createdAt: new Date().toISOString(),
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
     });
 
-    res.json({ ok: true, client: updated });
+    res.json({ ok: true, client: updated, alreadyExists: Boolean(existingRunId) });
   } catch (error) {
     res.status(502).json({ message: error.message || 'Failed reaching the Website Maker.' });
   }

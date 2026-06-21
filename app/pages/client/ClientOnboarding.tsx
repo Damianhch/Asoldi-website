@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { ArrowLeft, ArrowRight } from 'lucide-react';
@@ -8,8 +8,15 @@ import { ClientRouteGuard } from '../../components/client/ClientRouteGuard';
 type FormState = {
   name: string;
   businessName: string;
+  businessOrgNumber: string;
   position: string;
   discoveryChannel: string;
+};
+
+type BrregBusinessOption = {
+  organizationNumber: string;
+  name: string;
+  address: string;
 };
 
 const DISCOVERY_OPTIONS = ['Fra sosiale medier', 'Referanse', 'Telefon salg', 'Annet'] as const;
@@ -33,9 +40,14 @@ export const ClientOnboarding = () => {
   const [step, setStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [brregResults, setBrregResults] = useState<BrregBusinessOption[]>([]);
+  const [brregLoading, setBrregLoading] = useState(false);
+  const [brregError, setBrregError] = useState('');
+  const [selectedBrreg, setSelectedBrreg] = useState<BrregBusinessOption | null>(null);
   const [form, setForm] = useState<FormState>({
     name: profile?.name || '',
     businessName: profile?.businessName || '',
+    businessOrgNumber: profile?.businessOrgNumber || '',
     position: profile?.position || '',
     discoveryChannel: profile?.discoveryChannel || '',
   });
@@ -46,8 +58,67 @@ export const ClientOnboarding = () => {
   const canProceed = Boolean(String(currentValue || '').trim());
 
   function setCurrentValue(value: string) {
-    setForm((prev) => ({ ...prev, [current.key]: value }));
+    setForm((prev) => {
+      if (current.key === 'businessName') {
+        return { ...prev, businessName: value, businessOrgNumber: '' };
+      }
+      return { ...prev, [current.key]: value };
+    });
+    if (current.key === 'businessName') {
+      setSelectedBrreg(null);
+      setBrregError('');
+    }
   }
+
+  function selectBrregOption(option: BrregBusinessOption) {
+    setSelectedBrreg(option);
+    setForm((prev) => ({
+      ...prev,
+      businessName: option.name,
+      businessOrgNumber: option.organizationNumber,
+    }));
+    setBrregResults([]);
+    setBrregError('');
+  }
+
+  useEffect(() => {
+    if (current.key !== 'businessName') return;
+    const query = String(form.businessName || '').trim();
+    if (query.length < 2) {
+      setBrregResults([]);
+      setBrregLoading(false);
+      setBrregError('');
+      return;
+    }
+
+    let active = true;
+    setBrregLoading(true);
+    setBrregError('');
+    const timer = window.setTimeout(async () => {
+      try {
+        const response = await fetch(`/api/client/brreg-search?q=${encodeURIComponent(query)}`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(data.message || 'Kunne ikke hente bedriftsdata fra BRREG.');
+        if (!active) return;
+        setBrregResults(Array.isArray(data.results) ? data.results : []);
+      } catch (err) {
+        if (!active) return;
+        setBrregResults([]);
+        setBrregError(err instanceof Error ? err.message : 'Kunne ikke hente bedriftsdata fra BRREG.');
+      } finally {
+        if (active) setBrregLoading(false);
+      }
+    }, 250);
+
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [current.key, form.businessName, token]);
 
   async function completeOnboarding() {
     setLoading(true);
@@ -61,6 +132,7 @@ export const ClientOnboarding = () => {
         },
         body: JSON.stringify({
           ...form,
+          businessOrgNumber: form.businessOrgNumber,
           onboardingCompleted: true,
         }),
       });
@@ -116,14 +188,60 @@ export const ClientOnboarding = () => {
                 ))}
               </select>
             ) : (
-              <input
-                type="text"
-                value={currentValue}
-                onChange={(e) => setCurrentValue(e.target.value)}
-                placeholder={current.placeholder}
-                className="mt-4 w-full rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-[#111827] outline-none focus:border-[#FF5B00]"
-                autoFocus
-              />
+              <>
+                <input
+                  type="text"
+                  value={currentValue}
+                  onChange={(e) => setCurrentValue(e.target.value)}
+                  placeholder={current.placeholder}
+                  className="mt-4 w-full rounded-xl border border-[#DDE2EA] bg-white px-4 py-3 text-[#111827] outline-none focus:border-[#FF5B00]"
+                  autoFocus
+                />
+                {current.key === 'businessName' ? (
+                  <div className="mt-3">
+                    <p className="text-xs text-[#6B7280]">
+                      Søk i BRREG med bedriftsnavn eller organisasjonsnummer og velg riktig bedrift.
+                    </p>
+                    {form.businessOrgNumber ? (
+                      <p className="mt-1 text-xs text-[#111827]">
+                        Valgt org.nr: <strong>{form.businessOrgNumber}</strong>
+                      </p>
+                    ) : null}
+                    {brregLoading ? (
+                      <p className="mt-2 text-xs text-[#6B7280]">Søker i BRREG…</p>
+                    ) : null}
+                    {brregError ? (
+                      <p className="mt-2 text-xs text-red-500">{brregError}</p>
+                    ) : null}
+                    {!brregLoading && brregResults.length > 0 ? (
+                      <div className="mt-2 max-h-52 overflow-y-auto rounded-xl border border-[#E5E7EB] bg-white divide-y divide-[#EEF1F5]">
+                        {brregResults.map((option) => (
+                          <button
+                            key={`${option.organizationNumber}:${option.name}`}
+                            type="button"
+                            onClick={() => selectBrregOption(option)}
+                            className="w-full text-left px-4 py-3 hover:bg-[#F8F9FB]"
+                          >
+                            <div className="text-sm font-medium text-[#111827]">{option.name}</div>
+                            <div className="text-xs text-[#6B7280]">
+                              Org.nr {option.organizationNumber}
+                              {option.address ? ` · ${option.address}` : ''}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : null}
+                    {!brregLoading && !brregError && String(form.businessName || '').trim().length >= 2 && brregResults.length === 0 ? (
+                      <p className="mt-2 text-xs text-[#6B7280]">Ingen treff i BRREG for dette søket.</p>
+                    ) : null}
+                    {selectedBrreg ? (
+                      <p className="mt-2 text-xs text-[#059669]">
+                        {selectedBrreg.name} er valgt fra BRREG.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </>
             )}
           </div>
 

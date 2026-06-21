@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
+  BellRing,
   ArchiveX,
   CalendarClock,
   CheckCircle2,
@@ -7,6 +8,7 @@ import {
   Gift,
   Link2,
   Loader2,
+  MailPlus,
   Pencil,
   Plus,
   RefreshCw,
@@ -68,15 +70,16 @@ type SalesFormState = {
   contactEmail: string;
   contactPhone: string;
   meetingPlace: string;
-  businessAddress: string;
   industry: string;
   meetingMode: 'online' | 'in-person';
   agreedTime: boolean;
   meetingAt: string;
   websiteDomain: string;
-  websiteGoals: string;
-  packageNotes: string;
-  additionalInfo: string;
+  instagramUrl: string;
+  facebookUrl: string;
+  proffUrl: string;
+  otherLinks: string;
+  googleBusinessProfile: string;
 };
 
 const INITIAL_FORM: SalesFormState = {
@@ -85,23 +88,26 @@ const INITIAL_FORM: SalesFormState = {
   contactEmail: '',
   contactPhone: '',
   meetingPlace: '',
-  businessAddress: '',
   industry: '',
   meetingMode: 'online',
   agreedTime: false,
   meetingAt: '',
   websiteDomain: '',
-  websiteGoals: '',
-  packageNotes: '',
-  additionalInfo: '',
+  instagramUrl: '',
+  facebookUrl: '',
+  proffUrl: '',
+  otherLinks: '',
+  googleBusinessProfile: '',
 };
 
 function parseDetails(details: Record<string, unknown> | undefined) {
   const safe = details && typeof details === 'object' ? details : {};
   return {
-    websiteGoals: String(safe.websiteGoals || ''),
-    packageNotes: String(safe.packageNotes || ''),
-    additionalInfo: String(safe.additionalInfo || ''),
+    instagramUrl: String(safe.instagramUrl || ''),
+    facebookUrl: String(safe.facebookUrl || ''),
+    proffUrl: String(safe.proffUrl || ''),
+    otherLinks: String(safe.otherLinks || ''),
+    googleBusinessProfile: String(safe.googleBusinessProfile || ''),
   };
 }
 
@@ -164,6 +170,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [linkingRunId, setLinkingRunId] = useState<string | null>(null);
+  const [sendingWelcomeId, setSendingWelcomeId] = useState<string | null>(null);
+  const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
+  const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -325,15 +334,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       contactEmail: client.contactEmail || '',
       contactPhone: client.contactPhone || '',
       meetingPlace: client.meetingPlace || '',
-      businessAddress: client.businessAddress || '',
       industry: client.industry || '',
       meetingMode: client.meetingMode === 'in-person' ? 'in-person' : 'online',
       agreedTime: Boolean(client.agreedTime),
       meetingAt: toDateTimeLocal(client.meetingAt),
       websiteDomain: client.websiteDomain || '',
-      websiteGoals: details.websiteGoals,
-      packageNotes: details.packageNotes,
-      additionalInfo: details.additionalInfo,
+      instagramUrl: details.instagramUrl,
+      facebookUrl: details.facebookUrl,
+      proffUrl: details.proffUrl,
+      otherLinks: details.otherLinks,
+      googleBusinessProfile: details.googleBusinessProfile,
     });
     setShowForm(true);
   }
@@ -348,17 +358,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         contactPerson: form.contactPerson,
         contactEmail: form.contactEmail,
         contactPhone: form.contactPhone,
-        meetingPlace: form.meetingPlace,
-        businessAddress: form.businessAddress,
+        meetingPlace: form.meetingMode === 'in-person' ? form.meetingPlace : '',
         industry: form.industry,
         meetingMode: form.meetingMode,
         agreedTime: form.agreedTime,
         meetingAt: form.agreedTime ? toIsoDateTime(form.meetingAt) : '',
         websiteDomain: form.websiteDomain,
         details: {
-          websiteGoals: form.websiteGoals,
-          packageNotes: form.packageNotes,
-          additionalInfo: form.additionalInfo,
+          instagramUrl: form.instagramUrl,
+          facebookUrl: form.facebookUrl,
+          proffUrl: form.proffUrl,
+          otherLinks: form.otherLinks,
+          googleBusinessProfile: form.googleBusinessProfile,
         },
       };
       const endpoint = editingId ? `/admin/sales/${editingId}` : '/admin/sales';
@@ -469,6 +480,35 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function sendWelcomeEmail(client: SalesClient) {
+    setSendingWelcomeId(client.id);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed sending welcome email');
+    } finally {
+      setSendingWelcomeId(null);
+    }
+  }
+
+  async function sendReminderEmail(client: SalesClient) {
+    setSendingReminderId(client.id);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/send-reminder`, {
+        method: 'POST',
+        body: JSON.stringify({ kind: '24h' }),
+      });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed sending reminder email');
+    } finally {
+      setSendingReminderId(null);
+    }
+  }
+
   async function promoteClient(client: SalesClient) {
     setPromotingId(client.id);
     setError('');
@@ -515,6 +555,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function deleteArchivedClient(client: SalesClient) {
+    const label = client.businessName || 'this archived client';
+    const ok = window.confirm(`Delete "${label}" permanently? This cannot be undone.`);
+    if (!ok) return;
+    setDeletingArchivedId(client.id);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}`, { method: 'DELETE' });
+      await loadSales();
+      await loadOffers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed deleting archived client');
+    } finally {
+      setDeletingArchivedId(null);
+    }
+  }
+
   async function connectGoogleCalendar() {
     setError('');
     try {
@@ -557,6 +614,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white"
               placeholder="http://localhost:3000"
             />
+            <p className="mt-2 text-[11px] text-gray-500">
+              Automatic welcome/reminder emails are currently disabled. Use the manual send buttons on each client card.
+            </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
             <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
@@ -674,6 +734,36 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       Create website run
                     </button>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => void sendWelcomeEmail(client)}
+                    disabled={sendingWelcomeId === client.id || !client.contactEmail || !client.agreedTime}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    title={!client.agreedTime ? 'Set agreed meeting time first' : 'Send welcome email manually'}
+                  >
+                    {sendingWelcomeId === client.id ? <Loader2 size={13} className="animate-spin" /> : <MailPlus size={13} />}
+                    Send welcome email
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void sendReminderEmail(client)}
+                    disabled={sendingReminderId === client.id || !client.contactEmail || !client.agreedTime}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    title={!client.agreedTime ? 'Set agreed meeting time first' : 'Send reminder email manually'}
+                  >
+                    {sendingReminderId === client.id ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
+                    Send reminder
+                  </button>
+                  {client.meetingMode === 'online' && client.calendar?.meetLink && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(client.calendar.meetLink, '_blank')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                    >
+                      <ExternalLink size={13} />
+                      Meet link
+                    </button>
+                  )}
                   {clientOffers.length > 0 && (
                     <span className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#FF5B00]/15 text-[#ff8a4d] text-[11px]">
                       <Tag size={12} />
@@ -720,8 +810,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         <ul className="space-y-1 text-gray-300">
                           <li>Email: {client.contactEmail || '—'}</li>
                           <li>Phone: {client.contactPhone || '—'}</li>
-                          <li>Meeting place: {client.meetingPlace || '—'}</li>
-                          <li>Address: {client.businessAddress || '—'}</li>
+                          {client.meetingMode === 'in-person' ? (
+                            <li>Meeting place: {client.meetingPlace || '—'}</li>
+                          ) : (
+                            <li>Meeting place: Online (Google Meet)</li>
+                          )}
                           <li>Industry: {client.industry || '—'}</li>
                           <li>Duration: {durationForMode(client.meetingMode)} min</li>
                           <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
@@ -742,19 +835,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </ul>
                       </details>
                       <details open className="sm:col-span-2 text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">Additional details</summary>
-                        <div className="grid sm:grid-cols-3 gap-3 text-gray-300">
+                        <summary className="cursor-pointer text-white font-medium mb-2">QuickFill links</summary>
+                        <div className="grid sm:grid-cols-2 gap-3 text-gray-300">
                           <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Website goals</div>
-                            <p>{String(client.details?.websiteGoals || '—')}</p>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Instagram</div>
+                            <p>{String(client.details?.instagramUrl || '—')}</p>
                           </div>
                           <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Package notes</div>
-                            <p>{String(client.details?.packageNotes || '—')}</p>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Facebook</div>
+                            <p>{String(client.details?.facebookUrl || '—')}</p>
                           </div>
                           <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Other info</div>
-                            <p>{String(client.details?.additionalInfo || '—')}</p>
+                            <div className="text-xs text-gray-500 uppercase mb-1">proff.no</div>
+                            <p>{String(client.details?.proffUrl || '—')}</p>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Google business profile</div>
+                            <p>{String(client.details?.googleBusinessProfile || '—')}</p>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <div className="text-xs text-gray-500 uppercase mb-1">Other links</div>
+                            <p style={{ whiteSpace: 'pre-wrap' }}>{String(client.details?.otherLinks || '—')}</p>
                           </div>
                         </div>
                       </details>
@@ -1017,15 +1118,26 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 ) : (
                   <div className="text-xs text-gray-500">No reason added.</div>
                 )}
-                <button
-                  type="button"
-                  onClick={() => void restoreArchivedClient(client)}
-                  disabled={statusBusyId === `restore:${client.id}`}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                >
-                  {statusBusyId === `restore:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
-                  Restore to active
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void restoreArchivedClient(client)}
+                    disabled={statusBusyId === `restore:${client.id}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                  >
+                    {statusBusyId === `restore:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <Undo2 size={13} />}
+                    Restore to active
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void deleteArchivedClient(client)}
+                    disabled={deletingArchivedId === client.id}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-900/30 text-red-200 text-xs hover:bg-red-900/40 disabled:opacity-50"
+                  >
+                    {deletingArchivedId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                    Delete permanently
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -1041,22 +1153,42 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               <Field label="Contact person" value={form.contactPerson} onChange={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))} required />
               <Field label="Email" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} required />
               <Field label="Phone number" value={form.contactPhone} onChange={(value) => setForm((prev) => ({ ...prev, contactPhone: value }))} />
-              <Field label="Place to meet" value={form.meetingPlace} onChange={(value) => setForm((prev) => ({ ...prev, meetingPlace: value }))} />
-              <Field label="Address" value={form.businessAddress} onChange={(value) => setForm((prev) => ({ ...prev, businessAddress: value }))} />
               <Field label="Industry" value={form.industry} onChange={(value) => setForm((prev) => ({ ...prev, industry: value }))} />
               <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />
+              <Field label="Instagram URL" value={form.instagramUrl} onChange={(value) => setForm((prev) => ({ ...prev, instagramUrl: value }))} />
+              <Field label="Facebook URL" value={form.facebookUrl} onChange={(value) => setForm((prev) => ({ ...prev, facebookUrl: value }))} />
+              <Field label="proff.no URL" value={form.proffUrl} onChange={(value) => setForm((prev) => ({ ...prev, proffUrl: value }))} />
+              <Field
+                label="Google business profile URL"
+                value={form.googleBusinessProfile}
+                onChange={(value) => setForm((prev) => ({ ...prev, googleBusinessProfile: value }))}
+              />
 
               <div>
                 <label className="block text-sm text-gray-300 mb-1">Meeting mode</label>
                 <select
                   value={form.meetingMode}
-                  onChange={(e) => setForm((prev) => ({ ...prev, meetingMode: e.target.value as 'online' | 'in-person' }))}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      meetingMode: e.target.value as 'online' | 'in-person',
+                      meetingPlace: e.target.value === 'online' ? '' : prev.meetingPlace,
+                    }))
+                  }
                   className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white"
                 >
                   <option value="online">Online (30 min)</option>
                   <option value="in-person">In person (60 min)</option>
                 </select>
               </div>
+
+              {form.meetingMode === 'in-person' ? (
+                <Field label="Place to meet" value={form.meetingPlace} onChange={(value) => setForm((prev) => ({ ...prev, meetingPlace: value }))} />
+              ) : (
+                <div className="rounded-lg border border-white/10 bg-[#161616] px-4 py-3 text-sm text-gray-400">
+                  Meeting place is hidden for online mode (Google Meet).
+                </div>
+              )}
 
               <div className="flex items-center justify-between rounded-lg border border-white/10 bg-[#161616] px-4 py-3">
                 <span className="text-sm text-gray-300">Agreed time</span>
@@ -1082,9 +1214,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
               <div className="flex items-center text-sm text-gray-400">Meeting duration: <strong className="text-white ml-1">{formDuration} min</strong></div>
 
-              <TextArea label="Website goals" value={form.websiteGoals} onChange={(value) => setForm((prev) => ({ ...prev, websiteGoals: value }))} />
-              <TextArea label="Package notes" value={form.packageNotes} onChange={(value) => setForm((prev) => ({ ...prev, packageNotes: value }))} />
-              <TextArea label="Additional info" value={form.additionalInfo} onChange={(value) => setForm((prev) => ({ ...prev, additionalInfo: value }))} />
+              <TextArea label="Other links (one per line)" value={form.otherLinks} onChange={(value) => setForm((prev) => ({ ...prev, otherLinks: value }))} />
 
               <div className="md:col-span-2 flex justify-end gap-2 mt-2">
                 <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg bg-white/10 text-white">

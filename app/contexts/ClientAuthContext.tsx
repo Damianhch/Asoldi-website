@@ -8,6 +8,7 @@ type ClientProfile = {
   email: string;
   name: string;
   businessName: string;
+  businessOrgNumber?: string;
   position: string;
   discoveryChannel: string;
   onboardingCompleted: boolean;
