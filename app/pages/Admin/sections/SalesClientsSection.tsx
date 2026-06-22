@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BellRing,
   ArchiveX,
@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { API, salesAuthHeaders, type SalesClient } from '../shared';
+import 'leaflet/dist/leaflet.css';
 
 type WebsiteOffer = {
   id: string;
@@ -52,6 +53,8 @@ const OFFER_TIERS = [
   { id: 'tier-3-ecommerce', name: 'Tier 3: Nettbutikk', price: '1 999,-/mnd' },
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
+const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
+const SALES_MAP_DEFAULT_ZOOM = 5;
 
 type CalendarStatus = {
   configured: boolean;
@@ -59,6 +62,16 @@ type CalendarStatus = {
   calendarId: string;
   redirectUri: string;
   tokenUpdatedAt: string;
+};
+
+type MeetingMapPin = {
+  clientId: string;
+  businessName: string;
+  contactPerson: string;
+  meetingPlace: string;
+  meetingAt: string;
+  latitude: number;
+  longitude: number;
 };
 
 type Props = {
@@ -149,6 +162,23 @@ function formatDateTime(value = '') {
   return date.toLocaleString('nb-NO');
 }
 
+function parseMeetingTimestamp(value = '') {
+  if (!value) return null;
+  const date = new Date(value);
+  const time = date.getTime();
+  if (Number.isNaN(time)) return null;
+  return time;
+}
+
+function escapeHtml(value = '') {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 type ProgressionKey = 'step0AgreeMeetingTime' | 'contractSigned' | 'paymentReceived' | 'domainConnected' | 'live';
 
 function formatStepLabel(value: string) {
@@ -216,6 +246,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
   const [runIdByClient, setRunIdByClient] = useState<Record<string, string>>({});
+  const [meetingNowMs, setMeetingNowMs] = useState(() => Date.now());
+  const [meetingMapPins, setMeetingMapPins] = useState<MeetingMapPin[]>([]);
+  const [meetingMapLoading, setMeetingMapLoading] = useState(false);
+  const [meetingMapError, setMeetingMapError] = useState('');
+  const [meetingMapUnresolvedCount, setMeetingMapUnresolvedCount] = useState(0);
+  const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
+  const meetingMapRef = useRef<any>(null);
+  const meetingMapMarkerLayerRef = useRef<any>(null);
 
   // Website offers (tier + nettsidekode given to a client).
   const [offers, setOffers] = useState<WebsiteOffer[]>([]);
@@ -242,6 +280,36 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     () => clients.filter((client) => client.status === 'secondary'),
     [clients]
   );
+  const activeMeetingGroups = useMemo(() => {
+    const upcoming: SalesClient[] = [];
+    const pastDue: SalesClient[] = [];
+    const noMeetingDate: SalesClient[] = [];
+
+    for (const client of activeClients) {
+      const meetingTime = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
+      if (meetingTime === null) {
+        noMeetingDate.push(client);
+      } else if (meetingTime < meetingNowMs) {
+        pastDue.push(client);
+      } else {
+        upcoming.push(client);
+      }
+    }
+
+    upcoming.sort((a, b) => (parseMeetingTimestamp(a.meetingAt) || 0) - (parseMeetingTimestamp(b.meetingAt) || 0));
+    pastDue.sort((a, b) => (parseMeetingTimestamp(b.meetingAt) || 0) - (parseMeetingTimestamp(a.meetingAt) || 0));
+    noMeetingDate.sort((a, b) =>
+      String(a.businessName || '').localeCompare(String(b.businessName || ''), 'nb-NO', { sensitivity: 'base' })
+    );
+
+    return { upcoming, pastDue, noMeetingDate };
+  }, [activeClients, meetingNowMs]);
+  const orderedActiveClients = useMemo(
+    () => [...activeMeetingGroups.upcoming, ...activeMeetingGroups.noMeetingDate, ...activeMeetingGroups.pastDue],
+    [activeMeetingGroups]
+  );
+  const firstNoMeetingDateClientId = activeMeetingGroups.noMeetingDate[0]?.id || '';
+  const firstPastDueClientId = activeMeetingGroups.pastDue[0]?.id || '';
 
   async function request(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
@@ -260,6 +328,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     return data;
   }
 
+  async function loadMeetingMap() {
+    setMeetingMapLoading(true);
+    setMeetingMapError('');
+    try {
+      const data = await request('/admin/sales/meeting-map');
+      const pins = Array.isArray(data.pins) ? data.pins : [];
+      setMeetingMapPins(pins as MeetingMapPin[]);
+      setMeetingMapUnresolvedCount(Number.isFinite(Number(data.unresolvedCount)) ? Number(data.unresolvedCount) : 0);
+    } catch (err) {
+      setMeetingMapError(err instanceof Error ? err.message : 'Failed loading in-person visit map');
+      setMeetingMapPins([]);
+      setMeetingMapUnresolvedCount(0);
+    } finally {
+      setMeetingMapLoading(false);
+    }
+  }
+
   async function loadSales() {
     setLoading(true);
     setError('');
@@ -267,6 +352,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const data = await request('/admin/sales');
       setClients(Array.isArray(data.clients) ? data.clients : []);
       setCalendarStatus((data.calendar || null) as CalendarStatus | null);
+      void loadMeetingMap();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load sales clients');
     } finally {
@@ -287,6 +373,88 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     void loadSales();
     void loadOffers();
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setMeetingNowMs(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function syncMeetingMap() {
+      if (!meetingMapContainerRef.current) return;
+      const L = await import('leaflet');
+      if (cancelled || !meetingMapContainerRef.current) return;
+
+      if (!meetingMapRef.current) {
+        const map = L.map(meetingMapContainerRef.current, {
+          zoomControl: true,
+          scrollWheelZoom: true,
+        });
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          attribution: '&copy; OpenStreetMap contributors',
+          maxZoom: 19,
+        }).addTo(map);
+        map.setView(SALES_MAP_DEFAULT_CENTER, SALES_MAP_DEFAULT_ZOOM);
+        meetingMapRef.current = map;
+        meetingMapMarkerLayerRef.current = L.layerGroup().addTo(map);
+      }
+
+      const map = meetingMapRef.current;
+      if (!map) return;
+      const markerLayer = meetingMapMarkerLayerRef.current || L.layerGroup().addTo(map);
+      markerLayer.clearLayers();
+
+      if (!meetingMapPins.length) {
+        map.setView(SALES_MAP_DEFAULT_CENTER, SALES_MAP_DEFAULT_ZOOM);
+        return;
+      }
+
+      const bounds = L.latLngBounds([]);
+      for (const pin of meetingMapPins) {
+        const lat = Number(pin.latitude);
+        const lng = Number(pin.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+        const marker = L.circleMarker([lat, lng], {
+          radius: 8,
+          color: '#ff7a2f',
+          weight: 2,
+          fillColor: '#FF5B00',
+          fillOpacity: 0.85,
+        });
+        const popupHtml = [
+          `<div style="min-width:180px;line-height:1.35;font-size:12px;">`,
+          `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(pin.businessName || 'Client')}</div>`,
+          pin.contactPerson ? `<div style="margin-bottom:2px;">${escapeHtml(pin.contactPerson)}</div>` : '',
+          `<div style="margin-bottom:2px;">${escapeHtml(pin.meetingPlace || '')}</div>`,
+          pin.meetingAt ? `<div style="color:#6b7280;">${escapeHtml(formatWhen(pin.meetingAt))}</div>` : '',
+          '</div>',
+        ].join('');
+        marker.bindPopup(popupHtml);
+        marker.addTo(markerLayer);
+        bounds.extend([lat, lng]);
+      }
+
+      if (bounds.isValid()) {
+        map.fitBounds(bounds.pad(0.2), { maxZoom: 13 });
+      }
+    }
+    void syncMeetingMap();
+    return () => {
+      cancelled = true;
+    };
+  }, [meetingMapPins]);
+
+  useEffect(
+    () => () => {
+      if (meetingMapRef.current) {
+        meetingMapRef.current.remove();
+        meetingMapRef.current = null;
+        meetingMapMarkerLayerRef.current = null;
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     try {
@@ -810,13 +978,53 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
       {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3">{error}</div>}
 
+      <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold text-white">In-person visit map (OpenStreetMap)</h3>
+            <p className="text-xs text-gray-400 mt-1">
+              Shows only clients with in-person meeting mode and a meeting place.
+            </p>
+          </div>
+          <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
+            {meetingMapPins.length} pins
+          </span>
+        </div>
+        {meetingMapError && (
+          <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 text-red-300 px-3 py-2 text-xs">
+            {meetingMapError}
+          </div>
+        )}
+        <div className="mt-3 h-[340px] rounded-xl border border-white/10 overflow-hidden relative">
+          <div ref={meetingMapContainerRef} className="h-full w-full" />
+          {meetingMapLoading && (
+            <div className="absolute inset-0 bg-black/55 flex items-center justify-center text-gray-200 text-sm">
+              <Loader2 size={16} className="animate-spin mr-2" />
+              Loading map pins…
+            </div>
+          )}
+        </div>
+        {!meetingMapLoading && meetingMapPins.length === 0 && (
+          <p className="mt-2 text-xs text-gray-500">No in-person meeting places to show yet.</p>
+        )}
+        {meetingMapUnresolvedCount > 0 && (
+          <p className="mt-2 text-xs text-amber-300">
+            {meetingMapUnresolvedCount} in-person place(s) could not be geocoded automatically.
+          </p>
+        )}
+      </div>
+
       {loading ? (
         <div className="min-h-[180px] flex items-center justify-center text-gray-400">
           <Loader2 className="animate-spin mr-2" size={18} /> Loading sales clients…
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
-          {activeClients.map((client) => {
+        <div className="space-y-3">
+          <div className="text-xs text-gray-400">
+            Sorted by meeting date: closest upcoming first. Past meetings are grouped under <span className="text-red-300">Past due</span>.
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
+            {orderedActiveClients.map((client) => {
             const step0Done = Boolean(client.progression?.step0AgreeMeetingTime);
             const timeline: { key: ProgressionKey; done: boolean }[] = [
               { key: 'step0AgreeMeetingTime', done: step0Done },
@@ -834,8 +1042,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const makerDashboardUrl = dynamicDashboardUrl || String(client.makerRun?.dashboardUrl || '').trim();
             const makerPreviewUrl = dynamicPreviewUrl || String(client.makerRun?.previewUrl || '').trim();
             const expanded = expandedId === client.id;
+            const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
+            const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
+            const showNoMeetingDateHeading = Boolean(firstNoMeetingDateClientId) && client.id === firstNoMeetingDateClientId;
+            const showPastDueHeading = Boolean(firstPastDueClientId) && client.id === firstPastDueClientId;
             return (
-              <div key={client.id} className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-col gap-3">
+              <React.Fragment key={client.id}>
+                {showNoMeetingDateHeading && (
+                  <div className="lg:col-span-2 2xl:col-span-3 rounded-xl border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
+                    No agreed meeting date
+                  </div>
+                )}
+                {showPastDueHeading && (
+                  <div className="lg:col-span-2 2xl:col-span-3 rounded-xl border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
+                    Past due
+                  </div>
+                )}
+                <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-col gap-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -843,6 +1066,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-300">
                         {client.meetingMode === 'in-person' ? 'In person' : 'Online'}
                       </span>
+                      {isPastDueMeeting && (
+                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-red-900/30 border border-red-700/30 text-red-300">
+                          Past due
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                       <CalendarClock size={12} className="shrink-0" />
@@ -1269,7 +1497,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     </div>
                   </div>
                 )}
-              </div>
+                </div>
+              </React.Fragment>
             );
           })}
 
@@ -1278,6 +1507,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               No active sales clients right now. Click <strong className="text-white">Add client</strong> to start.
             </div>
           )}
+        </div>
         </div>
       )}
 

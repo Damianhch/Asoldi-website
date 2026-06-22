@@ -138,6 +138,9 @@ let makerTunnelProcess = null;
 let makerTunnelUrl = '';
 let makerTunnelTargetUrl = '';
 let makerTunnelStartedAt = '';
+const SALES_MEETING_GEOCODE_MIN_INTERVAL_MS = Number(process.env.SALES_MEETING_GEOCODE_MIN_INTERVAL_MS || 1100);
+const salesMeetingGeocodeCache = new Map();
+let salesMeetingGeocodeLastRequestAt = 0;
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
 
 const CLIENT_WEBSITE_PLANS = [
@@ -198,6 +201,65 @@ function findWebsitePlan(planId) {
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
+}
+
+function normalizeMeetingPlaceKey(value = '') {
+  return sanitizeText(value).toLowerCase().replace(/\s+/g, ' ');
+}
+
+function waitMs(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function geocodeMeetingPlace(place = '') {
+  const meetingPlace = sanitizeText(place);
+  if (!meetingPlace) return null;
+  const cacheKey = normalizeMeetingPlaceKey(meetingPlace);
+  if (salesMeetingGeocodeCache.has(cacheKey)) {
+    return salesMeetingGeocodeCache.get(cacheKey);
+  }
+
+  const minInterval = Math.max(0, SALES_MEETING_GEOCODE_MIN_INTERVAL_MS);
+  const elapsedSinceLast = Date.now() - salesMeetingGeocodeLastRequestAt;
+  if (elapsedSinceLast < minInterval) {
+    await waitMs(minInterval - elapsedSinceLast);
+  }
+  salesMeetingGeocodeLastRequestAt = Date.now();
+
+  try {
+    const params = new URLSearchParams({
+      q: meetingPlace,
+      format: 'jsonv2',
+      limit: '1',
+      addressdetails: '0',
+    });
+    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Accept-Language': 'nb',
+        'User-Agent': 'AsoldiSalesMap/1.0 (+https://asoldi.com)',
+      },
+    });
+    if (!response.ok) return null;
+    const payload = await response.json().catch(() => []);
+    const first = Array.isArray(payload) ? payload[0] : null;
+    const latitude = Number(first?.lat);
+    const longitude = Number(first?.lon);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      salesMeetingGeocodeCache.set(cacheKey, null);
+      return null;
+    }
+    const geocoded = {
+      latitude,
+      longitude,
+      displayName: sanitizeText(first?.display_name) || meetingPlace,
+    };
+    salesMeetingGeocodeCache.set(cacheKey, geocoded);
+    return geocoded;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeHttpBaseUrl(value = '') {
@@ -2434,6 +2496,78 @@ app.get('/api/admin/sales', salesAuth, (req, res) => {
   res.json({
     clients,
     calendar: getGoogleCalendarStatus(req.salesUser.accountKey),
+  });
+});
+
+app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
+  const all = sales.getSalesClients();
+  const visible = req.salesUser.isAdmin
+    ? all
+    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+
+  const inPersonClients = visible.filter(
+    (client) =>
+      client.status === 'active' &&
+      client.meetingMode === 'in-person' &&
+      sanitizeText(client.meetingPlace)
+  );
+
+  const uniquePlaces = new Map();
+  for (const client of inPersonClients) {
+    const place = sanitizeText(client.meetingPlace);
+    const key = normalizeMeetingPlaceKey(place);
+    if (!key || uniquePlaces.has(key)) continue;
+    uniquePlaces.set(key, place);
+  }
+
+  const geocodedByKey = new Map();
+  for (const [key, place] of uniquePlaces.entries()) {
+    const geocoded = await geocodeMeetingPlace(place);
+    geocodedByKey.set(key, geocoded);
+  }
+
+  let unresolvedCount = 0;
+  const pins = [];
+  for (const client of inPersonClients) {
+    const place = sanitizeText(client.meetingPlace);
+    const key = normalizeMeetingPlaceKey(place);
+    const geocoded = geocodedByKey.get(key);
+    if (!geocoded) {
+      unresolvedCount += 1;
+      continue;
+    }
+    pins.push({
+      clientId: client.id,
+      businessName: sanitizeText(client.businessName),
+      contactPerson: sanitizeText(client.contactPerson),
+      meetingPlace: place,
+      meetingAt: sanitizeText(client.meetingAt),
+      latitude: geocoded.latitude,
+      longitude: geocoded.longitude,
+    });
+  }
+
+  const now = Date.now();
+  const timestampFor = (value = '') => {
+    const time = Date.parse(String(value || ''));
+    return Number.isFinite(time) ? time : null;
+  };
+  pins.sort((a, b) => {
+    const timeA = timestampFor(a.meetingAt);
+    const timeB = timestampFor(b.meetingAt);
+    if (timeA === null && timeB === null) return a.businessName.localeCompare(b.businessName, 'nb-NO');
+    if (timeA === null) return -1;
+    if (timeB === null) return 1;
+    const aPast = timeA < now;
+    const bPast = timeB < now;
+    if (aPast !== bPast) return aPast ? 1 : -1;
+    return aPast ? timeB - timeA : timeA - timeB;
+  });
+
+  res.json({
+    pins,
+    unresolvedCount,
+    totalCandidates: inPersonClients.length,
   });
 });
 
