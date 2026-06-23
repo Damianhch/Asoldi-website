@@ -694,13 +694,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function createMakerRun(client: SalesClient) {
+  async function createMakerRun(client: SalesClient, options: { forceNewRun?: boolean } = {}) {
+    const forceNewRun = Boolean(options.forceNewRun);
+    if (forceNewRun) {
+      const confirmed = window.confirm(
+        'Do you want to delete the other run request?'
+      );
+      if (!confirmed) return;
+    }
     setCreatingRunId(client.id);
     setError('');
     try {
       await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
-        body: JSON.stringify({ websiteMakerBaseUrl }),
+        body: JSON.stringify({
+          websiteMakerBaseUrl,
+          forceNewRun,
+        }),
       });
       await loadSales();
     } catch (err) {
@@ -1133,6 +1143,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       >
                         <ExternalLink size={13} />
                         Maker preview
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void createMakerRun(client, { forceNewRun: true })}
+                        disabled={creatingRunId === client.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                        title="Create a fresh draft run from current Sales data"
+                      >
+                        {creatingRunId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                        Create new run
                       </button>
                     </>
                   ) : (

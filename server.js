@@ -536,6 +536,30 @@ function buildSalesRelevantLinks(details = {}) {
   return links.join('\n');
 }
 
+function buildSalesQuickFillLinks(details = {}) {
+  const instagramProfile = sanitizeText(details.instagramUrl);
+  const facebookProfile = sanitizeText(details.facebookUrl);
+  const proffLink = sanitizeText(details.proffUrl);
+  const googleBusinessProfile = sanitizeText(details.googleBusinessProfile);
+  const existingLinks = new Set(
+    [instagramProfile, facebookProfile, proffLink, googleBusinessProfile]
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean)
+  );
+  const otherCandidates = sanitizeText(details.otherLinks)
+    .split(/\r?\n|,/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const customLink = otherCandidates.find((entry) => !existingLinks.has(entry)) || otherCandidates[0] || '';
+  return {
+    instagramProfile,
+    facebookProfile,
+    proffLink,
+    googleBusinessProfile,
+    customLink,
+  };
+}
+
 function buildSalesInput(body = {}, { existing = null, requireCore = false } = {}) {
   const source = body && typeof body === 'object' ? body : {};
   const mode = normalizeMeetingMode(source.meetingMode ?? existing?.meetingMode ?? 'online');
@@ -2841,6 +2865,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const forceNewRun = parseBoolean(req.body?.forceNewRun, false);
 
   // Prefer the URL the operator typed in the Sales UI; fall back to env. This lets
   // local testing target a maker on http://localhost:3000 without redeploying.
@@ -2857,20 +2882,15 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   try {
     const salesDetails = normalizeSalesDetailLinks(client.details || {});
     const relevantLinks = buildSalesRelevantLinks(salesDetails);
-    const quickFillLinks = {
-      instagramProfile: salesDetails.instagramUrl || '',
-      facebookProfile: salesDetails.facebookUrl || '',
-      proffLink: salesDetails.proffUrl || '',
-      googleBusinessProfile: salesDetails.googleBusinessProfile || '',
-      customLink: '',
-    };
+    const quickFillLinks = buildSalesQuickFillLinks(salesDetails);
     const answersPatch = {
       businessName: client.businessName || '',
       industry: client.industry || '',
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
       relevantLinks,
     };
-    const existingRunId = sanitizeText(client.makerRun?.runId);
+    const previousRunId = sanitizeText(client.makerRun?.runId);
+    const existingRunId = forceNewRun ? '' : previousRunId;
     const requestBody = {
       existingRunId,
       businessName: client.businessName || 'Untitled client run',
@@ -2896,15 +2916,39 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     if (!runId) {
       return res.status(502).json({ message: 'Website Maker did not return a runId.' });
     }
+    const replacedRunId = forceNewRun ? previousRunId : '';
+    let replacedRunDeleted = false;
+    if (replacedRunId && replacedRunId !== runId) {
+      try {
+        const deleteRes = await fetch(`${base}/api/runs/${encodeURIComponent(replacedRunId)}`, {
+          method: 'DELETE',
+          headers: {
+            ...(apiKey ? { 'x-api-key': apiKey } : {}),
+          },
+        });
+        replacedRunDeleted = deleteRes.ok;
+      } catch {
+        replacedRunDeleted = false;
+      }
+    }
 
     const updated = sales.setSalesMakerRun(client.id, {
       runId,
       ...buildMakerRunLinks(base, runId),
       industry: client.industry || '',
-      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+      createdAt:
+        forceNewRun || !sanitizeText(client.makerRun?.createdAt)
+          ? new Date().toISOString()
+          : sanitizeText(client.makerRun?.createdAt),
     });
 
-    res.json({ ok: true, client: updated, alreadyExists: Boolean(existingRunId) });
+    res.json({
+      ok: true,
+      client: updated,
+      alreadyExists: Boolean(previousRunId),
+      replacedRunId,
+      replacedRunDeleted,
+    });
   } catch (error) {
     res.status(502).json({ message: error.message || 'Failed reaching the Website Maker.' });
   }
