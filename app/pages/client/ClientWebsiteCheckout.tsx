@@ -7,12 +7,27 @@ import { ClientRouteGuard } from '../../components/client/ClientRouteGuard';
 import { ClientPortalLayout } from '../../components/client/ClientPortalLayout';
 import { useClientAuth } from '../../contexts/ClientAuthContext';
 import { CHECKOUT_BENEFITS, CLIENT_WEBSITE_PLANS } from '../../data/clientWebsitePlans';
-import { computeDiscount, findCoupon, formatPriceAmount, getStoredCoupon, parsePriceAmount, type Coupon } from '../../data/coupons';
+import { formatPriceAmount, normalizeCouponCode, parsePriceAmount } from '../../data/coupons';
 import { requestClientApi } from './auth';
 
 type ClientOffer = { id: string; code: string; planId: string; previewUrl: string } | null;
 
 type PaymentMethod = 'faktura' | 'vipps' | 'kort';
+
+type AppliedPromotionCode = {
+  code: string;
+  promotionCodeId: string;
+  couponId: string;
+  label: string;
+  percentOff: number;
+  amountOff: number;
+  currency: string;
+  discountAmount: number;
+  totalAmount: number;
+  planId: string;
+  planName: string;
+  appliedAt: string;
+};
 
 function formatPrice(value: unknown) {
   if (typeof value === 'number') return `${value},-/mnd`;
@@ -44,7 +59,10 @@ export const ClientWebsiteCheckout = () => {
   const [error, setError] = useState('');
   const [method, setMethod] = useState<PaymentMethod>('kort');
   const [paid, setPaid] = useState(false);
-  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedPromotionCode | null>(null);
+  const [couponInput, setCouponInput] = useState('');
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [couponError, setCouponError] = useState('');
   const [offer, setOffer] = useState<ClientOffer>(null);
 
   // Card (embedded Stripe Checkout)
@@ -83,9 +101,27 @@ export const ClientWebsiteCheckout = () => {
   }, [token, updateProfileState]);
 
   useEffect(() => {
-    const stored = getStoredCoupon(user?.id || '');
-    setAppliedCoupon(stored ? findCoupon(stored) : null);
-  }, [user?.id]);
+    let active = true;
+    async function loadPromotionCode() {
+      if (!token) return;
+      try {
+        const response = await fetch('/api/client/checkout/promotion-code', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !active) return;
+        const promotion = (payload.promotionCode || null) as AppliedPromotionCode | null;
+        setAppliedCoupon(promotion);
+        setCouponInput(promotion?.code || '');
+      } catch {
+        if (!active) return;
+      }
+    }
+    void loadPromotionCode();
+    return () => {
+      active = false;
+    };
+  }, [token, user?.id]);
 
   // Load Stripe publishable key and prep the client SDK once.
   useEffect(() => {
@@ -165,8 +201,75 @@ export const ClientWebsiteCheckout = () => {
 
   const selectedPlan = useMemo(() => formatPlanFromProfile(profile), [profile]);
   const subtotalAmount = parsePriceAmount(selectedPlan?.price || '');
-  const discountAmount = computeDiscount(subtotalAmount, appliedCoupon);
+  const discountAmount = Math.min(
+    subtotalAmount,
+    Math.max(0, Math.round(Number(appliedCoupon?.discountAmount || 0)))
+  );
   const totalAmount = Math.max(0, subtotalAmount - discountAmount);
+
+  function refreshEmbeddedCheckoutSession() {
+    setClientSecret('');
+    setCardError('');
+  }
+
+  async function applyCouponCode() {
+    setCouponError('');
+    const normalized = normalizeCouponCode(couponInput);
+    if (!normalized) {
+      setCouponError('Skriv inn en rabattkode.');
+      return;
+    }
+    if (!token) return;
+    setCouponBusy(true);
+    try {
+      const response = await fetch('/api/client/checkout/promotion-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: normalized }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || 'Ugyldig rabattkode.');
+      const promotion = (payload.promotionCode || null) as AppliedPromotionCode | null;
+      setAppliedCoupon(promotion);
+      setCouponInput(promotion?.code || normalized);
+      if (method === 'kort') {
+        refreshEmbeddedCheckoutSession();
+      }
+    } catch (err) {
+      setAppliedCoupon(null);
+      setCouponError(err instanceof Error ? err.message : 'Kunne ikke bruke rabattkoden.');
+    } finally {
+      setCouponBusy(false);
+    }
+  }
+
+  async function removeCouponCode() {
+    if (!token) {
+      setAppliedCoupon(null);
+      setCouponInput('');
+      setCouponError('');
+      return;
+    }
+    setCouponBusy(true);
+    setCouponError('');
+    try {
+      const response = await fetch('/api/client/checkout/promotion-code', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || 'Kunne ikke fjerne rabattkoden.');
+      setAppliedCoupon(null);
+      setCouponInput('');
+      if (method === 'kort') {
+        refreshEmbeddedCheckoutSession();
+      }
+    } catch (err) {
+      setCouponError(err instanceof Error ? err.message : 'Kunne ikke fjerne rabattkoden.');
+    } finally {
+      setCouponBusy(false);
+    }
+  }
 
   async function submitFaktura(event: React.FormEvent) {
     event.preventDefault();
@@ -368,6 +471,53 @@ export const ClientWebsiteCheckout = () => {
                   <span className="font-semibold text-[#111827]">Total</span>
                   <strong className="text-[#111827]">{formatPriceAmount(totalAmount)}</strong>
                 </div>
+              </div>
+              <div className="mt-5 rounded-xl border border-[#E7E9EE] bg-[#FAFBFC] p-3.5">
+                <label className="flex items-center gap-1.5 text-xs font-medium text-[#6B7280]">
+                  <Tag size={13} />
+                  Rabattkode
+                </label>
+                {appliedCoupon ? (
+                  <div className="mt-2 flex items-center justify-between rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+                    <span className="text-sm font-medium text-emerald-700">
+                      {appliedCoupon.code} · {appliedCoupon.label}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void removeCouponCode()}
+                      disabled={couponBusy}
+                      aria-label="Fjern rabattkode"
+                      className="text-emerald-700 hover:text-emerald-900 disabled:opacity-60"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ) : (
+                  <div className="mt-2 flex gap-2">
+                    <input
+                      value={couponInput}
+                      onChange={(e) => setCouponInput(normalizeCouponCode(e.target.value))}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          void applyCouponCode();
+                        }
+                      }}
+                      placeholder="F.eks. ASOLDI10"
+                      disabled={couponBusy}
+                      className="flex-1 rounded-lg border border-[#DDE2EA] bg-white px-3 py-2 text-sm uppercase outline-none focus:border-[#FF5B00]"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void applyCouponCode()}
+                      disabled={couponBusy || !couponInput.trim()}
+                      className="rounded-lg bg-[#111827] px-4 py-2 text-sm font-medium text-white hover:bg-[#1F2937] disabled:opacity-60"
+                    >
+                      {couponBusy ? 'Sjekker…' : 'Bruk'}
+                    </button>
+                  </div>
+                )}
+                {couponError ? <p className="mt-2 text-xs text-red-500">{couponError}</p> : null}
               </div>
               <div className="mt-5 rounded-xl border border-[#E5E7EB] bg-[#FAFAFA] p-3 grid grid-cols-3 gap-2">
                 {CHECKOUT_BENEFITS.map((benefit) => (

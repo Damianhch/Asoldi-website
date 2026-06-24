@@ -19,6 +19,8 @@ import * as emailLib from './lib/email.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
 import * as employeeLuca from './lib/employee-luca.js';
 import * as employeeMyPhoner from './lib/employee-myphoner.js';
+import * as myphonerApi from './lib/myphoner-api.js';
+import * as myphonerIntegration from './data/myphoner-integration.js';
 import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-email.js';
 import {
   createGoogleCalendarAuthUrl,
@@ -142,6 +144,14 @@ const SALES_MEETING_GEOCODE_MIN_INTERVAL_MS = Number(process.env.SALES_MEETING_G
 const salesMeetingGeocodeCache = new Map();
 let salesMeetingGeocodeLastRequestAt = 0;
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
+const MYPHONER_WEBHOOK_SECRET = String(process.env.MYPHONER_WEBHOOK_SECRET || '').trim();
+const MYPHONER_WEBHOOK_REPLAY_WINDOW_MS = Number(process.env.MYPHONER_WEBHOOK_REPLAY_WINDOW_MS || 120_000);
+const MYPHONER_WEBHOOK_RECONCILE_ENABLED = String(process.env.MYPHONER_WEBHOOK_RECONCILE_ENABLED || '1') !== '0';
+const MYPHONER_WEBHOOK_RECONCILE_MS = Number(process.env.MYPHONER_WEBHOOK_RECONCILE_MS || 10 * 60 * 1000);
+const MYPHONER_DEFAULT_SALES_OWNER_KEY =
+  sanitizeText(process.env.MYPHONER_DEFAULT_SALES_OWNER_KEY) || 'admin:daracha777@gmail.com';
+let myphonerWebhookReconcileInterval = null;
+let myphonerWebhookReconcileRunning = false;
 
 const CLIENT_WEBSITE_PLANS = [
   {
@@ -201,6 +211,310 @@ function findWebsitePlan(planId) {
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
+}
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function defaultCheckoutLegalAcknowledgement(planId = '', planName = '') {
+  return {
+    termsAccepted: false,
+    privacyAccepted: false,
+    bindingAccepted: false,
+    bindingMonths: 6,
+    planId: sanitizeText(planId),
+    planName: sanitizeText(planName),
+    acceptedAt: '',
+  };
+}
+
+function sanitizeCheckoutLegalAcknowledgement(input = {}, fallback = {}) {
+  const base = {
+    ...defaultCheckoutLegalAcknowledgement(),
+    ...(fallback && typeof fallback === 'object' ? fallback : {}),
+  };
+  const source = input && typeof input === 'object' ? input : {};
+  const bindingMonths = Number.parseInt(String(source.bindingMonths ?? base.bindingMonths ?? 0), 10);
+  return {
+    termsAccepted: parseBoolean(source.termsAccepted, Boolean(base.termsAccepted)),
+    privacyAccepted: parseBoolean(source.privacyAccepted, Boolean(base.privacyAccepted)),
+    bindingAccepted: parseBoolean(source.bindingAccepted, Boolean(base.bindingAccepted)),
+    bindingMonths: Number.isFinite(bindingMonths) && bindingMonths > 0 ? bindingMonths : 0,
+    planId: sanitizeText(source.planId || base.planId),
+    planName: sanitizeText(source.planName || base.planName),
+    acceptedAt: sanitizeText(source.acceptedAt || base.acceptedAt),
+  };
+}
+
+function hasAcceptedCheckoutLegalAcknowledgement(legal, expectedPlanId = '') {
+  const normalized = sanitizeCheckoutLegalAcknowledgement(legal);
+  if (!normalized.termsAccepted || !normalized.privacyAccepted || !normalized.bindingAccepted) return false;
+  if (normalized.bindingMonths < 6) return false;
+  if (!normalized.acceptedAt) return false;
+  const targetPlanId = sanitizeText(expectedPlanId);
+  if (targetPlanId && sanitizeText(normalized.planId) !== targetPlanId) return false;
+  return true;
+}
+
+function checkoutLegalConsentMessage() {
+  return 'Du må godkjenne vilkår, personvern og 6 måneders bindingstid før checkout.';
+}
+
+function resolveRequestBaseUrl(req) {
+  const fromEnv = normalizeHttpBaseUrl(process.env.APP_URL || '');
+  if (fromEnv) return fromEnv;
+  const forwardedProtoRaw = sanitizeText(req.headers['x-forwarded-proto'] || '');
+  const forwardedProto = sanitizeText(forwardedProtoRaw.split(',')[0]).toLowerCase();
+  const fallbackProto = sanitizeText(req.protocol || '').toLowerCase();
+  const protocol = forwardedProto === 'https' || forwardedProto === 'http'
+    ? forwardedProto
+    : (fallbackProto === 'https' || fallbackProto === 'http' ? fallbackProto : 'https');
+  const forwardedHostRaw = sanitizeText(req.headers['x-forwarded-host'] || '');
+  const fallbackHostRaw = sanitizeText(req.get('host') || '');
+  const host = sanitizeText((forwardedHostRaw || fallbackHostRaw).split(',')[0]);
+  if (!host) return '';
+  return normalizeHttpBaseUrl(`${protocol}://${host}`);
+}
+
+function normalizeStripeCurrency(value = '') {
+  return sanitizeText(value).toLowerCase() || getStripeCurrency();
+}
+
+function parsePlanAmount(value = '') {
+  const digits = String(value || '').replace(/[^\d]/g, '');
+  const parsed = Number.parseInt(digits, 10);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizePromotionCodeInput(value = '') {
+  return sanitizeText(value).toUpperCase().replace(/\s+/g, '');
+}
+
+function extractAllowedPlanIdsFromMetadata(metadata = {}) {
+  const source = metadata && typeof metadata === 'object' ? metadata : {};
+  const raw =
+    sanitizeText(source.allowedPlanIds) ||
+    sanitizeText(source.allowed_plan_ids) ||
+    sanitizeText(source.planIds) ||
+    sanitizeText(source.plan_ids);
+  if (!raw) return new Set();
+  return new Set(
+    raw
+      .split(/[,;|\s]+/)
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean)
+  );
+}
+
+function isPromotionCodeAllowedForPlan(promotionCode, planId = '') {
+  const targetPlanId = sanitizeText(planId);
+  if (!targetPlanId) return true;
+  const promoSet = extractAllowedPlanIdsFromMetadata(promotionCode?.metadata || {});
+  if (promoSet.size && !promoSet.has(targetPlanId)) return false;
+  const couponSet = extractAllowedPlanIdsFromMetadata(promotionCode?.coupon?.metadata || {});
+  if (couponSet.size && !couponSet.has(targetPlanId)) return false;
+  return true;
+}
+
+function computePromotionDiscountPreviewAmount({ coupon, amount = 0, currency = '' } = {}) {
+  const safeAmount = Math.max(0, Math.round(Number(amount) || 0));
+  if (!coupon || safeAmount <= 0) return 0;
+  const percentOff = Number(coupon.percent_off || 0);
+  if (Number.isFinite(percentOff) && percentOff > 0) {
+    return Math.min(safeAmount, Math.round((safeAmount * percentOff) / 100));
+  }
+  const amountOffMinor = Number(coupon.amount_off || 0);
+  if (!Number.isFinite(amountOffMinor) || amountOffMinor <= 0) return 0;
+  const couponCurrency = normalizeStripeCurrency(coupon.currency || '');
+  const targetCurrency = normalizeStripeCurrency(currency || '');
+  if (couponCurrency && targetCurrency && couponCurrency !== targetCurrency) return 0;
+  const amountOff = Math.max(0, Math.round(amountOffMinor / 100));
+  return Math.min(safeAmount, amountOff);
+}
+
+async function resolveStripePromotionCodeForCheckout({
+  code = '',
+  planId = '',
+  planName = '',
+  amount = 0,
+  currency = '',
+} = {}) {
+  const normalizedCode = normalizePromotionCodeInput(code);
+  if (!normalizedCode) {
+    throw makeHttpError(400, 'Oppgi en rabattkode.');
+  }
+  if (!isStripeConfigured()) {
+    throw makeHttpError(503, 'Rabattkode kan ikke valideres akkurat nå. Kortbetaling er ikke konfigurert.');
+  }
+  const stripe = getStripe();
+  const list = await stripe.promotionCodes.list({
+    code: normalizedCode,
+    active: true,
+    limit: 20,
+    expand: ['data.coupon'],
+  });
+  const candidates = Array.isArray(list?.data) ? list.data : [];
+  if (!candidates.length) {
+    throw makeHttpError(404, 'Ugyldig rabattkode.');
+  }
+
+  const nowUnix = Math.floor(Date.now() / 1000);
+  const normalizedPlanId = sanitizeText(planId);
+  const normalizedCurrency = normalizeStripeCurrency(currency || '');
+  const amountMinor = Math.max(0, Math.round(Number(amount || 0) * 100));
+
+  for (const promotionCode of candidates) {
+    const coupon = promotionCode?.coupon;
+    if (!coupon || coupon.valid === false) continue;
+    if (promotionCode?.expires_at && Number(promotionCode.expires_at) <= nowUnix) continue;
+    if (!isPromotionCodeAllowedForPlan(promotionCode, normalizedPlanId)) continue;
+
+    const restrictions = promotionCode?.restrictions || {};
+    const minimumAmount = Number(restrictions.minimum_amount || 0);
+    const minimumAmountCurrency = normalizeStripeCurrency(restrictions.minimum_amount_currency || '');
+    if (minimumAmount > 0) {
+      if (minimumAmountCurrency && normalizedCurrency && minimumAmountCurrency !== normalizedCurrency) continue;
+      if (amountMinor < minimumAmount) continue;
+    }
+
+    const discountAmount = computePromotionDiscountPreviewAmount({
+      coupon,
+      amount,
+      currency: normalizedCurrency,
+    });
+    const percentOff = Number(coupon.percent_off || 0);
+    const amountOffMinor = Number(coupon.amount_off || 0);
+    const amountOff = Number.isFinite(amountOffMinor) && amountOffMinor > 0
+      ? Math.max(0, Math.round(amountOffMinor / 100))
+      : 0;
+    const label = percentOff > 0
+      ? `${Math.round(percentOff)}% rabatt`
+      : amountOff > 0
+        ? `${amountOff},- rabatt`
+        : sanitizeText(coupon.name) || 'Rabattkode';
+
+    return {
+      code: normalizePromotionCodeInput(promotionCode?.code || normalizedCode),
+      promotionCodeId: sanitizeText(promotionCode?.id),
+      couponId: sanitizeText(coupon.id),
+      label,
+      percentOff: percentOff > 0 ? percentOff : 0,
+      amountOff,
+      currency: normalizedCurrency,
+      discountAmount,
+      totalAmount: Math.max(0, Math.round(Number(amount || 0) - discountAmount)),
+      planId: normalizedPlanId,
+      planName: sanitizeText(planName),
+      appliedAt: nowIso(),
+    };
+  }
+
+  throw makeHttpError(400, 'Rabattkoden kan ikke brukes på valgt plan.');
+}
+
+function mapStripeCheckoutSessionError(error, planName = '') {
+  const code = sanitizeText(error?.code).toLowerCase();
+  const type = sanitizeText(error?.type || error?.rawType).toLowerCase();
+  const message = sanitizeText(error?.message);
+  const safePlanName = sanitizeText(planName) || 'valgt plan';
+
+  if (code === 'resource_missing' && /price/i.test(message)) {
+    return {
+      status: 503,
+      code: 'stripe-price-missing',
+      message: `Stripe-pris for ${safePlanName} finnes ikke. Oppdater prisoppsettet i Stripe.`,
+    };
+  }
+  if (code === 'resource_missing' && /customer/i.test(message)) {
+    return {
+      status: 409,
+      code: 'stripe-customer-missing',
+      message: 'Tidligere betalingsprofil ble ikke funnet hos Stripe. Oppdater siden og prøv igjen.',
+    };
+  }
+  if (type === 'stripeauthenticationerror' || code === 'authentication_error') {
+    return {
+      status: 503,
+      code: 'stripe-auth-error',
+      message: 'Stripe-autentisering feilet. Sjekk STRIPE_SECRET_KEY og prøv igjen.',
+    };
+  }
+  if (
+    type === 'stripeinvalidrequesterror' &&
+    (/return_url/i.test(message) || /https/i.test(message))
+  ) {
+    return {
+      status: 503,
+      code: 'stripe-return-url-invalid',
+      message: 'Betalingsretur-URL er ugyldig. Sett APP_URL til riktig https-domene.',
+    };
+  }
+  if (
+    type === 'stripeinvalidrequesterror' &&
+    (/recurring/i.test(message) || /one_time/i.test(message) || /mode/i.test(message))
+  ) {
+    return {
+      status: 503,
+      code: 'stripe-price-mode-mismatch',
+      message: `Stripe-pris for ${safePlanName} må være en aktiv månedlig abonnementspris.`,
+    };
+  }
+  if (type === 'stripeinvalidrequesterror' || code === 'parameter_missing' || code === 'parameter_invalid_empty') {
+    return {
+      status: 400,
+      code: 'stripe-invalid-request',
+      message: 'Betalingsforespørselen mangler nødvendig data. Velg plan på nytt og prøv igjen.',
+    };
+  }
+  return {
+    status: 500,
+    code: 'stripe-session-create-failed',
+    message: 'Kunne ikke starte betaling. Prøv igjen eller velg faktura.',
+  };
+}
+
+function shouldRetryWithoutStripeCustomer(error) {
+  const code = sanitizeText(error?.code).toLowerCase();
+  const type = sanitizeText(error?.type || error?.rawType).toLowerCase();
+  const message = sanitizeText(error?.message).toLowerCase();
+  if (code === 'resource_missing' && /customer/.test(message)) return true;
+  if (type === 'stripeinvalidrequesterror' && /customer/.test(message) && /no such/.test(message)) return true;
+  return false;
+}
+
+function resolveClientCheckoutPlan(profile = {}) {
+  const builder = profile?.websiteBuilder && typeof profile.websiteBuilder === 'object'
+    ? profile.websiteBuilder
+    : {};
+  const type = sanitizeText(builder.selectedPlanType) || 'standard';
+  if (type === 'custom') {
+    const custom = profile?.customWebsitePlan && typeof profile.customWebsitePlan === 'object'
+      ? profile.customWebsitePlan
+      : {};
+    const planId = sanitizeText(builder.selectedPlanId || custom.id || 'custom-website-plan');
+    const planName = sanitizeText(custom.title || custom.name || builder.selectedPlanName) || 'Din nettside plan';
+    const monthly = typeof custom.monthlyPrice === 'number'
+      ? custom.monthlyPrice
+      : parsePlanAmount(custom.monthlyPrice || builder.selectedPlanPrice || '');
+    return {
+      type,
+      planId,
+      planName,
+      amount: Number.isFinite(Number(monthly)) ? Number(monthly) : 0,
+    };
+  }
+
+  const selectedPlan = findWebsitePlan(builder.selectedPlanId);
+  if (!selectedPlan) {
+    throw makeHttpError(400, 'Ingen gyldig plan valgt. Velg plan først.');
+  }
+  return {
+    type,
+    planId: selectedPlan.id,
+    planName: selectedPlan.name,
+    amount: parsePlanAmount(selectedPlan.price),
+  };
 }
 
 function normalizeMeetingPlaceKey(value = '') {
@@ -584,7 +898,6 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
   if (requireCore) {
     if (!payload.businessName) throw new Error('Business name is required.');
     if (!payload.contactPerson) throw new Error('Contact person is required.');
-    if (!payload.contactEmail) throw new Error('Contact email is required.');
   }
   if (payload.agreedTime && !payload.meetingAt) {
     throw new Error('Meeting date/time is required when agreed time is enabled.');
@@ -729,11 +1042,841 @@ function parseMakerErrorMessage(payloadBuffer, fallbackMessage) {
   }
 }
 
-function buildMakerRunLinks(websiteMakerBaseUrl, runId) {
-  return {
-    dashboardUrl: `${websiteMakerBaseUrl}/run/${encodeURIComponent(runId)}`,
-    previewUrl: `${websiteMakerBaseUrl}/preview/${encodeURIComponent(runId)}/step/3/view?route=/`,
+function normalizeAbsoluteHttpUrl(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
+    return parsed.toString().replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function resolveSalesMakerCallbackUrl(req) {
+  const explicit = normalizeAbsoluteHttpUrl(process.env.WEBSITE_MAKER_STATUS_CALLBACK_URL || process.env.SALES_MAKER_STATUS_CALLBACK_URL || '');
+  if (explicit) return explicit;
+  const appBase = normalizeHttpBaseUrl(process.env.APP_URL || `${req.protocol}://${req.get('host')}`);
+  if (!appBase) return '';
+  return `${appBase}/api/admin/sales/maker-status-callback`;
+}
+
+function isMakerStatusCallbackAuthorized(req) {
+  const requiredToken = sanitizeText(process.env.WEBSITE_MAKER_STATUS_CALLBACK_TOKEN || process.env.SALES_MAKER_STATUS_CALLBACK_TOKEN || '');
+  if (!requiredToken) return true;
+  const provided = sanitizeText(req.headers['x-sales-callback-token'] || req.headers['x-maker-callback-token']);
+  return provided && secureStringEqual(provided, requiredToken);
+}
+
+function secureStringEqual(left = '', right = '') {
+  const a = String(left || '');
+  const b = String(right || '');
+  if (!a || !b || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function getMyphonerWebhookSecretFromRequest(req) {
+  const header =
+    sanitizeText(req.headers['x-myphoner-webhook-secret']) ||
+    sanitizeText(req.headers['x-webhook-secret']);
+  if (header) return header;
+  const auth = sanitizeText(req.headers.authorization);
+  if (auth.toLowerCase().startsWith('bearer ')) return sanitizeText(auth.slice(7));
+  return sanitizeText(req.query?.secret);
+}
+
+function isMyphonerWebhookAuthorized(req) {
+  if (!MYPHONER_WEBHOOK_SECRET) return false;
+  const provided = getMyphonerWebhookSecretFromRequest(req);
+  return secureStringEqual(provided, MYPHONER_WEBHOOK_SECRET);
+}
+
+function resolveMyphonerWebhookBaseUrl() {
+  const raw = sanitizeText(process.env.MYPHONER_WEBHOOK_BASE_URL || process.env.APP_URL);
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (!/^https?:$/i.test(parsed.protocol)) return '';
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(/\/+$/, '');
+  } catch {
+    return '';
+  }
+}
+
+function buildMyphonerWebhookTargetUrl(kind = 'winner') {
+  const baseUrl = resolveMyphonerWebhookBaseUrl();
+  if (!baseUrl) return '';
+  const routeBase = `${baseUrl}/api/integrations/myphoner/webhook/${encodeURIComponent(kind)}`;
+  if (!MYPHONER_WEBHOOK_SECRET) return routeBase;
+  const separator = routeBase.includes('?') ? '&' : '?';
+  return `${routeBase}${separator}secret=${encodeURIComponent(MYPHONER_WEBHOOK_SECRET)}`;
+}
+
+function normalizeLooseKey(value = '') {
+  return sanitizeText(value).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function normalizePhoneDigits(value = '') {
+  return String(value || '').replace(/\D+/g, '');
+}
+
+function splitMultilineValues(value = '') {
+  return String(value || '')
+    .split(/\r?\n|,/)
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+}
+
+function coerceHttpUrl(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const hasProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw);
+  const candidate = hasProtocol ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(candidate);
+    if (!/^https?:$/i.test(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
+function classifySalesLink(url = '') {
+  const normalized = coerceHttpUrl(url);
+  if (!normalized) return { kind: 'other', url: '' };
+  let host = '';
+  let pathName = '';
+  try {
+    const parsed = new URL(normalized);
+    host = parsed.host.toLowerCase();
+    pathName = parsed.pathname.toLowerCase();
+  } catch {
+    return { kind: 'other', url: normalized };
+  }
+  if (host.includes('instagram.com')) return { kind: 'instagram', url: normalized };
+  if (host.includes('facebook.com') || host.includes('fb.com') || host.includes('m.me')) {
+    return { kind: 'facebook', url: normalized };
+  }
+  if (host.includes('proff.no')) return { kind: 'proff', url: normalized };
+  if (
+    host.includes('google') && (pathName.includes('/maps') || pathName.includes('/business')) ||
+    host.includes('maps.app.goo.gl') ||
+    host.includes('g.page')
+  ) {
+    return { kind: 'googleBusiness', url: normalized };
+  }
+  return { kind: 'other', url: normalized };
+}
+
+function getLeadDataMap(lead = {}) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const leadData = source.lead_data && typeof source.lead_data === 'object' ? source.lead_data : {};
+  const entries = Object.entries(leadData).map(([key, value]) => [
+    normalizeLooseKey(key),
+    sanitizeText(value),
+  ]);
+  const map = new Map();
+  for (const [key, value] of entries) {
+    if (!key || !value) continue;
+    if (!map.has(key)) map.set(key, value);
+  }
+  return map;
+}
+
+function pickLeadDataValue(leadDataMap, keys = []) {
+  if (!(leadDataMap instanceof Map) || !Array.isArray(keys)) return '';
+  const normalizedKeys = keys.map((key) => normalizeLooseKey(key)).filter(Boolean);
+  for (const key of normalizedKeys) {
+    const direct = sanitizeText(leadDataMap.get(key));
+    if (direct) return direct;
+  }
+  for (const [entryKey, value] of leadDataMap.entries()) {
+    if (!value) continue;
+    if (normalizedKeys.some((target) => entryKey.endsWith(target) || entryKey.includes(target))) {
+      return sanitizeText(value);
+    }
+  }
+  return '';
+}
+
+function pickFirstNonEmpty(values = []) {
+  for (const value of values) {
+    const next = sanitizeText(value);
+    if (next) return next;
+  }
+  return '';
+}
+
+function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const candidates = [
+    source.scheduled_for,
+    source.scheduledFor,
+    source.scheduled_at,
+    source.scheduledAt,
+    pickLeadDataValue(leadDataMap, ['scheduled_for', 'meeting_at', 'meeting_time', 'appointment_time', 'motetid', 'mote_tid']),
+  ];
+  for (const candidate of candidates) {
+    const iso = myphonerApi.parseMyPhonerDateToIso(candidate);
+    if (iso) return iso;
+  }
+  return '';
+}
+
+function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), meetingPlace = '') {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const explicitMode = pickLeadDataValue(leadDataMap, ['meeting_mode', 'mode', 'moteform', 'meetingtype', 'appointment_type']);
+  const onlineHints = ['online', 'digital', 'remote', 'zoom', 'google meet', 'meet', 'teams', 'telefon', 'phone', 'call'];
+  const inPersonHints = ['in person', 'in-person', 'fysisk', 'physical', 'office', 'kontor', 'hos', 'besok', 'visit'];
+  const normalizeText = (value = '') => sanitizeText(value).toLowerCase();
+  const explicitText = normalizeText(explicitMode);
+  if (onlineHints.some((token) => explicitText.includes(token))) return 'online';
+  if (inPersonHints.some((token) => explicitText.includes(token))) return 'in-person';
+
+  const corpus = normalizeText([
+    source.state,
+    source.status,
+    source.category,
+    source.outcome,
+    source.comment,
+    source.primary_identifier,
+    source.secondary_identifier,
+    source.tertiary_identifier,
+    meetingPlace,
+    pickLeadDataValue(leadDataMap, ['winner_category', 'winner_comment', 'comment', 'note', 'notes']),
+  ].join(' '));
+  const hasOnline = onlineHints.some((token) => corpus.includes(token));
+  const hasInPerson = inPersonHints.some((token) => corpus.includes(token));
+  if (hasOnline && !hasInPerson) return 'online';
+  if (hasInPerson && !hasOnline) return 'in-person';
+  if (meetingPlace) return 'in-person';
+  return 'online';
+}
+
+function collectUrlCandidatesFromLead(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const values = [
+    pickLeadDataValue(leadDataMap, ['instagram', 'instagram_url', 'instagram_profile']),
+    pickLeadDataValue(leadDataMap, ['facebook', 'facebook_url', 'facebook_profile']),
+    pickLeadDataValue(leadDataMap, ['proff', 'proff_url', 'proff_link']),
+    pickLeadDataValue(leadDataMap, ['google_business_profile', 'google_maps', 'google_maps_url', 'gbp']),
+    pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside']),
+    source.url,
+    source.location,
+  ];
+  for (const value of leadDataMap.values()) {
+    if (!value || typeof value !== 'string') continue;
+    if (value.includes('http://') || value.includes('https://') || /\.[a-z]{2,}\b/i.test(value)) {
+      values.push(...value.split(/\s+/));
+    }
+  }
+  return values
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+}
+
+function buildSalesDetailsFromMyphonerLead(lead = {}, leadDataMap = new Map()) {
+  const classified = {
+    instagram: '',
+    facebook: '',
+    proff: '',
+    googleBusiness: '',
+    others: [],
   };
+  for (const candidate of collectUrlCandidatesFromLead(lead, leadDataMap)) {
+    const { kind, url } = classifySalesLink(candidate);
+    if (!url) continue;
+    if (kind === 'instagram' && !classified.instagram) classified.instagram = url;
+    else if (kind === 'facebook' && !classified.facebook) classified.facebook = url;
+    else if (kind === 'proff' && !classified.proff) classified.proff = url;
+    else if (kind === 'googleBusiness' && !classified.googleBusiness) classified.googleBusiness = url;
+    else if (!classified.others.includes(url)) classified.others.push(url);
+  }
+  return normalizeSalesDetailLinks({
+    instagramUrl: classified.instagram,
+    facebookUrl: classified.facebook,
+    proffUrl: classified.proff,
+    googleBusinessProfile: classified.googleBusiness,
+    otherLinks: classified.others.join('\n'),
+  });
+}
+
+function getMyphonerLeadId(lead = {}, resourcePath = '') {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const direct = sanitizeText(source.id || source.lead_id || source.leadId);
+  if (direct) return direct;
+  const fromLocation = myphonerApi.extractMyPhonerIdFromResource(
+    sanitizeText(source.location || source.resource_url || resourcePath),
+    'leads'
+  );
+  return sanitizeText(fromLocation);
+}
+
+function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const leadDataMap = getLeadDataMap(source);
+  const fullName = pickLeadDataValue(leadDataMap, ['full_name', 'fullname', 'contact_name', 'name']);
+  const firstName = pickLeadDataValue(leadDataMap, ['first_name', 'firstname']);
+  const lastName = pickLeadDataValue(leadDataMap, ['last_name', 'lastname']);
+  const contactPerson = pickFirstNonEmpty([
+    fullName,
+    `${firstName} ${lastName}`.trim(),
+    source.primary_identifier,
+    source.secondary_identifier,
+  ]);
+  const businessName = pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak']),
+    source.tertiary_identifier,
+    source.secondary_identifier,
+    contactPerson,
+    `Myphoner lead ${getMyphonerLeadId(source, resourcePath) || 'unknown'}`,
+  ]);
+  const meetingAt = parseMyphonerMeetingAt(source, leadDataMap);
+  const meetingPlaceRaw = pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['meeting_place', 'meeting_address', 'address', 'visiting_address', 'besoksadresse', 'moteadresse']),
+    pickLeadDataValue(leadDataMap, ['city', 'town', 'post_place', 'poststed']),
+  ]);
+  const meetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceRaw);
+  return buildSalesInput(
+    {
+      businessName,
+      contactPerson: contactPerson || businessName,
+      contactEmail: pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']),
+      contactPhone: pickFirstNonEmpty([
+        pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
+        source.destination_number,
+      ]),
+      meetingMode,
+      meetingPlace: meetingMode === 'in-person' ? meetingPlaceRaw : '',
+      agreedTime: Boolean(meetingAt),
+      meetingAt,
+      industry: pickLeadDataValue(leadDataMap, ['industry', 'branche', 'bransje']),
+      websiteDomain: '',
+      details: buildSalesDetailsFromMyphonerLead(source, leadDataMap),
+    },
+    { requireCore: false }
+  );
+}
+
+function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
+  const current = existing && typeof existing === 'object' ? existing : {};
+  const next = incoming && typeof incoming === 'object' ? incoming : {};
+  const incomingHasMeeting = Boolean(next.meetingAt);
+  const merged = buildSalesInput(
+    {
+      businessName: next.businessName || current.businessName,
+      contactPerson: next.contactPerson || current.contactPerson || next.businessName,
+      contactEmail: next.contactEmail || current.contactEmail,
+      contactPhone: next.contactPhone || current.contactPhone,
+      industry: next.industry || current.industry,
+      websiteDomain: current.websiteDomain || next.websiteDomain,
+      details: normalizeSalesDetailLinks(next.details || {}, current.details || {}),
+      meetingMode: incomingHasMeeting
+        ? next.meetingMode || current.meetingMode || 'online'
+        : current.meetingMode || next.meetingMode || 'online',
+      meetingPlace: incomingHasMeeting
+        ? next.meetingPlace || current.meetingPlace
+        : current.meetingPlace || next.meetingPlace,
+      agreedTime: incomingHasMeeting ? true : Boolean(current.agreedTime),
+      meetingAt: incomingHasMeeting ? next.meetingAt : current.meetingAt,
+    },
+    { existing: current, requireCore: false }
+  );
+  if (!merged.businessName) merged.businessName = current.businessName || 'Myphoner client';
+  if (!merged.contactPerson) merged.contactPerson = current.contactPerson || merged.businessName;
+  return merged;
+}
+
+function buildMyphonerMetaPatch({
+  lead = {},
+  resourcePath = '',
+  winnerCategory = '',
+  winnerComment = '',
+  recording = null,
+  eventType = 'winner',
+} = {}) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const leadId = getMyphonerLeadId(source, resourcePath);
+  const listIdRaw =
+    source.list_id ??
+    source.listId ??
+    source.list_location ??
+    source.listLocation ??
+    '';
+  const listId = sanitizeText(
+    myphonerApi.extractMyPhonerIdFromResource(String(listIdRaw || ''), 'lists') || listIdRaw
+  );
+  const timestamp = nowIso();
+  const recordingMeta = recording && typeof recording === 'object' ? recording : {};
+  const patch = {
+    latestEventAt: timestamp,
+  };
+  if (leadId) patch.leadId = leadId;
+  if (listId) patch.listId = listId;
+  const listName = sanitizeText(source.list_name || source.listName);
+  if (listName) patch.listName = listName;
+  const leadResourceUrl = sanitizeText(resourcePath || source.location || source.resource_url);
+  if (leadResourceUrl) patch.leadResourceUrl = leadResourceUrl;
+  const category = sanitizeText(winnerCategory || source.category);
+  const comment = sanitizeText(winnerComment || source.comment);
+  if (category) patch.winnerCategory = category;
+  if (comment) patch.winnerComment = comment;
+  if (eventType === 'winner') patch.lastWinnerWebhookAt = timestamp;
+  if (eventType === 'recording') patch.lastRecordingWebhookAt = timestamp;
+
+  const callId = sanitizeText(recordingMeta.callId);
+  if (callId) patch.latestCallId = callId;
+  const callStartedAt = sanitizeText(recordingMeta.callStartedAt);
+  if (callStartedAt) patch.latestCallStartedAt = callStartedAt;
+  if (Number.isFinite(Number(recordingMeta.durationSeconds))) {
+    patch.latestCallDurationSeconds = Number(recordingMeta.durationSeconds);
+  }
+  const callUserEmail = sanitizeText(recordingMeta.userEmail);
+  if (callUserEmail) patch.latestCallUserEmail = callUserEmail;
+  const destination = sanitizeText(recordingMeta.destinationNumber);
+  if (destination) patch.latestCallDestinationNumber = destination;
+  const recordingUrl = sanitizeText(recordingMeta.recordingUrl);
+  if (recordingUrl) patch.latestRecordingUrl = recordingUrl;
+  return patch;
+}
+
+function findSalesClientByPhone(phone = '') {
+  const targetDigits = normalizePhoneDigits(phone);
+  if (!targetDigits) return null;
+  const all = sales.getSalesClients();
+  return (
+    all.find((client) => {
+      const currentDigits = normalizePhoneDigits(client.contactPhone);
+      if (!currentDigits) return false;
+      return currentDigits === targetDigits || currentDigits.endsWith(targetDigits) || targetDigits.endsWith(currentDigits);
+    }) || null
+  );
+}
+
+function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const leadId = getMyphonerLeadId(source, resourcePath);
+  if (leadId) {
+    const byLead = sales.getSalesClientByMyphonerLeadId(leadId);
+    if (byLead) return byLead;
+  }
+  const leadDataMap = getLeadDataMap(source);
+  const email = normalizeEmail(pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']));
+  if (email) {
+    const byEmail = sales.getSalesClients().find((client) => normalizeEmail(client.contactEmail) === email);
+    if (byEmail) return byEmail;
+  }
+  const phone = pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
+    source.destination_number,
+  ]);
+  return findSalesClientByPhone(phone);
+}
+
+async function upsertSalesClientFromMyphonerLead({
+  lead = {},
+  resourcePath = '',
+  winnerCategory = '',
+  winnerComment = '',
+} = {}) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const leadId = getMyphonerLeadId(source, resourcePath);
+  const existing = findSalesClientForMyphonerLead(source, resourcePath);
+  const incomingInput = buildSalesInputFromMyphonerLead(source, resourcePath);
+  const storedRecording = leadId ? myphonerIntegration.getRecordingForLead(leadId) : null;
+  const myphonerPatch = buildMyphonerMetaPatch({
+    lead: source,
+    resourcePath,
+    winnerCategory,
+    winnerComment,
+    recording: storedRecording,
+    eventType: 'winner',
+  });
+  let client;
+  if (existing) {
+    const mergedInput = mergeMyphonerSalesInput(existing, incomingInput);
+    client = sales.updateSalesClient(existing.id, {
+      ...mergedInput,
+      ownerId: existing.ownerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      myphoner: {
+        ...(existing.myphoner || {}),
+        ...myphonerPatch,
+      },
+    });
+  } else {
+    const createPayload = {
+      ...incomingInput,
+      ownerId: MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      myphoner: myphonerPatch,
+    };
+    if (!createPayload.businessName) createPayload.businessName = incomingInput.contactPerson || 'Myphoner client';
+    if (!createPayload.contactPerson) createPayload.contactPerson = createPayload.businessName;
+    client = sales.createSalesClient(createPayload);
+  }
+  if (!client) throw makeHttpError(500, 'Failed creating/updating sales client from Myphoner.');
+  const syncResult = await maybeSyncCalendar(client, existing || null);
+  return {
+    client: syncResult.client || client,
+    created: !existing,
+    warnings: syncResult.warnings || [],
+  };
+}
+
+async function processMyphonerWinnerFromResource(resourcePath = '', { winnerCategory = '', winnerComment = '' } = {}) {
+  const normalizedResource = sanitizeText(resourcePath);
+  if (!normalizedResource) throw makeHttpError(410, 'Missing resource URL.');
+  if (!normalizedResource.includes('/leads/')) {
+    throw makeHttpError(410, 'Winner webhook must point to a lead resource URL.');
+  }
+  const leadResponse = await myphonerApi.fetchMyPhonerLeadByResource(normalizedResource);
+  if (!leadResponse.success) {
+    throw makeHttpError(
+      leadResponse.status === 404 ? 410 : 502,
+      leadResponse.error || 'Failed fetching Myphoner lead.'
+    );
+  }
+  const leadPayload = leadResponse.data && typeof leadResponse.data === 'object' ? leadResponse.data : {};
+  const upserted = await upsertSalesClientFromMyphonerLead({
+    lead: leadPayload,
+    resourcePath: normalizedResource,
+    winnerCategory,
+    winnerComment,
+  });
+  return {
+    ok: true,
+    created: Boolean(upserted.created),
+    clientId: sanitizeText(upserted.client?.id),
+    leadId: sanitizeText(upserted.client?.myphoner?.leadId),
+    warnings: upserted.warnings || [],
+  };
+}
+
+function extractLeadIdFromCallPayload(call = {}) {
+  const source = call && typeof call === 'object' ? call : {};
+  const direct = sanitizeText(source.lead_id || source.leadId || source?.lead?.id);
+  if (direct) return direct;
+  const locationCandidates = [
+    source.lead_location,
+    source.leadLocation,
+    source?.lead?.location,
+    source.resource_url,
+  ];
+  for (const candidate of locationCandidates) {
+    const resourcePath = myphonerApi.parseMyPhonerResourcePath(candidate, myphonerApi.getMyPhonerConfig());
+    const leadId = myphonerApi.extractMyPhonerIdFromResource(resourcePath, 'leads');
+    if (leadId) return sanitizeText(leadId);
+  }
+  return '';
+}
+
+function extractRecordingFromCall(call = {}, sourceResourceUrl = '') {
+  const source = call && typeof call === 'object' ? call : {};
+  const recordings = Array.isArray(source.recordings) ? source.recordings : [];
+  const normalized = recordings
+    .map((entry) => ({
+      recordingUrl: coerceHttpUrl(entry?.url || entry?.recording_url || ''),
+      callStartedAt: myphonerApi.parseMyPhonerDateToIso(entry?.started_at || source.started_at),
+    }))
+    .filter((entry) => entry.recordingUrl);
+  const latest = normalized.sort(
+    (a, b) => new Date(b.callStartedAt || 0).getTime() - new Date(a.callStartedAt || 0).getTime()
+  )[0] || null;
+  return {
+    recordingUrl: sanitizeText(latest?.recordingUrl),
+    callId: sanitizeText(source.id || myphonerApi.extractMyPhonerIdFromResource(sourceResourceUrl, 'calls')),
+    callStartedAt: sanitizeText(latest?.callStartedAt || myphonerApi.parseMyPhonerDateToIso(source.started_at)),
+    durationSeconds: Number.isFinite(Number(source.duration)) ? Number(source.duration) : 0,
+    userEmail: sanitizeText(source.user_email || source.userEmail),
+    destinationNumber: sanitizeText(source.destination_number || source.destinationNumber),
+    sourceResourceUrl: sanitizeText(sourceResourceUrl),
+  };
+}
+
+async function processMyphonerRecordingFromResource(resourcePath = '') {
+  const normalizedResource = sanitizeText(resourcePath);
+  if (!normalizedResource) throw makeHttpError(410, 'Missing resource URL.');
+  let callPayload = null;
+  let leadId = '';
+  if (normalizedResource.includes('/calls/')) {
+    const callResponse = await myphonerApi.fetchMyPhonerCallByResource(normalizedResource);
+    if (!callResponse.success) {
+      throw makeHttpError(callResponse.status === 404 ? 410 : 502, callResponse.error || 'Failed fetching Myphoner call.');
+    }
+    callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
+    leadId = extractLeadIdFromCallPayload(callPayload);
+  } else if (normalizedResource.includes('/leads/')) {
+    leadId = myphonerApi.extractMyPhonerIdFromResource(normalizedResource, 'leads');
+  } else {
+    throw makeHttpError(410, 'Unsupported Myphoner recording resource URL.');
+  }
+
+  let recordingMeta = {};
+  if (callPayload) {
+    recordingMeta = extractRecordingFromCall(callPayload, normalizedResource);
+  }
+  if (!recordingMeta.recordingUrl && !leadId) {
+    return { ok: true, updated: false };
+  }
+  if (leadId) {
+    myphonerIntegration.setRecordingForLead(leadId, recordingMeta);
+  }
+  const directClient = leadId ? sales.getSalesClientByMyphonerLeadId(leadId) : null;
+  const phoneClient = !directClient ? findSalesClientByPhone(recordingMeta.destinationNumber || '') : null;
+  const targetClient = directClient || phoneClient;
+  if (!targetClient) {
+    return { ok: true, updated: false, leadId };
+  }
+  const patch = buildMyphonerMetaPatch({
+    lead: { id: leadId, list_name: targetClient?.myphoner?.listName || '' },
+    resourcePath: targetClient?.myphoner?.leadResourceUrl || normalizedResource,
+    recording: recordingMeta,
+    eventType: 'recording',
+  });
+  const updated = sales.updateSalesClient(targetClient.id, {
+    myphoner: {
+      ...(targetClient.myphoner || {}),
+      ...patch,
+      latestRecordingUrl: sanitizeText(recordingMeta.recordingUrl || targetClient.myphoner?.latestRecordingUrl),
+      latestCallId: sanitizeText(recordingMeta.callId || targetClient.myphoner?.latestCallId),
+      latestCallStartedAt: sanitizeText(recordingMeta.callStartedAt || targetClient.myphoner?.latestCallStartedAt),
+      latestCallDurationSeconds: Number.isFinite(Number(recordingMeta.durationSeconds))
+        ? Number(recordingMeta.durationSeconds)
+        : Number(targetClient.myphoner?.latestCallDurationSeconds || 0),
+      latestCallUserEmail: sanitizeText(recordingMeta.userEmail || targetClient.myphoner?.latestCallUserEmail),
+      latestCallDestinationNumber: sanitizeText(
+        recordingMeta.destinationNumber || targetClient.myphoner?.latestCallDestinationNumber
+      ),
+    },
+  });
+  return { ok: true, updated: Boolean(updated), leadId: leadId || targetClient.myphoner?.leadId || '' };
+}
+
+async function handleMyphonerWebhookEvent(req, res, eventType = 'winner') {
+  if (!myphonerApi.isMyPhonerConfigured()) {
+    return res.status(503).json({ message: 'Myphoner integration is not configured.' });
+  }
+  if (!MYPHONER_WEBHOOK_SECRET) {
+    return res.status(503).json({ message: 'Myphoner webhook secret is not configured.' });
+  }
+  if (!isMyphonerWebhookAuthorized(req)) {
+    return res.status(401).json({ message: 'Unauthorized webhook request.' });
+  }
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const rawResource =
+    sanitizeText(payload.resource_url) ||
+    sanitizeText(payload.resourceUrl) ||
+    sanitizeText(payload.url);
+  if (!rawResource) {
+    return res.status(400).json({ message: 'resource_url is required.' });
+  }
+  const resourcePath = myphonerApi.parseMyPhonerResourcePath(rawResource, myphonerApi.getMyPhonerConfig());
+  if (!resourcePath) {
+    return res.status(410).json({ message: 'Invalid resource_url. Remove this webhook subscription.' });
+  }
+  if (myphonerIntegration.wasRecentlyProcessed(eventType, resourcePath, MYPHONER_WEBHOOK_REPLAY_WINDOW_MS)) {
+    return res.json({ ok: true, duplicate: true, eventType, resourcePath });
+  }
+  try {
+    let result = { ok: true };
+    if (eventType === 'winner') {
+      result = await processMyphonerWinnerFromResource(resourcePath, {
+        winnerCategory: sanitizeText(payload.category || payload.winner_category),
+        winnerComment: sanitizeText(payload.comment || payload.winner_comment),
+      });
+    } else if (eventType === 'recording') {
+      result = await processMyphonerRecordingFromResource(resourcePath);
+    } else {
+      throw makeHttpError(400, `Unsupported webhook event type: ${eventType}`);
+    }
+    myphonerIntegration.markProcessedEvent(eventType, resourcePath, nowIso());
+    return res.json({ ok: true, eventType, resourcePath, ...result });
+  } catch (error) {
+    const status = httpStatusFromError(error, 500);
+    if (status === 410) {
+      return res.status(410).json({
+        message: sanitizeText(error?.message) || 'Webhook resource is no longer valid.',
+      });
+    }
+    console.error(`[myphoner webhook ${eventType}]`, error?.message || error);
+    return res.status(status >= 400 && status <= 599 ? status : 500).json({
+      message: sanitizeText(error?.message) || `Failed processing Myphoner ${eventType} webhook.`,
+    });
+  }
+}
+
+async function reconcileMyphonerWebhooks() {
+  if (!MYPHONER_WEBHOOK_RECONCILE_ENABLED) {
+    return { ok: false, skipped: 'disabled' };
+  }
+  if (!myphonerApi.isMyPhonerConfigured()) {
+    return { ok: false, skipped: 'myphoner-not-configured' };
+  }
+  if (!MYPHONER_WEBHOOK_SECRET) {
+    return { ok: false, skipped: 'webhook-secret-missing' };
+  }
+  const winnerTargetUrl = buildMyphonerWebhookTargetUrl('winner');
+  const recordingTargetUrl = buildMyphonerWebhookTargetUrl('recording');
+  if (!winnerTargetUrl || !recordingTargetUrl) {
+    return { ok: false, skipped: 'webhook-base-url-missing' };
+  }
+
+  const listResponse = await myphonerApi.listMyPhonerLists();
+  if (!listResponse.success) {
+    throw makeHttpError(502, listResponse.error || 'Failed loading Myphoner lists.');
+  }
+  const lists = Array.isArray(listResponse.data) ? listResponse.data : [];
+  const listIds = new Set();
+  const summary = {
+    ok: true,
+    checkedLists: lists.length,
+    createdListWebhooks: 0,
+    reusedListWebhooks: 0,
+    removedListWebhooks: 0,
+    createdAccountWebhooks: 0,
+    reusedAccountWebhooks: 0,
+  };
+
+  for (const list of lists) {
+    const listId = sanitizeText(list?.id);
+    if (!listId) continue;
+    listIds.add(listId);
+    const existing = myphonerIntegration.getListWinnerWebhook(listId);
+    const targetChanged = sanitizeText(existing?.targetUrl) !== winnerTargetUrl;
+    const eventChanged = sanitizeText(existing?.event).toLowerCase() !== 'winner';
+    if (existing && !targetChanged && !eventChanged) {
+      summary.reusedListWebhooks += 1;
+      continue;
+    }
+    if (existing?.webhookId && targetChanged) {
+      await myphonerApi.deleteMyPhonerWebhook(existing.webhookId);
+    }
+    const createResponse = await myphonerApi.createMyPhonerListWebhook({
+      listId,
+      targetUrl: winnerTargetUrl,
+      event: 'winner',
+    });
+    if (!createResponse.success) {
+      throw makeHttpError(
+        createResponse.status === 404 ? 410 : 502,
+        createResponse.error || `Failed registering winner webhook for list ${listId}.`
+      );
+    }
+    myphonerIntegration.setListWinnerWebhook(listId, {
+      webhookId: myphonerApi.extractWebhookId(createResponse.data),
+      targetUrl: winnerTargetUrl,
+      event: 'winner',
+      listId,
+    });
+    summary.createdListWebhooks += 1;
+  }
+
+  const knownListMap = myphonerIntegration.getMyPhonerIntegrationState()?.webhooks?.listWinnerByListId || {};
+  for (const [knownListId, payload] of Object.entries(knownListMap)) {
+    if (listIds.has(knownListId)) continue;
+    if (sanitizeText(payload?.webhookId)) {
+      await myphonerApi.deleteMyPhonerWebhook(payload.webhookId);
+    }
+    myphonerIntegration.removeListWinnerWebhook(knownListId);
+    summary.removedListWebhooks += 1;
+  }
+
+  for (const eventName of ['new_recording', 'new_call']) {
+    const existing = myphonerIntegration.getAccountWebhook(eventName);
+    const targetChanged = sanitizeText(existing?.targetUrl) !== recordingTargetUrl;
+    const eventChanged = sanitizeText(existing?.event).toLowerCase() !== eventName;
+    if (existing && !targetChanged && !eventChanged) {
+      summary.reusedAccountWebhooks += 1;
+      continue;
+    }
+    if (existing?.webhookId && targetChanged) {
+      await myphonerApi.deleteMyPhonerWebhook(existing.webhookId);
+    }
+    const createResponse = await myphonerApi.createMyPhonerAccountWebhook({
+      targetUrl: recordingTargetUrl,
+      event: eventName,
+    });
+    if (!createResponse.success) {
+      throw makeHttpError(
+        createResponse.status === 404 ? 410 : 502,
+        createResponse.error || `Failed registering account webhook ${eventName}.`
+      );
+    }
+    myphonerIntegration.setAccountWebhook(eventName, {
+      webhookId: myphonerApi.extractWebhookId(createResponse.data),
+      targetUrl: recordingTargetUrl,
+      event: eventName,
+    });
+    summary.createdAccountWebhooks += 1;
+  }
+
+  return summary;
+}
+
+async function runMyphonerWebhookReconcileTick() {
+  if (myphonerWebhookReconcileRunning) return;
+  myphonerWebhookReconcileRunning = true;
+  try {
+    const result = await reconcileMyphonerWebhooks();
+    if (!result?.ok && result?.skipped) {
+      console.log(`[myphoner] webhook reconcile skipped: ${result.skipped}`);
+      return;
+    }
+    if (result?.ok) {
+      console.log(
+        `[myphoner] webhook reconcile complete: lists=${result.checkedLists}, created=${result.createdListWebhooks}, reused=${result.reusedListWebhooks}, removed=${result.removedListWebhooks}, accountCreated=${result.createdAccountWebhooks}, accountReused=${result.reusedAccountWebhooks}`
+      );
+    }
+  } catch (error) {
+    console.error('[myphoner] webhook reconcile failed:', error?.message || error);
+  } finally {
+    myphonerWebhookReconcileRunning = false;
+  }
+}
+
+function startMyphonerWebhookReconcileLoop() {
+  if (!MYPHONER_WEBHOOK_RECONCILE_ENABLED) return;
+  if (myphonerWebhookReconcileInterval) return;
+  void runMyphonerWebhookReconcileTick();
+  myphonerWebhookReconcileInterval = setInterval(() => {
+    void runMyphonerWebhookReconcileTick();
+  }, Math.max(60_000, MYPHONER_WEBHOOK_RECONCILE_MS));
+}
+
+function joinMakerUrl(baseUrl = '', pathOrUrl = '') {
+  const raw = sanitizeText(pathOrUrl);
+  if (!raw) return '';
+  if (/^https?:\/\//i.test(raw)) {
+    return normalizeHttpBaseUrl(raw);
+  }
+  const base = normalizeHttpBaseUrl(baseUrl);
+  if (!base) return '';
+  const withSlash = raw.startsWith('/') ? raw : `/${raw}`;
+  return `${base}${withSlash}`;
+}
+
+function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
+  const fallbackDashboardPath = `/run/${encodeURIComponent(runId)}`;
+  const fallbackPreviewPath = `/preview/${encodeURIComponent(runId)}/step/3/view?route=/`;
+  const dashboardPath = sanitizeText(handoff.dashboardPath);
+  const previewViewPath = sanitizeText(handoff.previewViewPath || handoff.previewPath);
+  const exportPath = sanitizeText(handoff.exportPath);
+  const links = {
+    dashboardUrl: joinMakerUrl(websiteMakerBaseUrl, dashboardPath || fallbackDashboardPath),
+    previewUrl: joinMakerUrl(websiteMakerBaseUrl, previewViewPath || fallbackPreviewPath),
+  };
+  const latestReadyStep = sanitizeText(handoff.latestReadyStep);
+  const latestStepStatus = sanitizeText(handoff.latestStepStatus);
+  const resolvedExportPath = joinMakerUrl(websiteMakerBaseUrl, exportPath);
+  if (latestReadyStep) links.latestReadyStep = latestReadyStep;
+  if (latestStepStatus) links.latestStepStatus = latestStepStatus;
+  if (resolvedExportPath) links.exportPath = resolvedExportPath;
+  if (latestReadyStep || latestStepStatus || resolvedExportPath) {
+    links.statusUpdatedAt = new Date().toISOString();
+  }
+  return links;
 }
 
 function resolveSalesClientPreviewUrl(salesClientId = '') {
@@ -1169,6 +2312,65 @@ app.get('/api/admin/users', adminAuth, async (_req, res) => {
   res.json(users.map((u) => store.toPublicUser(u)));
 });
 
+// Faktura requests from the client checkout are stored in client portal profiles.
+// Expose active requests so Admin can process them even before Luca is connected.
+app.get('/api/admin/client-payment-requests', adminAuth, async (_req, res) => {
+  const users = await store.getAllUsers();
+  const userMap = new Map(users.map((entry) => [entry.id, entry]));
+  const requests = clientPortal
+    .listClientProfiles()
+    .filter((profile) => sanitizeText(profile?.payment?.status) === 'invoice_requested')
+    .map((profile) => {
+      const user = userMap.get(profile.userId);
+      const invoiceRequest = profile?.payment?.invoiceRequest && typeof profile.payment.invoiceRequest === 'object'
+        ? profile.payment.invoiceRequest
+        : {};
+      return {
+        userId: sanitizeText(profile.userId),
+        email: sanitizeText(profile.email || user?.username).toLowerCase(),
+        clientName: sanitizeText(profile.name),
+        businessName: sanitizeText(invoiceRequest.businessName || profile.businessName),
+        planName: sanitizeText(profile?.payment?.planName || profile?.websiteBuilder?.selectedPlanName),
+        paymentStatus: sanitizeText(profile?.payment?.status),
+        paymentMethod: sanitizeText(profile?.payment?.method),
+        requestedAt: sanitizeText(invoiceRequest.requestedAt || profile?.payment?.updatedAt),
+        updatedAt: sanitizeText(profile?.payment?.updatedAt),
+        invoiceRequest: {
+          orgNumber: sanitizeText(invoiceRequest.orgNumber),
+          businessName: sanitizeText(invoiceRequest.businessName || profile.businessName),
+          invoiceEmail: sanitizeText(invoiceRequest.invoiceEmail || profile.email).toLowerCase(),
+          requestedAt: sanitizeText(invoiceRequest.requestedAt || profile?.payment?.updatedAt),
+        },
+      };
+    })
+    .sort((a, b) => new Date(b.requestedAt || 0).getTime() - new Date(a.requestedAt || 0).getTime());
+  res.json({ requests });
+});
+
+app.post('/api/admin/client-payment-requests/:userId/mark-handled', adminAuth, async (req, res) => {
+  const userId = sanitizeText(req.params.userId);
+  if (!userId) {
+    return res.status(400).json({ message: 'Missing userId.' });
+  }
+  const profile = clientPortal.getClientProfileByUserId(userId);
+  if (!profile) {
+    return res.status(404).json({ message: 'Client profile not found.' });
+  }
+  const currentStatus = sanitizeText(profile?.payment?.status);
+  if (currentStatus !== 'invoice_requested') {
+    return res.status(400).json({ message: 'No pending faktura request for this client.' });
+  }
+  const updated = clientPortal.setClientPayment(userId, {
+    status: 'processing',
+    method: 'faktura',
+  });
+  return res.json({
+    ok: true,
+    userId,
+    paymentStatus: sanitizeText(updated?.payment?.status) || 'processing',
+  });
+});
+
 app.post('/api/admin/users', adminAuth, async (req, res) => {
   const { username, password, role } = req.body || {};
   if (!username || !password) {
@@ -1390,6 +2592,29 @@ app.post('/api/admin/employees/sync/myphoner', adminAuth, async (req, res) => {
   const syncedWorkers = result.results.map((entry) => employees.updateMyphonerStats(entry.workerId, entry.stats)).filter(Boolean);
   employees.markSync('myphoner', { interval, synced: syncedWorkers.length });
   res.json({ success: true, interval, synced: syncedWorkers.length, workers: employees.getWorkers(), results: result.results });
+});
+
+app.post('/api/admin/integrations/myphoner/reconcile', adminAuth, async (_req, res) => {
+  try {
+    const result = await reconcileMyphonerWebhooks();
+    if (!result?.ok && result?.skipped) {
+      return res.status(400).json({ ok: false, message: `Reconcile skipped: ${result.skipped}` });
+    }
+    return res.json({ ok: true, result });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed to reconcile Myphoner webhooks.',
+    });
+  }
+});
+
+app.post('/api/integrations/myphoner/webhook/winner', async (req, res) => {
+  return handleMyphonerWebhookEvent(req, res, 'winner');
+});
+
+app.post('/api/integrations/myphoner/webhook/recording', async (req, res) => {
+  return handleMyphonerWebhookEvent(req, res, 'recording');
 });
 
 app.post('/api/admin/employees/sync/luca', adminAuth, async (_req, res) => {
@@ -1777,6 +3002,8 @@ app.post('/api/client/plans/website/select', clientAuth, async (req, res) => {
 
   const planId = sanitizeText(req.body?.planId);
   const type = sanitizeText(req.body?.type || 'standard');
+  const legalPayload = req.body?.legalAcknowledgement;
+  const hasExplicitLegalPayload = Boolean(legalPayload && typeof legalPayload === 'object');
 
   let selectedPlan = null;
   if (type === 'custom') {
@@ -1799,7 +3026,16 @@ app.post('/api/client/plans/website/select', clientAuth, async (req, res) => {
     };
   }
 
-  const profile = clientPortal.setClientSelectedWebsitePlan(user.id, selectedPlan);
+  const legalAcknowledgement = hasExplicitLegalPayload
+    ? sanitizeCheckoutLegalAcknowledgement(
+      legalPayload,
+      defaultCheckoutLegalAcknowledgement(selectedPlan.id, selectedPlan.name)
+    )
+    : defaultCheckoutLegalAcknowledgement(selectedPlan.id, selectedPlan.name);
+  const profile = clientPortal.setClientSelectedWebsitePlan(user.id, {
+    ...selectedPlan,
+    legalAcknowledgement,
+  });
   return res.json({ profile, selectedPlan });
 });
 
@@ -1813,6 +3049,101 @@ app.get('/api/client/checkout/config', clientAuth, (req, res) => {
     publishableKey,
     currency: getStripeCurrency(),
   });
+});
+
+app.get('/api/client/checkout/promotion-code', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  let plan;
+  try {
+    plan = resolveClientCheckoutPlan(profile);
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 400)).json({ message: error.message || 'Ingen gyldig plan valgt.' });
+  }
+
+  const stored = profile?.websiteBuilder?.appliedPromotionCode;
+  const storedCode = normalizePromotionCodeInput(stored?.code || '');
+  if (!storedCode || !sanitizeText(stored?.promotionCodeId)) {
+    return res.json({
+      promotionCode: null,
+      amount: plan.amount,
+      totalAmount: plan.amount,
+    });
+  }
+  if (sanitizeText(stored?.planId) && sanitizeText(stored.planId) !== sanitizeText(plan.planId)) {
+    clientPortal.setClientAppliedPromotionCode(user.id, null);
+    return res.json({
+      promotionCode: null,
+      amount: plan.amount,
+      totalAmount: plan.amount,
+    });
+  }
+
+  try {
+    const resolved = await resolveStripePromotionCodeForCheckout({
+      code: storedCode,
+      planId: plan.planId,
+      planName: plan.planName,
+      amount: plan.amount,
+      currency: getStripeCurrency(),
+    });
+    clientPortal.setClientAppliedPromotionCode(user.id, resolved);
+    return res.json({
+      promotionCode: resolved,
+      amount: plan.amount,
+      totalAmount: resolved.totalAmount,
+    });
+  } catch (error) {
+    clientPortal.setClientAppliedPromotionCode(user.id, null);
+    return res.json({
+      promotionCode: null,
+      amount: plan.amount,
+      totalAmount: plan.amount,
+      warning: error.message || 'Rabattkoden er ikke lenger gyldig.',
+    });
+  }
+});
+
+app.post('/api/client/checkout/promotion-code', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  let plan;
+  try {
+    plan = resolveClientCheckoutPlan(profile);
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 400)).json({ message: error.message || 'Ingen gyldig plan valgt.' });
+  }
+
+  try {
+    const resolved = await resolveStripePromotionCodeForCheckout({
+      code: req.body?.code,
+      planId: plan.planId,
+      planName: plan.planName,
+      amount: plan.amount,
+      currency: getStripeCurrency(),
+    });
+    clientPortal.setClientAppliedPromotionCode(user.id, resolved);
+    return res.json({
+      promotionCode: resolved,
+      amount: plan.amount,
+      totalAmount: resolved.totalAmount,
+    });
+  } catch (error) {
+    return res
+      .status(httpStatusFromError(error, 400))
+      .json({ message: error.message || 'Kunne ikke validere rabattkoden.' });
+  }
+});
+
+app.delete('/api/client/checkout/promotion-code', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  clientPortal.setClientAppliedPromotionCode(user.id, null);
+  return res.json({ ok: true });
 });
 
 // Resolves the client's saved plan to a Stripe subscription line item and
@@ -1832,28 +3163,32 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
   let lineItem = null;
   let planName = '';
   let amount = 0;
+  let selectedPlanId = sanitizeText(builder.selectedPlanId);
 
   if (type === 'custom') {
     const custom = profile.customWebsitePlan || {};
     planName = sanitizeText(custom.title || custom.name) || 'Din nettside plan';
+    if (!selectedPlanId) selectedPlanId = 'custom-website-plan';
+    const monthly = typeof custom.monthlyPrice === 'number'
+      ? custom.monthlyPrice
+      : Number.parseInt(String(custom.monthlyPrice ?? '').replace(/[^\d]/g, ''), 10);
+    if (Number.isFinite(monthly) && monthly > 0) {
+      amount = monthly;
+    }
     const priceId = sanitizeText(custom.stripePriceId);
     if (priceId) {
       lineItem = { price: priceId, quantity: 1 };
     } else {
-      const monthly = typeof custom.monthlyPrice === 'number'
-        ? custom.monthlyPrice
-        : Number.parseInt(String(custom.monthlyPrice ?? '').replace(/[^\d]/g, ''), 10);
-      if (!Number.isFinite(monthly) || monthly <= 0) {
+      if (!Number.isFinite(amount) || amount <= 0) {
         return res.status(400).json({
           message: 'Denne planen har ikke en fast pris. Velg faktura, eller kontakt oss for et tilbud.',
           code: 'no-fixed-price',
         });
       }
-      amount = monthly;
       lineItem = {
         price_data: {
           currency: getStripeCurrency(),
-          unit_amount: Math.round(monthly * 100),
+          unit_amount: Math.round(amount * 100),
           recurring: { interval: 'month' },
           product_data: { name: planName },
         },
@@ -1864,16 +3199,66 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
     const found = findWebsitePlan(builder.selectedPlanId);
     if (!found) return res.status(400).json({ message: 'Ingen gyldig plan valgt. Velg plan først.' });
     planName = found.name;
+    selectedPlanId = found.id;
     const priceId = priceIdForPlan(found.id);
     if (!priceId) {
       return res.status(503).json({ message: `Mangler Stripe-pris for ${found.name}. Sett STRIPE_PRICE_* i miljøet.` });
     }
+    amount = parsePlanAmount(found.price);
     lineItem = { price: priceId, quantity: 1 };
   }
 
-  const appUrl = (process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+  const legalAcknowledgement = sanitizeCheckoutLegalAcknowledgement(
+    builder.legalAcknowledgement,
+    defaultCheckoutLegalAcknowledgement(selectedPlanId, planName)
+  );
+  if (!hasAcceptedCheckoutLegalAcknowledgement(legalAcknowledgement, selectedPlanId)) {
+    return res.status(400).json({
+      message: checkoutLegalConsentMessage(),
+      code: 'legal-consent-required',
+    });
+  }
+
+  const appUrl = resolveRequestBaseUrl(req);
+  if (!appUrl) {
+    return res.status(503).json({
+      message: 'APP_URL mangler eller er ugyldig. Sett APP_URL til riktig https-domene.',
+      code: 'app-url-missing',
+    });
+  }
+  const isLiveStripeKey = /^sk_live_/i.test(String(process.env.STRIPE_SECRET_KEY || '').trim());
+  if (isLiveStripeKey && !/^https:\/\//i.test(appUrl)) {
+    return res.status(503).json({
+      message: 'APP_URL må bruke https i produksjon før kortbetaling kan starte.',
+      code: 'app-url-https-required',
+    });
+  }
   try {
     const stripe = getStripe();
+    const storedPromotion = builder.appliedPromotionCode && typeof builder.appliedPromotionCode === 'object'
+      ? builder.appliedPromotionCode
+      : null;
+    let appliedPromotion = null;
+    const storedPromotionCode = normalizePromotionCodeInput(storedPromotion?.code || '');
+    const storedPromotionPlanId = sanitizeText(storedPromotion?.planId || selectedPlanId);
+    if (storedPromotionCode && storedPromotionPlanId === selectedPlanId) {
+      try {
+        appliedPromotion = await resolveStripePromotionCodeForCheckout({
+          code: storedPromotionCode,
+          planId: selectedPlanId,
+          planName,
+          amount,
+          currency: getStripeCurrency(),
+        });
+        clientPortal.setClientAppliedPromotionCode(user.id, appliedPromotion);
+      } catch (error) {
+        clientPortal.setClientAppliedPromotionCode(user.id, null);
+        return res
+          .status(httpStatusFromError(error, 400))
+          .json({ message: error.message || 'Rabattkoden er ikke lenger gyldig.', code: 'promotion-code-invalid' });
+      }
+    }
+
     const sessionParams = {
       mode: 'subscription',
       ui_mode: 'embedded',
@@ -1886,25 +3271,63 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
       return_url: `${appUrl}/kunde/tjenester/nettside/checkout?session_id={CHECKOUT_SESSION_ID}`,
       metadata: {
         userId: String(user.id),
-        planId: sanitizeText(builder.selectedPlanId),
+        planId: selectedPlanId,
         planName,
         planType: type,
         amount: String(amount || ''),
+        legalTermsAccepted: legalAcknowledgement.termsAccepted ? '1' : '0',
+        legalPrivacyAccepted: legalAcknowledgement.privacyAccepted ? '1' : '0',
+        legalBindingAccepted: legalAcknowledgement.bindingAccepted ? '1' : '0',
+        legalBindingMonths: String(legalAcknowledgement.bindingMonths || ''),
+        legalAcceptedAt: legalAcknowledgement.acceptedAt,
       },
-      subscription_data: { metadata: { userId: String(user.id), planType: type } },
+      subscription_data: {
+        metadata: {
+          userId: String(user.id),
+          planType: type,
+          planId: selectedPlanId,
+          legalBindingMonths: String(legalAcknowledgement.bindingMonths || ''),
+          legalAcceptedAt: legalAcknowledgement.acceptedAt,
+        },
+      },
     };
+    if (appliedPromotion?.promotionCodeId) {
+      sessionParams.discounts = [{ promotion_code: appliedPromotion.promotionCodeId }];
+      sessionParams.metadata.promotionCode = appliedPromotion.code;
+      sessionParams.metadata.promotionCodeId = appliedPromotion.promotionCodeId;
+      sessionParams.metadata.discountAmount = String(appliedPromotion.discountAmount || 0);
+      sessionParams.subscription_data.metadata.promotionCodeId = appliedPromotion.promotionCodeId;
+    }
     const existingCustomer = sanitizeText(profile.payment?.stripeCustomerId);
+    const normalizedCustomerEmail = normalizeEmail(profile.email || user.username);
     if (existingCustomer) {
       sessionParams.customer = existingCustomer;
     } else {
-      const email = normalizeEmail(profile.email || user.username);
-      if (email) sessionParams.customer_email = email;
+      if (normalizedCustomerEmail) sessionParams.customer_email = normalizedCustomerEmail;
     }
-    const session = await stripe.checkout.sessions.create(sessionParams);
+    let session;
+    try {
+      session = await stripe.checkout.sessions.create(sessionParams);
+    } catch (error) {
+      if (sessionParams.customer && shouldRetryWithoutStripeCustomer(error)) {
+        const staleCustomer = sanitizeText(sessionParams.customer);
+        delete sessionParams.customer;
+        if (normalizedCustomerEmail) sessionParams.customer_email = normalizedCustomerEmail;
+        clientPortal.setClientPayment(user.id, { stripeCustomerId: '' });
+        console.warn('[stripe][create-session] stale customer id retry', {
+          userId: sanitizeText(user?.id),
+          staleCustomer,
+          planId: selectedPlanId,
+        });
+        session = await stripe.checkout.sessions.create(sessionParams);
+      } else {
+        throw error;
+      }
+    }
     clientPortal.setClientPayment(user.id, {
       status: 'processing',
       method: 'card',
-      planId: sanitizeText(builder.selectedPlanId),
+      planId: selectedPlanId,
       planName,
       amount,
       currency: getStripeCurrency(),
@@ -1912,8 +3335,17 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
     });
     return res.json({ clientSecret: session.client_secret });
   } catch (error) {
-    console.error('Stripe create-session error:', error?.message || error);
-    return res.status(500).json({ message: 'Kunne ikke starte betaling. Prøv igjen.' });
+    const mapped = mapStripeCheckoutSessionError(error, planName);
+    console.error('[stripe][create-session] failed', {
+      userId: sanitizeText(user?.id),
+      planId: selectedPlanId,
+      planName,
+      appUrl,
+      stripeType: sanitizeText(error?.type || error?.rawType),
+      stripeCode: sanitizeText(error?.code),
+      message: sanitizeText(error?.message || String(error || '')),
+    });
+    return res.status(mapped.status).json({ message: mapped.message, code: mapped.code });
   }
 });
 
@@ -1948,14 +3380,25 @@ app.post('/api/client/checkout/request-faktura', clientAuth, async (req, res) =>
   const businessName = sanitizeText(req.body?.businessName) || sanitizeText(profile.businessName);
   const invoiceEmail = normalizeEmail(req.body?.invoiceEmail || profile.email || user.username);
   const builder = profile.websiteBuilder || {};
+  const selectedPlanId = sanitizeText(builder.selectedPlanId);
   const planName = builder.selectedPlanType === 'custom'
     ? (sanitizeText(profile.customWebsitePlan?.title) || 'Din nettside plan')
     : (findWebsitePlan(builder.selectedPlanId)?.name || sanitizeText(builder.selectedPlanName));
+  const legalAcknowledgement = sanitizeCheckoutLegalAcknowledgement(
+    builder.legalAcknowledgement,
+    defaultCheckoutLegalAcknowledgement(selectedPlanId, planName)
+  );
+  if (!hasAcceptedCheckoutLegalAcknowledgement(legalAcknowledgement, selectedPlanId)) {
+    return res.status(400).json({
+      message: checkoutLegalConsentMessage(),
+      code: 'legal-consent-required',
+    });
+  }
 
   clientPortal.setClientPayment(user.id, {
     status: 'invoice_requested',
     method: 'faktura',
-    planId: sanitizeText(builder.selectedPlanId),
+    planId: selectedPlanId,
     planName,
     invoiceRequest: { orgNumber, businessName, invoiceEmail, requestedAt: new Date().toISOString() },
   });
@@ -2512,6 +3955,47 @@ app.get('/api/admin/sales/maker-tunnel/status', salesAuth, (_req, res) => {
   });
 });
 
+app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
+  if (!isMakerStatusCallbackAuthorized(req)) {
+    return res.status(401).json({ message: 'Unauthorized callback.' });
+  }
+  const runId = sanitizeText(req.body?.runId);
+  const salesClientId = sanitizeText(req.body?.salesClientId);
+  const callbackStatus = sanitizeText(req.body?.status);
+  const handoff = req.body?.handoff && typeof req.body.handoff === 'object' ? req.body.handoff : {};
+
+  let client = salesClientId ? sales.getSalesClientById(salesClientId) : null;
+  if (!client && runId) {
+    client = sales.getSalesClients().find((entry) => sanitizeText(entry?.makerRun?.runId) === runId) || null;
+  }
+  if (!client) {
+    return res.status(404).json({ message: 'No matching sales client for callback.' });
+  }
+
+  const nextRunId = runId || sanitizeText(client.makerRun?.runId);
+  if (!nextRunId) {
+    return res.status(400).json({ message: 'runId is required.' });
+  }
+
+  const makerBaseUrl = resolveWebsiteMakerBaseUrl('', client);
+  const linked = buildMakerRunLinks(makerBaseUrl, nextRunId, handoff);
+  const patch = {
+    runId: nextRunId,
+    industry: sanitizeText(client.makerRun?.industry || client.industry),
+    createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+    statusUpdatedAt: new Date().toISOString(),
+  };
+  if (sanitizeText(linked.dashboardUrl)) patch.dashboardUrl = linked.dashboardUrl;
+  if (sanitizeText(linked.previewUrl)) patch.previewUrl = linked.previewUrl;
+  if (sanitizeText(linked.exportPath)) patch.exportPath = linked.exportPath;
+  if (sanitizeText(linked.latestReadyStep)) patch.latestReadyStep = linked.latestReadyStep;
+  if (sanitizeText(linked.latestStepStatus)) patch.latestStepStatus = linked.latestStepStatus;
+  else if (callbackStatus) patch.latestStepStatus = callbackStatus;
+
+  const updated = sales.setSalesMakerRun(client.id, patch);
+  return res.json({ ok: true, client: updated });
+});
+
 app.get('/api/admin/sales', salesAuth, (req, res) => {
   const all = sales.getSalesClients();
   const clients = req.salesUser.isAdmin
@@ -2816,6 +4300,55 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
   }
 });
 
+app.get('/api/admin/sales/:id/maker-export', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+  const runId = sanitizeText(req.query?.runId || client.makerRun?.runId);
+  if (!runId) {
+    return res.status(400).json({ message: 'Link or create a Website Maker run before downloading export ZIP.' });
+  }
+
+  const websiteMakerBaseUrl = resolveWebsiteMakerBaseUrl(req.query?.websiteMakerBaseUrl, client);
+  if (!websiteMakerBaseUrl) {
+    return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
+  }
+
+  const step = sanitizeText(req.query?.step || 'latest') || 'latest';
+  const siteFolder = sanitizeSegment(req.query?.siteFolder || client.businessName || 'site', 'site');
+  const baseUrl = sanitizeText(req.query?.baseUrl || `https://asoldi.com/${siteFolder}`);
+  const exportUrl = `${websiteMakerBaseUrl}/api/runs/${encodeURIComponent(runId)}/export?step=${encodeURIComponent(step)}&baseUrl=${encodeURIComponent(baseUrl)}&siteFolder=${encodeURIComponent(siteFolder)}&persist=1`;
+
+  try {
+    const response = await fetch(exportUrl, {
+      method: 'GET',
+      headers: getWebsiteMakerAuthHeaders(),
+    });
+    const payloadBuffer = Buffer.from(await response.arrayBuffer());
+    if (!response.ok) {
+      const fallback = `Website export failed (${response.status})`;
+      return res
+        .status(response.status === 404 ? 404 : 502)
+        .json({ message: parseMakerErrorMessage(payloadBuffer, fallback) });
+    }
+
+    const disposition = sanitizeText(response.headers.get('content-disposition'));
+    const matchedName = disposition.match(/filename=\"?([^\";]+)\"?/i);
+    const fileName = sanitizeText(matchedName?.[1]) || `${siteFolder}-hostinger.zip`;
+    const exportedStep = sanitizeText(response.headers.get('x-export-step')) || step;
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Export-Step', exportedStep);
+    res.setHeader('X-Export-Run-Id', runId);
+    return res.send(payloadBuffer);
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 502)).json({ message: error.message || 'Failed downloading export ZIP from Website Maker.' });
+  }
+});
+
 app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
@@ -2834,13 +4367,14 @@ app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
   try {
     const run = await fetchMakerRunRecord({ websiteMakerBaseUrl, runId });
     const answers = run?.answers && typeof run.answers === 'object' ? run.answers : {};
+    const runHandoff = run?.salesHandoff && typeof run.salesHandoff === 'object' ? run.salesHandoff : {};
     const mergedIndustry =
       sanitizeText(client.industry) ||
       sanitizeText(client.makerRun?.industry) ||
       sanitizeText(answers?.industry);
     const updated = sales.setSalesMakerRun(client.id, {
       runId,
-      ...buildMakerRunLinks(websiteMakerBaseUrl, runId),
+      ...buildMakerRunLinks(websiteMakerBaseUrl, runId, runHandoff),
       industry: mergedIndustry,
       createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
     });
@@ -2851,6 +4385,7 @@ app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
       run: {
         id: sanitizeText(run?.id) || runId,
         intakeStatus: sanitizeText(run?.metadata?.intakeStatus),
+        handoff: runHandoff,
       },
     });
   } catch (error) {
@@ -2883,20 +4418,37 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     const salesDetails = normalizeSalesDetailLinks(client.details || {});
     const relevantLinks = buildSalesRelevantLinks(salesDetails);
     const quickFillLinks = buildSalesQuickFillLinks(salesDetails);
+    const salesOwnerContact = sanitizeText(
+      req.body?.salesContact ||
+      process.env.SALES_CONTACT_EMAIL ||
+      process.env.BOOKING_INBOX_EMAIL ||
+      'kontakt@asoldi.com'
+    );
+    const clientContactEmail = sanitizeText(client.contactEmail);
     const answersPatch = {
       businessName: client.businessName || '',
       industry: client.industry || '',
+      email: clientContactEmail || salesOwnerContact,
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
       relevantLinks,
     };
     const previousRunId = sanitizeText(client.makerRun?.runId);
     const existingRunId = forceNewRun ? '' : previousRunId;
+    const salesCallbackUrl = resolveSalesMakerCallbackUrl(req);
+    const salesCallbackToken = sanitizeText(
+      process.env.WEBSITE_MAKER_STATUS_CALLBACK_TOKEN || process.env.SALES_MAKER_STATUS_CALLBACK_TOKEN || ''
+    );
     const requestBody = {
       existingRunId,
       businessName: client.businessName || 'Untitled client run',
       industry: client.industry || '',
       source: 'sales',
-      salesContact: client.contactPerson || '',
+      salesContact: salesOwnerContact,
+      salesClientId: client.id,
+      salesOwnerId: req.salesUser?.accountKey || '',
+      salesOrderId: sanitizeText(req.body?.salesOrderId || ''),
+      salesCallbackUrl,
+      salesCallbackToken,
       answers: answersPatch,
       quickFillLinks,
     };
@@ -2916,6 +4468,15 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     if (!runId) {
       return res.status(502).json({ message: 'Website Maker did not return a runId.' });
     }
+    let runHandoff = data?.handoff && typeof data.handoff === 'object' ? data.handoff : {};
+    try {
+      const freshRun = await fetchMakerRunRecord({ websiteMakerBaseUrl: base, runId });
+      if (freshRun?.salesHandoff && typeof freshRun.salesHandoff === 'object') {
+        runHandoff = freshRun.salesHandoff;
+      }
+    } catch {
+      // Keep the lightweight handoff from /api/runs/v2 if detailed lookup fails.
+    }
     const replacedRunId = forceNewRun ? previousRunId : '';
     let replacedRunDeleted = false;
     if (replacedRunId && replacedRunId !== runId) {
@@ -2934,7 +4495,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
 
     const updated = sales.setSalesMakerRun(client.id, {
       runId,
-      ...buildMakerRunLinks(base, runId),
+      ...buildMakerRunLinks(base, runId, runHandoff),
       industry: client.industry || '',
       createdAt:
         forceNewRun || !sanitizeText(client.makerRun?.createdAt)
@@ -2948,6 +4509,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       alreadyExists: Boolean(previousRunId),
       replacedRunId,
       replacedRunDeleted,
+      handoff: runHandoff,
     });
   } catch (error) {
     res.status(502).json({ message: error.message || 'Failed reaching the Website Maker.' });
@@ -3099,7 +4661,7 @@ app.delete('/api/admin/sales/offers/:id', salesAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Booking (skip Calendly: send email to daracha777@gmail.com)
+// --- Booking (skip Calendly: send inquiry email to configured inbox)
 app.post('/api/booking', async (req, res) => {
   const { name, email, phone, company, service, message } = req.body || {};
   if (!name || !email) {
@@ -3123,12 +4685,15 @@ Tjeneste: ${service || 'Ikke oppgitt'}
 
 Melding:
 ${message || '(Ingen melding)'}`;
+  const bookingInbox = sanitizeText(process.env.BOOKING_INBOX_EMAIL || process.env.SALES_CONTACT_EMAIL) || 'kontakt@asoldi.com';
+  const bookingReplyTo = sanitizeText(process.env.BOOKING_REPLY_TO || process.env.SMTP_REPLY_TO) || 'daracha777@gmail.com';
   try {
     await emailLib.sendEmail({
-      to: 'daracha777@gmail.com',
+      to: bookingInbox,
       subject: `[Asoldi] Ny henvendelse: ${name} – ${company || 'Ingen bedrift'}`,
       text: body,
       html: `<pre style="font-family:sans-serif;white-space:pre-wrap;">${body.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>`,
+      replyTo: bookingReplyTo,
     });
   } catch (err) {
     console.error('Booking email error:', err);
@@ -3214,6 +4779,7 @@ async function ensureData() {
 
 ensureData().then(() => {
   startSalesReminderLoop();
+  startMyphonerWebhookReconcileLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
 }).catch((err) => {

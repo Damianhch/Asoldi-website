@@ -72,6 +72,79 @@ function defaultCustomPlan() {
   };
 }
 
+function defaultLegalAcknowledgement() {
+  return {
+    termsAccepted: false,
+    privacyAccepted: false,
+    bindingAccepted: false,
+    bindingMonths: 0,
+    planId: '',
+    planName: '',
+    acceptedAt: '',
+  };
+}
+
+function normalizeLegalAcknowledgement(input = {}, fallback = {}) {
+  const base = {
+    ...defaultLegalAcknowledgement(),
+    ...(fallback && typeof fallback === 'object' ? fallback : {}),
+  };
+  const src = input && typeof input === 'object' ? input : {};
+  const months = Number.parseInt(String(src.bindingMonths ?? base.bindingMonths ?? 0), 10);
+  return {
+    termsAccepted: toBoolean(src.termsAccepted, base.termsAccepted),
+    privacyAccepted: toBoolean(src.privacyAccepted, base.privacyAccepted),
+    bindingAccepted: toBoolean(src.bindingAccepted, base.bindingAccepted),
+    bindingMonths: Number.isFinite(months) && months > 0 ? months : 0,
+    planId: sanitizeText(src.planId || base.planId),
+    planName: sanitizeText(src.planName || base.planName),
+    acceptedAt: sanitizeText(src.acceptedAt || base.acceptedAt),
+  };
+}
+
+function defaultAppliedPromotionCode() {
+  return {
+    code: '',
+    promotionCodeId: '',
+    couponId: '',
+    label: '',
+    percentOff: 0,
+    amountOff: 0,
+    currency: '',
+    discountAmount: 0,
+    totalAmount: 0,
+    planId: '',
+    planName: '',
+    appliedAt: '',
+  };
+}
+
+function normalizeAppliedPromotionCode(input = {}, fallback = {}) {
+  const base = {
+    ...defaultAppliedPromotionCode(),
+    ...(fallback && typeof fallback === 'object' ? fallback : {}),
+  };
+  const src = input && typeof input === 'object' ? input : {};
+  const asFiniteNumber = (value, fallbackValue = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : fallbackValue;
+  };
+  return {
+    code: sanitizeText(src.code || base.code).toUpperCase(),
+    promotionCodeId: sanitizeText(src.promotionCodeId || base.promotionCodeId),
+    couponId: sanitizeText(src.couponId || base.couponId),
+    label: sanitizeText(src.label || base.label),
+    percentOff: asFiniteNumber(src.percentOff, asFiniteNumber(base.percentOff, 0)),
+    amountOff: asFiniteNumber(src.amountOff, asFiniteNumber(base.amountOff, 0)),
+    currency: sanitizeText(src.currency || base.currency),
+    discountAmount: asFiniteNumber(src.discountAmount, asFiniteNumber(base.discountAmount, 0)),
+    totalAmount: asFiniteNumber(src.totalAmount, asFiniteNumber(base.totalAmount, 0)),
+    planId: sanitizeText(src.planId || base.planId),
+    planName: sanitizeText(src.planName || base.planName),
+    appliedAt: sanitizeText(src.appliedAt || base.appliedAt),
+  };
+}
+
 function defaultWebsiteBuilder() {
   return {
     existingWebsiteCode: '',
@@ -80,6 +153,8 @@ function defaultWebsiteBuilder() {
     selectedPlanPrice: '999,-/mnd',
     selectedPlanType: 'standard',
     lastCheckoutStartedAt: '',
+    legalAcknowledgement: defaultLegalAcknowledgement(),
+    appliedPromotionCode: defaultAppliedPromotionCode(),
   };
 }
 
@@ -155,6 +230,10 @@ function normalizeCustomPlan(input = {}) {
 
 function normalizeWebsiteBuilder(input = {}) {
   const base = defaultWebsiteBuilder();
+  const fallbackLegal = normalizeLegalAcknowledgement(base.legalAcknowledgement || {});
+  const legalAcknowledgement = normalizeLegalAcknowledgement(input.legalAcknowledgement, fallbackLegal);
+  const fallbackPromotionCode = normalizeAppliedPromotionCode(base.appliedPromotionCode || {});
+  const appliedPromotionCode = normalizeAppliedPromotionCode(input.appliedPromotionCode, fallbackPromotionCode);
   return {
     ...base,
     ...input,
@@ -164,6 +243,8 @@ function normalizeWebsiteBuilder(input = {}) {
     selectedPlanPrice: sanitizeText(input.selectedPlanPrice || base.selectedPlanPrice),
     selectedPlanType: sanitizeText(input.selectedPlanType || base.selectedPlanType),
     lastCheckoutStartedAt: sanitizeText(input.lastCheckoutStartedAt || base.lastCheckoutStartedAt),
+    legalAcknowledgement,
+    appliedPromotionCode,
   };
 }
 
@@ -389,20 +470,35 @@ export function setClientExistingWebsiteCode(userId, code) {
 }
 
 export function setClientSelectedWebsitePlan(userId, plan = {}) {
+  const websiteBuilderPatch = {
+    selectedPlanId: sanitizeText(plan.id),
+    selectedPlanName: sanitizeText(plan.name),
+    selectedPlanPrice: sanitizeText(plan.price),
+    selectedPlanType: sanitizeText(plan.type || 'standard'),
+    lastCheckoutStartedAt: nowIso(),
+  };
+  if (plan.legalAcknowledgement && typeof plan.legalAcknowledgement === 'object') {
+    websiteBuilderPatch.legalAcknowledgement = plan.legalAcknowledgement;
+  }
   return upsertClientProfile(userId, {
-    websiteBuilder: {
-      selectedPlanId: sanitizeText(plan.id),
-      selectedPlanName: sanitizeText(plan.name),
-      selectedPlanPrice: sanitizeText(plan.price),
-      selectedPlanType: sanitizeText(plan.type || 'standard'),
-      lastCheckoutStartedAt: nowIso(),
-    },
+    websiteBuilder: websiteBuilderPatch,
   });
 }
 
 export function setClientPayment(userId, patch = {}) {
   const next = { ...patch, updatedAt: nowIso() };
   return upsertClientProfile(userId, { payment: next }, { syncPortalState: false });
+}
+
+export function setClientAppliedPromotionCode(userId, promotionCode = null) {
+  const nextPromotion = promotionCode && typeof promotionCode === 'object'
+    ? promotionCode
+    : defaultAppliedPromotionCode();
+  return upsertClientProfile(userId, {
+    websiteBuilder: {
+      appliedPromotionCode: nextPromotion,
+    },
+  });
 }
 
 export function getClientProfileByStripeCustomerId(customerId) {

@@ -99,6 +99,10 @@ function normalizeMakerRun(value = {}) {
     runId: sanitizeText(input.runId),
     dashboardUrl: sanitizeText(input.dashboardUrl),
     previewUrl: sanitizeText(input.previewUrl),
+    latestReadyStep: sanitizeText(input.latestReadyStep),
+    latestStepStatus: sanitizeText(input.latestStepStatus),
+    exportPath: sanitizeText(input.exportPath),
+    statusUpdatedAt: sanitizeText(input.statusUpdatedAt),
     industry: sanitizeText(input.industry),
     createdAt: sanitizeText(input.createdAt),
   };
@@ -146,6 +150,29 @@ function normalizeSalesDetails(value = {}) {
   };
 }
 
+function normalizeMyphoner(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    leadId: sanitizeText(input.leadId),
+    listId: sanitizeText(input.listId),
+    listName: sanitizeText(input.listName),
+    leadResourceUrl: sanitizeText(input.leadResourceUrl),
+    winnerCategory: sanitizeText(input.winnerCategory),
+    winnerComment: sanitizeText(input.winnerComment),
+    lastWinnerWebhookAt: sanitizeText(input.lastWinnerWebhookAt),
+    lastRecordingWebhookAt: sanitizeText(input.lastRecordingWebhookAt),
+    latestEventAt: sanitizeText(input.latestEventAt),
+    latestCallId: sanitizeText(input.latestCallId),
+    latestCallStartedAt: sanitizeText(input.latestCallStartedAt),
+    latestCallDurationSeconds: Number.isFinite(Number(input.latestCallDurationSeconds))
+      ? Number(input.latestCallDurationSeconds)
+      : 0,
+    latestCallUserEmail: sanitizeText(input.latestCallUserEmail),
+    latestCallDestinationNumber: sanitizeText(input.latestCallDestinationNumber),
+    latestRecordingUrl: sanitizeText(input.latestRecordingUrl),
+  };
+}
+
 function normalizeSalesClient(raw = {}) {
   const meetingMode = normalizeMeetingMode(raw.meetingMode);
   const agreedTime = Boolean(raw.agreedTime);
@@ -170,6 +197,7 @@ function normalizeSalesClient(raw = {}) {
     meetingAt,
     websiteDomain: sanitizeText(raw.websiteDomain),
     details: normalizeSalesDetails(raw.details),
+    myphoner: normalizeMyphoner(raw.myphoner),
     progression: normalizeProgression(raw.progression, agreedTime),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
@@ -229,6 +257,12 @@ export function getSalesClientById(id) {
   return readState().find((entry) => entry.id === id) || null;
 }
 
+export function getSalesClientByMyphonerLeadId(leadId) {
+  const target = sanitizeText(leadId);
+  if (!target) return null;
+  return readState().find((entry) => sanitizeText(entry.myphoner?.leadId) === target) || null;
+}
+
 export function createSalesClient(input = {}) {
   const state = readState();
   const now = nowIso();
@@ -274,6 +308,9 @@ export function updateSalesClient(id, updates = {}) {
     reminders: updates.reminders
       ? { ...current.reminders, ...updates.reminders }
       : current.reminders,
+    myphoner: updates.myphoner
+      ? { ...(current.myphoner || {}), ...updates.myphoner }
+      : current.myphoner,
     updatedAt: nowIso(),
   });
   state[index] = next;

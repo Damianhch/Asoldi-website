@@ -44,6 +44,24 @@ export type AdminUser = {
   employeeProduct?: EmployeeProduct;
 };
 
+export type ClientPaymentRequest = {
+  userId: string;
+  email: string;
+  clientName: string;
+  businessName: string;
+  planName: string;
+  paymentStatus: string;
+  paymentMethod: string;
+  requestedAt: string;
+  updatedAt: string;
+  invoiceRequest: {
+    orgNumber: string;
+    businessName: string;
+    invoiceEmail: string;
+    requestedAt: string;
+  };
+};
+
 export function toEmployeeRoleOption(user: AdminUser): EmployeeRoleOption {
   if (user.role === 'client') return 'client';
   if (user.role === 'sales') return 'sales';
@@ -120,6 +138,10 @@ export type SalesMakerRunMeta = {
   runId: string;
   dashboardUrl: string;
   previewUrl: string;
+  latestReadyStep: string;
+  latestStepStatus: string;
+  exportPath: string;
+  statusUpdatedAt: string;
   industry: string;
   createdAt: string;
 };
@@ -137,6 +159,24 @@ export type SalesClientDetails = {
   googleBusinessProfile: string;
 };
 
+export type SalesMyphonerMeta = {
+  leadId: string;
+  listId: string;
+  listName: string;
+  leadResourceUrl: string;
+  winnerCategory: string;
+  winnerComment: string;
+  lastWinnerWebhookAt: string;
+  lastRecordingWebhookAt: string;
+  latestEventAt: string;
+  latestCallId: string;
+  latestCallStartedAt: string;
+  latestCallDurationSeconds: number;
+  latestCallUserEmail: string;
+  latestCallDestinationNumber: string;
+  latestRecordingUrl: string;
+};
+
 export type SalesClient = {
   id: string;
   businessName: string;
@@ -151,6 +191,7 @@ export type SalesClient = {
   meetingAt: string;
   websiteDomain: string;
   details: SalesClientDetails;
+  myphoner: SalesMyphonerMeta;
   progression: SalesProgression;
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;

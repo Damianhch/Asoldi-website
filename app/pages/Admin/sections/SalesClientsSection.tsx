@@ -4,6 +4,7 @@ import {
   ArchiveX,
   CalendarClock,
   CheckCircle2,
+  Download,
   ExternalLink,
   Gift,
   Link2,
@@ -17,6 +18,7 @@ import {
   Trash2,
   Undo2,
   UserRound,
+  Volume2,
   Wand2,
   X,
 } from 'lucide-react';
@@ -205,11 +207,16 @@ function normalizeHttpBaseUrl(value = '') {
   }
 }
 
-function buildMakerRunUrl(baseUrl = '', runId = '', mode: 'dashboard' | 'preview' = 'dashboard') {
+function buildMakerRunUrl(
+  baseUrl = '',
+  runId = '',
+  mode: 'dashboard' | 'preview' = 'dashboard',
+  previewStep = '3',
+) {
   const base = normalizeHttpBaseUrl(baseUrl);
   const id = String(runId || '').trim();
   if (!base || !id) return '';
-  if (mode === 'preview') return `${base}/preview/${encodeURIComponent(id)}/step/3/view?route=/`;
+  if (mode === 'preview') return `${base}/preview/${encodeURIComponent(id)}/step/${encodeURIComponent(previewStep || '3')}/view?route=/`;
   return `${base}/run/${encodeURIComponent(id)}`;
 }
 
@@ -241,6 +248,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -389,13 +397,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       if (!meetingMapRef.current) {
         const map = L.map(meetingMapContainerRef.current, {
           zoomControl: true,
-          scrollWheelZoom: true,
+          // Keep page scrolling natural when cursor is over the map panel.
+          scrollWheelZoom: false,
         });
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; OpenStreetMap contributors',
           maxZoom: 19,
         }).addTo(map);
         map.setView(SALES_MAP_DEFAULT_CENTER, SALES_MAP_DEFAULT_ZOOM);
+        const mapContainer = map.getContainer?.();
+        if (mapContainer) {
+          mapContainer.style.position = 'relative';
+          mapContainer.style.zIndex = '0';
+        }
+        const tilePane = map.getPane?.('tilePane');
+        const overlayPane = map.getPane?.('overlayPane');
+        const markerPane = map.getPane?.('markerPane');
+        const popupPane = map.getPane?.('popupPane');
+        if (tilePane) tilePane.style.zIndex = '1';
+        if (overlayPane) overlayPane.style.zIndex = '2';
+        if (markerPane) markerPane.style.zIndex = '3';
+        if (popupPane) popupPane.style.zIndex = '4';
         meetingMapRef.current = map;
         meetingMapMarkerLayerRef.current = L.layerGroup().addTo(map);
       }
@@ -720,6 +742,49 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function downloadMakerExport(client: SalesClient) {
+    const linkedRunId = String(client.makerRun?.runId || '').trim();
+    const fallbackRunId = String(runIdByClient[client.id] || '').trim();
+    const runId = linkedRunId || fallbackRunId;
+    if (!runId) {
+      setError('Create or link a Website Maker run before downloading ZIP.');
+      return;
+    }
+    setExportingId(client.id);
+    setError('');
+    try {
+      const params = new URLSearchParams({
+        runId,
+        websiteMakerBaseUrl,
+        step: 'latest',
+      });
+      const response = await fetch(`${API}/admin/sales/${encodeURIComponent(client.id)}/maker-export?${params.toString()}`, {
+        method: 'GET',
+        headers: salesAuthHeaders(),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || 'Failed downloading Hostinger ZIP');
+      }
+      const blob = await response.blob();
+      const downloadUrl = URL.createObjectURL(blob);
+      const disposition = response.headers.get('content-disposition') || '';
+      const matched = disposition.match(/filename=\"?([^\";]+)\"?/i);
+      const fileName = matched?.[1] || `${(client.businessName || 'website').replace(/\s+/g, '-').toLowerCase()}-hostinger.zip`;
+      const anchor = document.createElement('a');
+      anchor.href = downloadUrl;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed downloading Hostinger ZIP');
+    } finally {
+      setExportingId(null);
+    }
+  }
+
   async function sendWelcomeEmail(client: SalesClient) {
     setSendingWelcomeId(client.id);
     setError('');
@@ -1005,8 +1070,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             {meetingMapError}
           </div>
         )}
-        <div className="mt-3 h-[340px] rounded-xl border border-white/10 overflow-hidden relative">
-          <div ref={meetingMapContainerRef} className="h-full w-full" />
+        <div className="mt-3 h-[340px] rounded-xl border border-white/10 overflow-hidden relative z-0 isolate">
+          <div ref={meetingMapContainerRef} className="h-full w-full relative z-0" />
           {meetingMapLoading && (
             <div className="absolute inset-0 bg-black/55 flex items-center justify-center text-gray-200 text-sm">
               <Loader2 size={16} className="animate-spin mr-2" />
@@ -1048,9 +1113,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
             const dynamicDashboardUrl = buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard');
-            const dynamicPreviewUrl = buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'preview');
-            const makerDashboardUrl = dynamicDashboardUrl || String(client.makerRun?.dashboardUrl || '').trim();
-            const makerPreviewUrl = dynamicPreviewUrl || String(client.makerRun?.previewUrl || '').trim();
+            const dynamicPreviewUrl = buildMakerRunUrl(
+              websiteMakerBaseUrl,
+              makerRunId,
+              'preview',
+              String(client.makerRun?.latestReadyStep || '3'),
+            );
+            const storedDashboardUrl = String(client.makerRun?.dashboardUrl || '').trim();
+            const storedPreviewUrl = String(client.makerRun?.previewUrl || '').trim();
+            const makerDashboardUrl = storedDashboardUrl || dynamicDashboardUrl;
+            const makerPreviewUrl = storedPreviewUrl || dynamicPreviewUrl;
             const expanded = expandedId === client.id;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
@@ -1146,6 +1218,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       </button>
                       <button
                         type="button"
+                        onClick={() => void downloadMakerExport(client)}
+                        disabled={exportingId === client.id || !hasRun}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                        title="Download Hostinger-ready ZIP from Website Maker"
+                      >
+                        {exportingId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+                        Download Hostinger ZIP
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => void createMakerRun(client, { forceNewRun: true })}
                         disabled={creatingRunId === client.id}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
@@ -1194,6 +1276,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     >
                       <ExternalLink size={13} />
                       Meet link
+                    </button>
+                  )}
+                  {client.myphoner?.latestRecordingUrl && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                      title="Open latest synced call recording"
+                    >
+                      <Volume2 size={13} />
+                      Last talk audio
                     </button>
                   )}
                   {clientOffers.length > 0 && (
@@ -1266,6 +1359,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         <ul className="space-y-1 text-gray-300">
                           <li>Website domain: {client.websiteDomain || '—'}</li>
                           <li>Maker run: {client.makerRun?.runId || '—'}</li>
+                          <li>Maker latest ready step: {client.makerRun?.latestReadyStep || '—'}</li>
+                          <li>Maker step status: {client.makerRun?.latestStepStatus || '—'}</li>
+                          <li>Maker export path: {client.makerRun?.exportPath || '—'}</li>
                           <li>Import source run: {client.websiteImport?.sourceRunId || '—'}</li>
                           <li>Import step: {client.websiteImport?.sourceStep || '—'}</li>
                           <li>Calendar event: {client.calendar?.eventId || '—'}</li>
@@ -1274,6 +1370,33 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>
                           <li>1h reminder: {client.reminders?.reminder1hSentAt ? formatWhen(client.reminders.reminder1hSentAt) : 'Pending/Skipped'}</li>
                         </ul>
+                      </details>
+                      <details open className="sm:col-span-2 text-sm text-gray-200">
+                        <summary className="cursor-pointer text-white font-medium mb-2">Myphoner intake</summary>
+                        <ul className="space-y-1 text-gray-300">
+                          <li>Lead ID: {client.myphoner?.leadId || '—'}</li>
+                          <li>List: {client.myphoner?.listName || client.myphoner?.listId || '—'}</li>
+                          <li>Winner category: {client.myphoner?.winnerCategory || '—'}</li>
+                          <li>Last winner sync: {client.myphoner?.lastWinnerWebhookAt ? formatWhen(client.myphoner.lastWinnerWebhookAt) : '—'}</li>
+                          <li>Last recording sync: {client.myphoner?.lastRecordingWebhookAt ? formatWhen(client.myphoner.lastRecordingWebhookAt) : '—'}</li>
+                          <li>Call ID: {client.myphoner?.latestCallId || '—'}</li>
+                          <li>Call started: {client.myphoner?.latestCallStartedAt ? formatWhen(client.myphoner.latestCallStartedAt) : '—'}</li>
+                        </ul>
+                        {client.myphoner?.latestRecordingUrl ? (
+                          <div className="mt-3 space-y-2">
+                            <button
+                              type="button"
+                              onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                            >
+                              <Volume2 size={13} />
+                              Open audio in new tab
+                            </button>
+                            <audio controls preload="none" src={client.myphoner.latestRecordingUrl} className="w-full" />
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-gray-500">No call recording synced yet for this lead.</p>
+                        )}
                       </details>
                       <details open className="sm:col-span-2 text-sm text-gray-200">
                         <summary className="cursor-pointer text-white font-medium mb-2">QuickFill links</summary>
@@ -1641,7 +1764,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             <form onSubmit={saveForm} className="grid md:grid-cols-2 gap-4">
               <Field label="Business name" value={form.businessName} onChange={(value) => setForm((prev) => ({ ...prev, businessName: value }))} required />
               <Field label="Contact person" value={form.contactPerson} onChange={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))} required />
-              <Field label="Email" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} required />
+              <Field label="Email (optional)" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} />
               <Field label="Phone number" value={form.contactPhone} onChange={(value) => setForm((prev) => ({ ...prev, contactPhone: value }))} />
               <Field label="Industry" value={form.industry} onChange={(value) => setForm((prev) => ({ ...prev, industry: value }))} />
               <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />

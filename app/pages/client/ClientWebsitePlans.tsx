@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { Check, ChevronDown, ChevronUp, ExternalLink, Loader2, Minus, Sparkles, Tag, X } from 'lucide-react';
@@ -7,14 +7,9 @@ import { ClientRouteGuard } from '../../components/client/ClientRouteGuard';
 import { useClientAuth } from '../../contexts/ClientAuthContext';
 import { CHECKOUT_BENEFITS, CLIENT_WEBSITE_PLANS, findWebsitePlan } from '../../data/clientWebsitePlans';
 import {
-  computeDiscount,
-  findCoupon,
   formatPriceAmount,
-  getStoredCoupon,
   normalizeCouponCode,
   parsePriceAmount,
-  storeCoupon,
-  type Coupon,
 } from '../../data/coupons';
 
 type ClientOffer = {
@@ -26,6 +21,31 @@ type ClientOffer = {
   note: string;
   previewUrl: string;
 } | null;
+
+type CheckoutLegalAcknowledgement = {
+  termsAccepted: boolean;
+  privacyAccepted: boolean;
+  bindingAccepted: boolean;
+  bindingMonths: number;
+  planId: string;
+  planName: string;
+  acceptedAt: string;
+};
+
+type AppliedPromotionCode = {
+  code: string;
+  promotionCodeId: string;
+  couponId: string;
+  label: string;
+  percentOff: number;
+  amountOff: number;
+  currency: string;
+  discountAmount: number;
+  totalAmount: number;
+  planId: string;
+  planName: string;
+  appliedAt: string;
+};
 
 const PREVIEW_FEATURE_COUNT = 4;
 
@@ -40,8 +60,16 @@ export const ClientWebsitePlans = () => {
   const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({});
 
   const [couponInput, setCouponInput] = useState('');
-  const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
+  const [appliedCoupon, setAppliedCoupon] = useState<AppliedPromotionCode | null>(null);
   const [couponError, setCouponError] = useState('');
+  const [couponBusy, setCouponBusy] = useState(false);
+  const [agreements, setAgreements] = useState({
+    termsAccepted: false,
+    privacyAccepted: false,
+    bindingAccepted: false,
+  });
+  const [agreementError, setAgreementError] = useState('');
+  const previousPlanIdRef = useRef(selectedPlanId);
 
   useEffect(() => {
     async function load() {
@@ -61,15 +89,27 @@ export const ClientWebsitePlans = () => {
   }, [token]);
 
   useEffect(() => {
-    const stored = getStoredCoupon(user?.id || '');
-    if (stored) {
-      const coupon = findCoupon(stored);
-      if (coupon) {
-        setAppliedCoupon(coupon);
-        setCouponInput(coupon.code);
+    let active = true;
+    async function loadPromotionCode() {
+      if (!token) return;
+      try {
+        const response = await fetch('/api/client/checkout/promotion-code', {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !active) return;
+        const promotion = (payload.promotionCode || null) as AppliedPromotionCode | null;
+        setAppliedCoupon(promotion);
+        setCouponInput(promotion?.code || '');
+      } catch {
+        if (!active) return;
       }
     }
-  }, [user?.id]);
+    void loadPromotionCode();
+    return () => {
+      active = false;
+    };
+  }, [token, user?.id]);
 
   const offerPlan = useMemo(() => (offer ? findWebsitePlan(offer.planId) || null : null), [offer]);
   const selectedPlan = useMemo(
@@ -78,17 +118,50 @@ export const ClientWebsitePlans = () => {
   );
 
   const subtotalAmount = parsePriceAmount(selectedPlan?.price || '');
-  const discountAmount = computeDiscount(subtotalAmount, appliedCoupon);
+  const discountAmount = Math.min(
+    subtotalAmount,
+    Math.max(0, Math.round(Number(appliedCoupon?.discountAmount || 0)))
+  );
   const totalAmount = Math.max(0, subtotalAmount - discountAmount);
+  const allCheckoutAgreementsAccepted =
+    agreements.termsAccepted && agreements.privacyAccepted && agreements.bindingAccepted;
 
-  async function saveSelection(planId: string) {
+  useEffect(() => {
+    if (previousPlanIdRef.current && previousPlanIdRef.current !== selectedPlanId) {
+      setAgreements((prev) => ({
+        ...prev,
+        bindingAccepted: false,
+      }));
+      setAgreementError('');
+    }
+    previousPlanIdRef.current = selectedPlanId;
+  }, [selectedPlanId]);
+
+  function buildLegalAcknowledgement(planId: string): CheckoutLegalAcknowledgement {
+    const plan = findWebsitePlan(planId);
+    return {
+      termsAccepted: Boolean(agreements.termsAccepted),
+      privacyAccepted: Boolean(agreements.privacyAccepted),
+      bindingAccepted: Boolean(agreements.bindingAccepted),
+      bindingMonths: 6,
+      planId,
+      planName: plan?.name || selectedPlan?.name || '',
+      acceptedAt: new Date().toISOString(),
+    };
+  }
+
+  async function saveSelection(planId: string, options: { legalAcknowledgement?: CheckoutLegalAcknowledgement } = {}) {
     setSavingSelection(true);
     setError('');
     try {
       const response = await fetch('/api/client/plans/website/select', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ type: 'standard', planId }),
+        body: JSON.stringify({
+          type: 'standard',
+          planId,
+          legalAcknowledgement: options.legalAcknowledgement,
+        }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.message || 'Kunne ikke lagre planvalg.');
@@ -101,32 +174,80 @@ export const ClientWebsitePlans = () => {
   }
 
   async function choosePlan(planId: string) {
+    setAgreementError('');
     setSelectedPlanId(planId);
     await saveSelection(planId);
+    if (appliedCoupon) {
+      await removeCoupon({ silent: true });
+    }
   }
 
-  function applyCoupon() {
+  async function applyCoupon() {
     setCouponError('');
-    const coupon = findCoupon(couponInput);
-    if (!coupon) {
-      setAppliedCoupon(null);
-      storeCoupon(user?.id || '', '');
-      setCouponError('Ugyldig rabattkode.');
+    const normalized = normalizeCouponCode(couponInput);
+    if (!normalized) {
+      setCouponError('Skriv inn en rabattkode.');
       return;
     }
-    setAppliedCoupon(coupon);
-    storeCoupon(user?.id || '', coupon.code);
+    if (!token) return;
+    setCouponBusy(true);
+    try {
+      const response = await fetch('/api/client/checkout/promotion-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ code: normalized }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || 'Ugyldig rabattkode.');
+      const promotion = (payload.promotionCode || null) as AppliedPromotionCode | null;
+      setAppliedCoupon(promotion);
+      setCouponInput(promotion?.code || normalized);
+    } catch (err) {
+      setAppliedCoupon(null);
+      setCouponError(err instanceof Error ? err.message : 'Kunne ikke bruke rabattkoden.');
+    } finally {
+      setCouponBusy(false);
+    }
   }
 
-  function removeCoupon() {
+  async function removeCoupon(options: { silent?: boolean } = {}) {
+    if (!token) {
+      setAppliedCoupon(null);
+      setCouponInput('');
+      setCouponError('');
+      return;
+    }
+    setCouponBusy(true);
+    if (!options.silent) setCouponError('');
+    try {
+      const response = await fetch('/api/client/checkout/promotion-code', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.message || 'Kunne ikke fjerne rabattkoden.');
+    } catch (err) {
+      if (!options.silent) {
+        setCouponError(err instanceof Error ? err.message : 'Kunne ikke fjerne rabattkoden.');
+      }
+      return;
+    } finally {
+      setCouponBusy(false);
+    }
     setAppliedCoupon(null);
     setCouponInput('');
-    setCouponError('');
-    storeCoupon(user?.id || '', '');
+    if (!options.silent) setCouponError('');
   }
 
   async function goToCheckout() {
-    await saveSelection(selectedPlanId);
+    setAgreementError('');
+    if (!allCheckoutAgreementsAccepted) {
+      setAgreementError('Du må godkjenne vilkår, personvern og bindingstid før du går til checkout.');
+      return;
+    }
+    await saveSelection(selectedPlanId, {
+      legalAcknowledgement: buildLegalAcknowledgement(selectedPlanId),
+    });
     navigate('/kunde/tjenester/nettside/checkout');
   }
 
@@ -348,7 +469,13 @@ export const ClientWebsitePlans = () => {
                     <span className="text-sm font-medium text-emerald-700">
                       {appliedCoupon.code} · {appliedCoupon.label}
                     </span>
-                    <button type="button" onClick={removeCoupon} aria-label="Fjern rabattkode" className="text-emerald-700 hover:text-emerald-900">
+                    <button
+                      type="button"
+                      onClick={() => void removeCoupon()}
+                      disabled={couponBusy}
+                      aria-label="Fjern rabattkode"
+                      className="text-emerald-700 hover:text-emerald-900 disabled:opacity-60"
+                    >
                       <X size={15} />
                     </button>
                   </div>
@@ -360,18 +487,20 @@ export const ClientWebsitePlans = () => {
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault();
-                          applyCoupon();
+                          void applyCoupon();
                         }
                       }}
                       placeholder="F.eks. ASOLDI10"
+                      disabled={couponBusy}
                       className="flex-1 rounded-lg border border-[#DDE2EA] bg-white px-3 py-2 text-sm uppercase outline-none focus:border-[#FF5B00]"
                     />
                     <button
                       type="button"
-                      onClick={applyCoupon}
-                      className="rounded-lg bg-[#111827] px-4 py-2 text-sm font-medium text-white hover:bg-[#1F2937]"
+                      onClick={() => void applyCoupon()}
+                      disabled={couponBusy || !couponInput.trim()}
+                      className="rounded-lg bg-[#111827] px-4 py-2 text-sm font-medium text-white hover:bg-[#1F2937] disabled:opacity-60"
                     >
-                      Bruk
+                      {couponBusy ? 'Sjekker…' : 'Bruk'}
                     </button>
                   </div>
                 )}
@@ -389,11 +518,80 @@ export const ClientWebsitePlans = () => {
 
               {error ? <p className="mt-3 text-sm text-red-500">{error}</p> : null}
 
+              <div className="mt-5 rounded-xl border border-[#E7E9EE] bg-[#FAFBFC] p-3.5 space-y-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wide text-[#6B7280]">Bekreft før checkout</p>
+                <label htmlFor="plans-agree-terms" className="flex items-start gap-2.5 text-sm text-[#374151]">
+                  <input
+                    id="plans-agree-terms"
+                    type="checkbox"
+                    checked={agreements.termsAccepted}
+                    onChange={(event) => {
+                      setAgreements((prev) => ({ ...prev, termsAccepted: event.target.checked }));
+                      setAgreementError('');
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-[#D1D5DB] text-[#FF5B00] focus:ring-[#FF5B00]"
+                  />
+                  <span>
+                    Jeg godtar{' '}
+                    <a
+                      href="https://asoldi.com/vilkar"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-[#FF5B00] underline hover:text-[#E55200]"
+                    >
+                      vilkår og betingelser
+                    </a>
+                    .
+                  </span>
+                </label>
+                <label htmlFor="plans-agree-privacy" className="flex items-start gap-2.5 text-sm text-[#374151]">
+                  <input
+                    id="plans-agree-privacy"
+                    type="checkbox"
+                    checked={agreements.privacyAccepted}
+                    onChange={(event) => {
+                      setAgreements((prev) => ({ ...prev, privacyAccepted: event.target.checked }));
+                      setAgreementError('');
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-[#D1D5DB] text-[#FF5B00] focus:ring-[#FF5B00]"
+                  />
+                  <span>
+                    Jeg godtar{' '}
+                    <a
+                      href="https://asoldi.com/personvern"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="font-medium text-[#FF5B00] underline hover:text-[#E55200]"
+                    >
+                      personvernerklæringen
+                    </a>
+                    .
+                  </span>
+                </label>
+                <label htmlFor="plans-agree-binding" className="flex items-start gap-2.5 text-sm text-[#374151]">
+                  <input
+                    id="plans-agree-binding"
+                    type="checkbox"
+                    checked={agreements.bindingAccepted}
+                    onChange={(event) => {
+                      setAgreements((prev) => ({ ...prev, bindingAccepted: event.target.checked }));
+                      setAgreementError('');
+                    }}
+                    className="mt-0.5 h-4 w-4 rounded border-[#D1D5DB] text-[#FF5B00] focus:ring-[#FF5B00]"
+                  />
+                  <span>
+                    Jeg anerkjenner at ved kjøp av nettside <strong>{selectedPlan?.name || 'valgt nivå'}</strong> er det
+                    bindingstid på 6 måneder.
+                  </span>
+                </label>
+              </div>
+              {agreementError ? <p className="mt-3 text-sm text-red-500">{agreementError}</p> : null}
+
               <button
                 type="button"
                 onClick={goToCheckout}
-                disabled={savingSelection}
-                className="mt-5 w-full rounded-xl bg-[#FF5B00] py-3 text-sm font-semibold text-white hover:bg-[#E55200] disabled:opacity-50"
+                disabled={savingSelection || !allCheckoutAgreementsAccepted}
+                className="mt-5 w-full rounded-xl bg-[#FF5B00] py-3 text-sm font-semibold text-white hover:bg-[#E55200] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingSelection ? 'Lagrer…' : 'Gå til checkout'}
               </button>
