@@ -450,6 +450,13 @@ function mapStripeCheckoutSessionError(error, planName = '') {
       message: 'Betalingsretur-URL er ugyldig. Sett APP_URL til riktig https-domene.',
     };
   }
+  if (type === 'stripeinvalidrequesterror' && /ui_mode/i.test(message)) {
+    return {
+      status: 503,
+      code: 'stripe-ui-mode-invalid',
+      message: 'Stripe checkout-oppsettet er utdatert. Kontakt support og prøv igjen om et øyeblikk.',
+    };
+  }
   if (
     type === 'stripeinvalidrequesterror' &&
     (/recurring/i.test(message) || /one_time/i.test(message) || /mode/i.test(message))
@@ -3261,7 +3268,7 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
 
     const sessionParams = {
       mode: 'subscription',
-      ui_mode: 'embedded',
+      ui_mode: 'embedded_page',
       line_items: [lineItem],
       // Shows Stripe's "Add promotion code" field in the embedded checkout so a
       // coupon/promotion code (e.g. a 50%-off first-time code) is applied and
