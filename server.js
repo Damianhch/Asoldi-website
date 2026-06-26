@@ -915,6 +915,16 @@ function isValidEmail(value = '') {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
+function isSyntheticMyphonerFallbackEmail(value = '') {
+  const email = normalizeEmail(value);
+  return /^lead-\d+@no-email\.asoldi$/.test(email);
+}
+
+function isMissingEmailPlaceholder(value = '') {
+  const email = normalizeEmail(value);
+  return ['', 'not found', 'n/a', 'na', 'none', 'unknown'].includes(email);
+}
+
 function passwordValid(value = '') {
   return String(value || '').length >= 8;
 }
@@ -1757,11 +1767,14 @@ function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
   const next = incoming && typeof incoming === 'object' ? incoming : {};
   const incomingHasMeeting = Boolean(next.meetingAt);
   const mergedMeetingMode = normalizeMeetingMode(next.meetingMode || current.meetingMode || 'online');
+  const nextEmail = sanitizeText(next.contactEmail);
+  const currentEmail = sanitizeText(current.contactEmail);
+  const mergedEmail = nextEmail || (isSyntheticMyphonerFallbackEmail(currentEmail) || isMissingEmailPlaceholder(currentEmail) ? '' : currentEmail);
   const merged = buildSalesInput(
     {
       businessName: next.businessName || current.businessName,
       contactPerson: next.contactPerson || current.contactPerson || next.businessName,
-      contactEmail: next.contactEmail || current.contactEmail,
+      contactEmail: mergedEmail,
       contactPhone: next.contactPhone || current.contactPhone,
       industry: next.industry || current.industry,
       websiteDomain: next.websiteDomain || current.websiteDomain,
