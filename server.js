@@ -1214,6 +1214,11 @@ function buildMyphonerWebhookTargetUrl(kind = 'winner') {
   return `${routeBase}${separator}secret=${encodeURIComponent(MYPHONER_WEBHOOK_SECRET)}`;
 }
 
+function isMyphonerWebhookAlreadyTakenError(response = null) {
+  const message = sanitizeText(response?.error || response?.message);
+  return /target url has already been taken/i.test(message);
+}
+
 function normalizeLooseKey(value = '') {
   return sanitizeText(value).toLowerCase().replace(/[^a-z0-9]/g, '');
 }
@@ -1858,6 +1863,16 @@ async function reconcileMyphonerWebhooks() {
       event: 'winner',
     });
     if (!createResponse.success) {
+      if (isMyphonerWebhookAlreadyTakenError(createResponse)) {
+        myphonerIntegration.setListWinnerWebhook(listId, {
+          webhookId: sanitizeText(existing?.webhookId),
+          targetUrl: winnerTargetUrl,
+          event: 'winner',
+          listId,
+        });
+        summary.reusedListWebhooks += 1;
+        continue;
+      }
       throw makeHttpError(
         createResponse.status === 404 ? 410 : 502,
         createResponse.error || `Failed registering winner webhook for list ${listId}.`
@@ -1898,6 +1913,15 @@ async function reconcileMyphonerWebhooks() {
       event: eventName,
     });
     if (!createResponse.success) {
+      if (isMyphonerWebhookAlreadyTakenError(createResponse)) {
+        myphonerIntegration.setAccountWebhook(eventName, {
+          webhookId: sanitizeText(existing?.webhookId),
+          targetUrl: recordingTargetUrl,
+          event: eventName,
+        });
+        summary.reusedAccountWebhooks += 1;
+        continue;
+      }
       throw makeHttpError(
         createResponse.status === 404 ? 410 : 502,
         createResponse.error || `Failed registering account webhook ${eventName}.`
