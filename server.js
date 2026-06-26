@@ -150,6 +150,7 @@ const MYPHONER_WEBHOOK_RECONCILE_ENABLED = String(process.env.MYPHONER_WEBHOOK_R
 const MYPHONER_WEBHOOK_RECONCILE_MS = Number(process.env.MYPHONER_WEBHOOK_RECONCILE_MS || 10 * 60 * 1000);
 const MYPHONER_DEFAULT_SALES_OWNER_KEY =
   sanitizeText(process.env.MYPHONER_DEFAULT_SALES_OWNER_KEY) || 'admin:daracha777@gmail.com';
+const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 let myphonerWebhookReconcileInterval = null;
 let myphonerWebhookReconcileRunning = false;
 
@@ -867,7 +868,16 @@ async function restartMakerTunnel(targetUrl = DEFAULT_MAKER_LOCAL_URL) {
 
 function normalizeMeetingMode(value) {
   const raw = sanitizeText(value).toLowerCase();
-  if (raw === 'in-person' || raw === 'in_person' || raw === 'inperson' || raw === 'physical') return 'in-person';
+  if (
+    raw === 'in-person' ||
+    raw === 'in_person' ||
+    raw === 'inperson' ||
+    raw === 'physical' ||
+    raw === 'fysisk' ||
+    raw === 'irl'
+  ) {
+    return 'in-person';
+  }
   return 'online';
 }
 
@@ -1285,12 +1295,182 @@ function classifySalesLink(url = '') {
   return { kind: 'other', url: normalized };
 }
 
+function isLikelyMissingMyphonerValue(value = '') {
+  const raw = sanitizeText(value).toLowerCase();
+  if (!raw) return true;
+  return [
+    'not found',
+    'n/a',
+    'na',
+    'none',
+    'null',
+    'unknown',
+    'ikke funnet',
+    'ikke tilgjengelig',
+    'ingen',
+    '-',
+    '--',
+  ].includes(raw);
+}
+
+function sanitizeMyphonerFieldValue(value = '') {
+  const cleaned = sanitizeText(String(value ?? '').replace(/\uFFFD/g, ''));
+  if (isLikelyMissingMyphonerValue(cleaned)) return '';
+  return cleaned;
+}
+
+function normalizeMyphonerWinnerCategory(value = '') {
+  const raw = normalizeLooseKey(value);
+  if (!raw) return '';
+  const onlineTokens = [
+    'online',
+    'digital',
+    'remote',
+    'zoom',
+    'googlemeet',
+    'meet',
+    'teams',
+    'telefon',
+    'phone',
+    'call',
+    'videomote',
+    'webmote',
+    'onlinemote',
+  ];
+  if (onlineTokens.some((token) => raw.includes(token))) return 'online';
+  const inPersonTokens = [
+    'irl',
+    'inperson',
+    'inpersonmeeting',
+    'physical',
+    'fysisk',
+    'office',
+    'kontor',
+    'visit',
+    'besok',
+    'facetoface',
+    'personlig',
+  ];
+  if (inPersonTokens.some((token) => raw.includes(token))) return 'irl';
+  return '';
+}
+
+function getUtcOffsetMinutesForTimeZone(timeZone = '', date = new Date()) {
+  const zone = sanitizeText(timeZone);
+  if (!zone) return 0;
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      timeZoneName: 'shortOffset',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(date);
+    const tzPart = sanitizeText(parts.find((part) => part.type === 'timeZoneName')?.value);
+    const match = tzPart.match(/GMT([+-]\d{1,2})(?::?(\d{2}))?/i);
+    if (!match) return 0;
+    const sign = String(match[1] || '').startsWith('-') ? -1 : 1;
+    const hours = Math.abs(Number(match[1]));
+    const minutes = Number(match[2] || 0);
+    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return 0;
+    return sign * (hours * 60 + minutes);
+  } catch {
+    return 0;
+  }
+}
+
+function buildIsoForLocalTimeInTimeZone({ year = 0, month = 0, day = 0, hour = 0, minute = 0 } = {}) {
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return '';
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return '';
+  const calendarCheck = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+  if (
+    !Number.isFinite(calendarCheck.getTime()) ||
+    calendarCheck.getUTCFullYear() !== year ||
+    calendarCheck.getUTCMonth() !== month - 1 ||
+    calendarCheck.getUTCDate() !== day
+  ) {
+    return '';
+  }
+  const utcGuessMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+  const offsetMinutes = getUtcOffsetMinutesForTimeZone(SALES_MEETING_TIMEZONE, new Date(utcGuessMs));
+  const adjusted = new Date(utcGuessMs - offsetMinutes * 60_000);
+  if (!Number.isFinite(adjusted.getTime())) return '';
+  return adjusted.toISOString();
+}
+
+function parseMyphonerMeetingAtFromFreeText(text = '', fallbackYear = 0) {
+  const raw = String(text ?? '').replace(/\uFFFD/g, '').trim();
+  if (!raw) return '';
+  const pattern = /(?:^|[\s,;:-])(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?(?:\s+|[^\d]{0,12})(\d{1,2})[:.](\d{2})(?!\d)/gim;
+  const inferredYear = Number(fallbackYear) > 1970 ? Number(fallbackYear) : new Date().getUTCFullYear();
+  for (const match of raw.matchAll(pattern)) {
+    const day = Number(match[1]);
+    const month = Number(match[2]);
+    let year = Number(match[3] || 0);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(hour) || !Number.isFinite(minute)) continue;
+    if (day < 1 || day > 31 || month < 1 || month > 12 || hour < 0 || hour > 23 || minute < 0 || minute > 59) continue;
+    if (year > 0 && year < 100) year += 2000;
+    if (!year) year = inferredYear;
+    const iso = buildIsoForLocalTimeInTimeZone({ year, month, day, hour, minute });
+    if (iso) return iso;
+  }
+  return '';
+}
+
+function extractMyphonerCommentHints(text = '') {
+  const raw = String(text ?? '').replace(/\uFFFD/g, '').trim();
+  const hints = {
+    contactPerson: '',
+    contactEmail: '',
+    contactPhone: '',
+    meetingPlace: '',
+    meetingMode: '',
+  };
+  if (!raw) return hints;
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => sanitizeMyphonerFieldValue(line))
+    .filter(Boolean);
+  const emailMatch = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (emailMatch) hints.contactEmail = sanitizeMyphonerFieldValue(emailMatch[0]);
+  for (const line of lines) {
+    const personMatch = line.match(/^(?:navn|name)\s*[:\-]\s*(.+)$/i);
+    if (personMatch?.[1] && !hints.contactPerson) {
+      hints.contactPerson = sanitizeMyphonerFieldValue(personMatch[1]);
+    }
+    const phoneMatch = line.match(/^(?:telefon|phone|tlf|mobil)\s*[:\-]\s*(.+)$/i);
+    if (phoneMatch?.[1] && !hints.contactPhone) {
+      hints.contactPhone = sanitizeMyphonerFieldValue(phoneMatch[1]);
+    }
+    const addressMatch = line.match(/^(?:adresse|address|addresse|moteadresse|meeting\s*place)\s*[:\-]\s*(.+)$/i);
+    if (addressMatch?.[1] && !hints.meetingPlace) {
+      hints.meetingPlace = sanitizeMyphonerFieldValue(addressMatch[1]);
+    }
+    if (!hints.meetingMode) {
+      const normalizedCategory = normalizeMyphonerWinnerCategory(line);
+      if (normalizedCategory === 'irl') hints.meetingMode = 'in-person';
+      if (normalizedCategory === 'online') hints.meetingMode = 'online';
+    }
+  }
+  if (!hints.contactPhone) {
+    const fallbackPhoneMatch = raw.match(/\+?\d[\d\s().-]{6,}\d/);
+    if (fallbackPhoneMatch) hints.contactPhone = sanitizeMyphonerFieldValue(fallbackPhoneMatch[0]);
+  }
+  return hints;
+}
+
 function getLeadDataMap(lead = {}) {
   const source = lead && typeof lead === 'object' ? lead : {};
   const leadData = source.lead_data && typeof source.lead_data === 'object' ? source.lead_data : {};
   const entries = Object.entries(leadData).map(([key, value]) => [
     normalizeLooseKey(key),
-    sanitizeText(value),
+    sanitizeMyphonerFieldValue(value),
   ]);
   const map = new Map();
   for (const [key, value] of entries) {
@@ -1304,13 +1484,13 @@ function pickLeadDataValue(leadDataMap, keys = []) {
   if (!(leadDataMap instanceof Map) || !Array.isArray(keys)) return '';
   const normalizedKeys = keys.map((key) => normalizeLooseKey(key)).filter(Boolean);
   for (const key of normalizedKeys) {
-    const direct = sanitizeText(leadDataMap.get(key));
+    const direct = sanitizeMyphonerFieldValue(leadDataMap.get(key));
     if (direct) return direct;
   }
   for (const [entryKey, value] of leadDataMap.entries()) {
     if (!value) continue;
     if (normalizedKeys.some((target) => entryKey.endsWith(target) || entryKey.includes(target))) {
-      return sanitizeText(value);
+      return sanitizeMyphonerFieldValue(value);
     }
   }
   return '';
@@ -1318,33 +1498,75 @@ function pickLeadDataValue(leadDataMap, keys = []) {
 
 function pickFirstNonEmpty(values = []) {
   for (const value of values) {
-    const next = sanitizeText(value);
+    const next = sanitizeMyphonerFieldValue(value);
     if (next) return next;
   }
   return '';
 }
 
-function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map()) {
+function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map(), winnerComment = '') {
   const source = lead && typeof lead === 'object' ? lead : {};
   const candidates = [
     source.scheduled_for,
     source.scheduledFor,
     source.scheduled_at,
     source.scheduledAt,
-    pickLeadDataValue(leadDataMap, ['scheduled_for', 'meeting_at', 'meeting_time', 'appointment_time', 'motetid', 'mote_tid']),
+    pickLeadDataValue(leadDataMap, [
+      'scheduled_for',
+      'meeting_at',
+      'meeting_time',
+      'appointment_time',
+      'motetid',
+      'mote_tid',
+      'meeting_datetime',
+      'appointment_datetime',
+      'meeting_date',
+    ]),
   ];
   for (const candidate of candidates) {
     const iso = myphonerApi.parseMyPhonerDateToIso(candidate);
     if (iso) return iso;
   }
+  const fallbackYearIso = myphonerApi.parseMyPhonerDateToIso(
+    pickFirstNonEmpty([source.last_event?.created_at, source.last_action_or_note?.created_at, source.last_updated, source.created_at])
+  );
+  const fallbackYear = Number.isFinite(new Date(fallbackYearIso).getTime())
+    ? new Date(fallbackYearIso).getUTCFullYear()
+    : new Date().getUTCFullYear();
+  const freeTextCandidates = [
+    winnerComment,
+    source.last_event?.comment,
+    source.last_action_or_note?.comment,
+    source.comment,
+    pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note', 'meeting_notes']),
+  ];
+  for (const candidate of freeTextCandidates) {
+    const fromText = parseMyphonerMeetingAtFromFreeText(candidate, fallbackYear);
+    if (fromText) return fromText;
+  }
   return '';
 }
 
-function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), meetingPlace = '') {
+function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), meetingPlace = '', options = {}) {
   const source = lead && typeof lead === 'object' ? lead : {};
+  const opts = options && typeof options === 'object' ? options : {};
+  const explicitCategory = normalizeMyphonerWinnerCategory(
+    pickFirstNonEmpty([
+      opts.winnerCategory,
+      source.category,
+      source.last_event?.category,
+      source.last_action_or_note?.category,
+      pickLeadDataValue(leadDataMap, ['winner_category', 'meeting_category', 'appointment_category']),
+      opts.commentText,
+    ])
+  );
+  if (explicitCategory === 'irl') return 'in-person';
+  if (explicitCategory === 'online') return 'online';
+
   const explicitMode = pickLeadDataValue(leadDataMap, ['meeting_mode', 'mode', 'moteform', 'meetingtype', 'appointment_type']);
+  if (sanitizeText(opts.commentModeHint)) return normalizeMeetingMode(opts.commentModeHint);
   const onlineHints = ['online', 'digital', 'remote', 'zoom', 'google meet', 'meet', 'teams', 'telefon', 'phone', 'call'];
-  const inPersonHints = ['in person', 'in-person', 'fysisk', 'physical', 'office', 'kontor', 'hos', 'besok', 'visit'];
+  const inPersonHints = ['irl', 'in person', 'in-person', 'fysisk', 'physical', 'office', 'kontor', 'hos', 'besok', 'visit'];
   const normalizeText = (value = '') => sanitizeText(value).toLowerCase();
   const explicitText = normalizeText(explicitMode);
   if (onlineHints.some((token) => explicitText.includes(token))) return 'online';
@@ -1354,12 +1576,17 @@ function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), me
     source.state,
     source.status,
     source.category,
+    source.last_event?.category,
+    source.last_event?.comment,
+    source.last_action_or_note?.category,
+    source.last_action_or_note?.comment,
     source.outcome,
     source.comment,
     source.primary_identifier,
     source.secondary_identifier,
     source.tertiary_identifier,
     meetingPlace,
+    opts.commentText,
     pickLeadDataValue(leadDataMap, ['winner_category', 'winner_comment', 'comment', 'note', 'notes']),
   ].join(' '));
   const hasOnline = onlineHints.some((token) => corpus.includes(token));
@@ -1371,15 +1598,12 @@ function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), me
 }
 
 function collectUrlCandidatesFromLead(lead = {}, leadDataMap = new Map()) {
-  const source = lead && typeof lead === 'object' ? lead : {};
   const values = [
     pickLeadDataValue(leadDataMap, ['instagram', 'instagram_url', 'instagram_profile']),
     pickLeadDataValue(leadDataMap, ['facebook', 'facebook_url', 'facebook_profile']),
     pickLeadDataValue(leadDataMap, ['proff', 'proff_url', 'proff_link']),
     pickLeadDataValue(leadDataMap, ['google_business_profile', 'google_maps', 'google_maps_url', 'gbp']),
     pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside']),
-    source.url,
-    source.location,
   ];
   for (const value of leadDataMap.values()) {
     if (!value || typeof value !== 'string') continue;
@@ -1418,6 +1642,18 @@ function buildSalesDetailsFromMyphonerLead(lead = {}, leadDataMap = new Map()) {
   });
 }
 
+function extractDomainFromMyphonerValue(value = '') {
+  const raw = sanitizeMyphonerFieldValue(value);
+  if (!raw) return '';
+  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const host = new URL(withProtocol).host.toLowerCase().replace(/^www\./, '');
+    return sanitizeMyphonerFieldValue(host);
+  } catch {
+    return '';
+  }
+}
+
 function getMyphonerLeadId(lead = {}, resourcePath = '') {
   const source = lead && typeof lead === 'object' ? lead : {};
   const direct = sanitizeText(source.id || source.lead_id || source.leadId);
@@ -1432,43 +1668,84 @@ function getMyphonerLeadId(lead = {}, resourcePath = '') {
 function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
   const source = lead && typeof lead === 'object' ? lead : {};
   const leadDataMap = getLeadDataMap(source);
-  const fullName = pickLeadDataValue(leadDataMap, ['full_name', 'fullname', 'contact_name', 'name']);
+  const winnerComment = pickFirstNonEmpty([
+    source.last_event?.comment,
+    source.last_action_or_note?.comment,
+    source.comment,
+    pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note']),
+  ]);
+  const commentHints = extractMyphonerCommentHints(winnerComment);
+  const fullName = pickLeadDataValue(leadDataMap, ['contact_person', 'full_name', 'fullname', 'contact_name', 'name']);
   const firstName = pickLeadDataValue(leadDataMap, ['first_name', 'firstname']);
   const lastName = pickLeadDataValue(leadDataMap, ['last_name', 'lastname']);
   const contactPerson = pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['contact_person', 'kontaktperson']),
     fullName,
     `${firstName} ${lastName}`.trim(),
-    source.primary_identifier,
+    commentHints.contactPerson,
     source.secondary_identifier,
+    source.primary_identifier,
   ]);
   const businessName = pickFirstNonEmpty([
-    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak']),
-    source.tertiary_identifier,
-    source.secondary_identifier,
+    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
+    source.primary_identifier,
+    pickLeadDataValue(leadDataMap, ['organization_name', 'org_name']),
     contactPerson,
     `Myphoner lead ${getMyphonerLeadId(source, resourcePath) || 'unknown'}`,
   ]);
-  const meetingAt = parseMyphonerMeetingAt(source, leadDataMap);
   const meetingPlaceRaw = pickFirstNonEmpty([
     pickLeadDataValue(leadDataMap, ['meeting_place', 'meeting_address', 'address', 'visiting_address', 'besoksadresse', 'moteadresse']),
+    commentHints.meetingPlace,
     pickLeadDataValue(leadDataMap, ['city', 'town', 'post_place', 'poststed']),
   ]);
-  const meetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceRaw);
+  const winnerCategory = normalizeMyphonerWinnerCategory(
+    pickFirstNonEmpty([
+      source.category,
+      source.last_event?.category,
+      source.last_action_or_note?.category,
+      pickLeadDataValue(leadDataMap, ['winner_category', 'meeting_category', 'appointment_category']),
+      commentHints.meetingMode,
+      winnerComment,
+    ])
+  );
+  const meetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceRaw, {
+    winnerCategory,
+    commentText: winnerComment,
+    commentModeHint: commentHints.meetingMode,
+  });
+  const meetingAt = parseMyphonerMeetingAt(source, leadDataMap, winnerComment);
+  const contactEmail = pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']),
+    commentHints.contactEmail,
+  ]);
+  const websiteDomain = extractDomainFromMyphonerValue(
+    pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside'])
+  );
   return buildSalesInput(
     {
       businessName,
       contactPerson: contactPerson || businessName,
-      contactEmail: pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']),
+      contactEmail: isValidEmail(contactEmail) ? contactEmail : '',
       contactPhone: pickFirstNonEmpty([
-        pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
+        pickLeadDataValue(leadDataMap, [
+          'mobile_phone',
+          'phone',
+          'business_phone',
+          'phone_number',
+          'work_office_phone',
+          'telephone',
+          'telefon',
+        ]),
+        source.tertiary_identifier,
         source.destination_number,
+        commentHints.contactPhone,
       ]),
       meetingMode,
       meetingPlace: meetingMode === 'in-person' ? meetingPlaceRaw : '',
       agreedTime: Boolean(meetingAt),
       meetingAt,
       industry: pickLeadDataValue(leadDataMap, ['industry', 'branche', 'bransje']),
-      websiteDomain: '',
+      websiteDomain,
       details: buildSalesDetailsFromMyphonerLead(source, leadDataMap),
     },
     { requireCore: false }
@@ -1479,6 +1756,7 @@ function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
   const current = existing && typeof existing === 'object' ? existing : {};
   const next = incoming && typeof incoming === 'object' ? incoming : {};
   const incomingHasMeeting = Boolean(next.meetingAt);
+  const mergedMeetingMode = normalizeMeetingMode(next.meetingMode || current.meetingMode || 'online');
   const merged = buildSalesInput(
     {
       businessName: next.businessName || current.businessName,
@@ -1486,14 +1764,10 @@ function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
       contactEmail: next.contactEmail || current.contactEmail,
       contactPhone: next.contactPhone || current.contactPhone,
       industry: next.industry || current.industry,
-      websiteDomain: current.websiteDomain || next.websiteDomain,
+      websiteDomain: next.websiteDomain || current.websiteDomain,
       details: normalizeSalesDetailLinks(next.details || {}, current.details || {}),
-      meetingMode: incomingHasMeeting
-        ? next.meetingMode || current.meetingMode || 'online'
-        : current.meetingMode || next.meetingMode || 'online',
-      meetingPlace: incomingHasMeeting
-        ? next.meetingPlace || current.meetingPlace
-        : current.meetingPlace || next.meetingPlace,
+      meetingMode: mergedMeetingMode,
+      meetingPlace: mergedMeetingMode === 'in-person' ? next.meetingPlace || current.meetingPlace : '',
       agreedTime: incomingHasMeeting ? true : Boolean(current.agreedTime),
       meetingAt: incomingHasMeeting ? next.meetingAt : current.meetingAt,
     },
@@ -1530,14 +1804,33 @@ function buildMyphonerMetaPatch({
   };
   if (leadId) patch.leadId = leadId;
   if (listId) patch.listId = listId;
-  const listName = sanitizeText(source.list_name || source.listName);
+  const listName = sanitizeMyphonerFieldValue(source.list_name || source.listName);
   if (listName) patch.listName = listName;
   const leadResourceUrl = sanitizeText(resourcePath || source.location || source.resource_url);
   if (leadResourceUrl) patch.leadResourceUrl = leadResourceUrl;
-  const category = sanitizeText(winnerCategory || source.category);
-  const comment = sanitizeText(winnerComment || source.comment);
-  if (category) patch.winnerCategory = category;
-  if (comment) patch.winnerComment = comment;
+  if (eventType === 'winner') {
+    const leadDataMap = getLeadDataMap(source);
+    const meetingPlaceHint = pickFirstNonEmpty([
+      pickLeadDataValue(leadDataMap, ['meeting_place', 'meeting_address', 'address', 'visiting_address', 'besoksadresse', 'moteadresse']),
+      pickLeadDataValue(leadDataMap, ['city', 'town', 'post_place', 'poststed']),
+    ]);
+    const category = normalizeMyphonerWinnerCategory(
+      pickFirstNonEmpty([
+        winnerCategory,
+        source.category,
+        source.last_event?.category,
+        source.last_action_or_note?.category,
+        pickLeadDataValue(leadDataMap, ['winner_category', 'meeting_category', 'appointment_category']),
+      ])
+    );
+    const inferredMeetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceHint, {
+      winnerCategory: category,
+      commentText: pickFirstNonEmpty([winnerComment, source.last_event?.comment, source.last_action_or_note?.comment, source.comment]),
+    });
+    patch.winnerCategory = category || (inferredMeetingMode === 'in-person' ? 'irl' : 'online');
+    const comment = pickFirstNonEmpty([winnerComment, source.last_event?.comment, source.last_action_or_note?.comment, source.comment]);
+    if (comment) patch.winnerComment = comment;
+  }
   if (eventType === 'winner') patch.lastWinnerWebhookAt = timestamp;
   if (eventType === 'recording') patch.lastRecordingWebhookAt = timestamp;
 
