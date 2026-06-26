@@ -1883,6 +1883,54 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
   return findSalesClientByPhone(phone);
 }
 
+async function resolveMyphonerSalesOwnerId(lead = {}, existingOwnerId = '') {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const existing = sanitizeText(existingOwnerId);
+  let users = [];
+  try {
+    users = await store.getAllUsers();
+  } catch {
+    users = [];
+  }
+  const salesUsers = Array.isArray(users)
+    ? users.filter((user) => sanitizeText(user?.role).toLowerCase() === 'sales' && sanitizeText(user?.id))
+    : [];
+  const salesOwnerFromUser = (user = null) => {
+    const id = sanitizeText(user?.id);
+    return id ? `sales:${id}` : '';
+  };
+  const findSalesByEmail = (email = '') => {
+    const target = normalizeEmail(email);
+    if (!target) return null;
+    return salesUsers.find((user) => normalizeEmail(user?.username) === target) || null;
+  };
+  const claimedSalesUser = findSalesByEmail(source.claimed_by || source.claimedBy);
+  if (claimedSalesUser) {
+    const claimedOwner = salesOwnerFromUser(claimedSalesUser);
+    if (claimedOwner) return claimedOwner;
+  }
+  if (existing.startsWith('sales:')) return existing;
+
+  const configuredOwnerRaw = sanitizeText(MYPHONER_DEFAULT_SALES_OWNER_KEY);
+  const configuredOwnerLower = configuredOwnerRaw.toLowerCase();
+  if (configuredOwnerLower.startsWith('sales:')) return configuredOwnerRaw;
+  if (configuredOwnerRaw && !configuredOwnerRaw.includes(':')) {
+    const configuredSalesUser = findSalesByEmail(configuredOwnerRaw);
+    if (configuredSalesUser) {
+      const configuredSalesOwner = salesOwnerFromUser(configuredSalesUser);
+      if (configuredSalesOwner) return configuredSalesOwner;
+    }
+  }
+
+  if (salesUsers.length) {
+    const fallbackSalesOwner = salesOwnerFromUser(salesUsers[0]);
+    if (fallbackSalesOwner) return fallbackSalesOwner;
+  }
+  if (existing) return existing;
+  if (configuredOwnerRaw) return configuredOwnerRaw;
+  return '';
+}
+
 async function upsertSalesClientFromMyphonerLead({
   lead = {},
   resourcePath = '',
@@ -1894,6 +1942,7 @@ async function upsertSalesClientFromMyphonerLead({
   const existing = findSalesClientForMyphonerLead(source, resourcePath);
   const incomingInput = buildSalesInputFromMyphonerLead(source, resourcePath);
   const storedRecording = leadId ? myphonerIntegration.getRecordingForLead(leadId) : null;
+  const resolvedOwnerId = await resolveMyphonerSalesOwnerId(source, existing?.ownerId || '');
   const myphonerPatch = buildMyphonerMetaPatch({
     lead: source,
     resourcePath,
@@ -1907,7 +1956,7 @@ async function upsertSalesClientFromMyphonerLead({
     const mergedInput = mergeMyphonerSalesInput(existing, incomingInput);
     client = sales.updateSalesClient(existing.id, {
       ...mergedInput,
-      ownerId: existing.ownerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      ownerId: resolvedOwnerId || existing.ownerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
       myphoner: {
         ...(existing.myphoner || {}),
         ...myphonerPatch,
@@ -1916,7 +1965,7 @@ async function upsertSalesClientFromMyphonerLead({
   } else {
     const createPayload = {
       ...incomingInput,
-      ownerId: MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      ownerId: resolvedOwnerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
       myphoner: myphonerPatch,
     };
     if (!createPayload.businessName) createPayload.businessName = incomingInput.contactPerson || 'Myphoner client';
