@@ -1205,13 +1205,23 @@ function resolveMyphonerWebhookBaseUrl() {
   }
 }
 
-function buildMyphonerWebhookTargetUrl(kind = 'winner') {
+function buildMyphonerWebhookTargetUrl(kind = 'winner', queryParams = {}) {
   const baseUrl = resolveMyphonerWebhookBaseUrl();
   if (!baseUrl) return '';
   const routeBase = `${baseUrl}/api/integrations/myphoner/webhook/${encodeURIComponent(kind)}`;
-  if (!MYPHONER_WEBHOOK_SECRET) return routeBase;
-  const separator = routeBase.includes('?') ? '&' : '?';
-  return `${routeBase}${separator}secret=${encodeURIComponent(MYPHONER_WEBHOOK_SECRET)}`;
+  const params = new URLSearchParams();
+  if (MYPHONER_WEBHOOK_SECRET) {
+    params.set('secret', MYPHONER_WEBHOOK_SECRET);
+  }
+  for (const [key, value] of Object.entries(queryParams || {})) {
+    const normalizedKey = sanitizeText(key);
+    const normalizedValue = sanitizeText(value);
+    if (!normalizedKey || !normalizedValue) continue;
+    params.set(normalizedKey, normalizedValue);
+  }
+  const queryString = params.toString();
+  if (!queryString) return routeBase;
+  return `${routeBase}?${queryString}`;
 }
 
 function isMyphonerWebhookAlreadyTakenError(response = null) {
@@ -1821,9 +1831,9 @@ async function reconcileMyphonerWebhooks() {
   if (!MYPHONER_WEBHOOK_SECRET) {
     return { ok: false, skipped: 'webhook-secret-missing' };
   }
-  const winnerTargetUrl = buildMyphonerWebhookTargetUrl('winner');
-  const recordingTargetUrl = buildMyphonerWebhookTargetUrl('recording');
-  if (!winnerTargetUrl || !recordingTargetUrl) {
+  const winnerTargetBaseUrl = buildMyphonerWebhookTargetUrl('winner');
+  const recordingTargetBaseUrl = buildMyphonerWebhookTargetUrl('recording');
+  if (!winnerTargetBaseUrl || !recordingTargetBaseUrl) {
     return { ok: false, skipped: 'webhook-base-url-missing' };
   }
 
@@ -1847,6 +1857,7 @@ async function reconcileMyphonerWebhooks() {
     const listId = sanitizeText(list?.id);
     if (!listId) continue;
     listIds.add(listId);
+    const winnerTargetUrl = buildMyphonerWebhookTargetUrl('winner', { listId });
     const existing = myphonerIntegration.getListWinnerWebhook(listId);
     const targetChanged = sanitizeText(existing?.targetUrl) !== winnerTargetUrl;
     const eventChanged = sanitizeText(existing?.event).toLowerCase() !== 'winner';
@@ -1898,6 +1909,7 @@ async function reconcileMyphonerWebhooks() {
   }
 
   for (const eventName of ['new_recording', 'new_call']) {
+    const recordingTargetUrl = buildMyphonerWebhookTargetUrl('recording', { event: eventName });
     const existing = myphonerIntegration.getAccountWebhook(eventName);
     const targetChanged = sanitizeText(existing?.targetUrl) !== recordingTargetUrl;
     const eventChanged = sanitizeText(existing?.event).toLowerCase() !== eventName;
