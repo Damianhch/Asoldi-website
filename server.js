@@ -291,6 +291,77 @@ function normalizePromotionCodeInput(value = '') {
   return sanitizeText(value).toUpperCase().replace(/\s+/g, '');
 }
 
+function normalizePromotionCodeLookupKey(value = '') {
+  return normalizePromotionCodeInput(value).replace(/[^A-Z0-9]/g, '');
+}
+
+async function collectStripePromotionCodeCandidates(stripe, inputCode = '') {
+  const rawCode = sanitizeText(inputCode);
+  const normalizedCode = normalizePromotionCodeInput(rawCode);
+  const lookupKey = normalizePromotionCodeLookupKey(rawCode);
+  const seen = new Set();
+  const candidates = [];
+
+  const addCandidate = (promotionCode) => {
+    const id = sanitizeText(promotionCode?.id);
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    candidates.push(promotionCode);
+  };
+
+  const maybePromoId = /^promo_/i.test(rawCode) ? `promo_${rawCode.slice(6)}` : '';
+  if (maybePromoId) {
+    try {
+      const direct = await stripe.promotionCodes.retrieve(maybePromoId, { expand: ['coupon'] });
+      if (direct) addCandidate(direct);
+    } catch {
+      // Fall back to code-based lookup.
+    }
+  }
+
+  async function addByCode(codeValue = '') {
+    const nextCode = sanitizeText(codeValue);
+    if (!nextCode) return;
+    const list = await stripe.promotionCodes.list({
+      code: nextCode,
+      active: true,
+      limit: 20,
+      expand: ['data.coupon'],
+    });
+    const rows = Array.isArray(list?.data) ? list.data : [];
+    for (const row of rows) addCandidate(row);
+  }
+
+  await addByCode(rawCode);
+  if (normalizedCode && normalizedCode !== rawCode) {
+    await addByCode(normalizedCode);
+  }
+
+  // Stripe's code filter can miss variants in some account/API-version setups.
+  // Fallback to a bounded active-code scan and match by normalized comparison key.
+  if (!candidates.length && lookupKey) {
+    let startingAfter = '';
+    for (let page = 0; page < 5; page += 1) {
+      const batch = await stripe.promotionCodes.list({
+        active: true,
+        limit: 100,
+        ...(startingAfter ? { starting_after: startingAfter } : {}),
+        expand: ['data.coupon'],
+      });
+      const rows = Array.isArray(batch?.data) ? batch.data : [];
+      for (const row of rows) {
+        const rowCodeKey = normalizePromotionCodeLookupKey(row?.code || '');
+        if (rowCodeKey && rowCodeKey === lookupKey) addCandidate(row);
+      }
+      if (candidates.length || !batch?.has_more || !rows.length) break;
+      startingAfter = sanitizeText(rows[rows.length - 1]?.id);
+      if (!startingAfter) break;
+    }
+  }
+
+  return candidates;
+}
+
 function extractAllowedPlanIdsFromMetadata(metadata = {}) {
   const source = metadata && typeof metadata === 'object' ? metadata : {};
   const raw =
@@ -339,6 +410,7 @@ async function resolveStripePromotionCodeForCheckout({
   planName = '',
   amount = 0,
   currency = '',
+  stripeCustomerId = '',
 } = {}) {
   const normalizedCode = normalizePromotionCodeInput(code);
   if (!normalizedCode) {
@@ -348,13 +420,7 @@ async function resolveStripePromotionCodeForCheckout({
     throw makeHttpError(503, 'Rabattkode kan ikke valideres akkurat nå. Kortbetaling er ikke konfigurert.');
   }
   const stripe = getStripe();
-  const list = await stripe.promotionCodes.list({
-    code: normalizedCode,
-    active: true,
-    limit: 20,
-    expand: ['data.coupon'],
-  });
-  const candidates = Array.isArray(list?.data) ? list.data : [];
+  const candidates = await collectStripePromotionCodeCandidates(stripe, code);
   if (!candidates.length) {
     throw makeHttpError(404, 'Ugyldig rabattkode.');
   }
@@ -362,20 +428,46 @@ async function resolveStripePromotionCodeForCheckout({
   const nowUnix = Math.floor(Date.now() / 1000);
   const normalizedPlanId = sanitizeText(planId);
   const normalizedCurrency = normalizeStripeCurrency(currency || '');
+  const normalizedStripeCustomerId = sanitizeText(stripeCustomerId);
   const amountMinor = Math.max(0, Math.round(Number(amount || 0) * 100));
+  let rejectionMessage = '';
 
   for (const promotionCode of candidates) {
+    if (promotionCode?.active === false) {
+      rejectionMessage = 'Rabattkoden er ikke aktiv.';
+      continue;
+    }
     const coupon = promotionCode?.coupon;
-    if (!coupon || coupon.valid === false) continue;
-    if (promotionCode?.expires_at && Number(promotionCode.expires_at) <= nowUnix) continue;
-    if (!isPromotionCodeAllowedForPlan(promotionCode, normalizedPlanId)) continue;
+    if (!coupon || coupon.valid === false) {
+      rejectionMessage = 'Rabattkoden er utløpt eller deaktivert.';
+      continue;
+    }
+    if (promotionCode?.expires_at && Number(promotionCode.expires_at) <= nowUnix) {
+      rejectionMessage = 'Rabattkoden er utløpt.';
+      continue;
+    }
+    const restrictedCustomerId = sanitizeText(promotionCode?.customer);
+    if (restrictedCustomerId && restrictedCustomerId !== normalizedStripeCustomerId) {
+      rejectionMessage = 'Rabattkoden er knyttet til en annen kundeprofil.';
+      continue;
+    }
+    if (!isPromotionCodeAllowedForPlan(promotionCode, normalizedPlanId)) {
+      rejectionMessage = 'Rabattkoden gjelder ikke valgt plan.';
+      continue;
+    }
 
     const restrictions = promotionCode?.restrictions || {};
     const minimumAmount = Number(restrictions.minimum_amount || 0);
     const minimumAmountCurrency = normalizeStripeCurrency(restrictions.minimum_amount_currency || '');
     if (minimumAmount > 0) {
-      if (minimumAmountCurrency && normalizedCurrency && minimumAmountCurrency !== normalizedCurrency) continue;
-      if (amountMinor < minimumAmount) continue;
+      if (minimumAmountCurrency && normalizedCurrency && minimumAmountCurrency !== normalizedCurrency) {
+        rejectionMessage = 'Rabattkoden bruker en annen valuta enn valgt plan.';
+        continue;
+      }
+      if (amountMinor < minimumAmount) {
+        rejectionMessage = 'Rabattkoden krever høyere ordrebeløp.';
+        continue;
+      }
     }
 
     const discountAmount = computePromotionDiscountPreviewAmount({
@@ -410,7 +502,7 @@ async function resolveStripePromotionCodeForCheckout({
     };
   }
 
-  throw makeHttpError(400, 'Rabattkoden kan ikke brukes på valgt plan.');
+  throw makeHttpError(400, rejectionMessage || 'Rabattkoden kan ikke brukes på valgt plan.');
 }
 
 function mapStripeCheckoutSessionError(error, planName = '') {
@@ -3095,6 +3187,7 @@ app.get('/api/client/checkout/promotion-code', clientAuth, async (req, res) => {
       planName: plan.planName,
       amount: plan.amount,
       currency: getStripeCurrency(),
+      stripeCustomerId: sanitizeText(profile?.payment?.stripeCustomerId),
     });
     clientPortal.setClientAppliedPromotionCode(user.id, resolved);
     return res.json({
@@ -3132,6 +3225,7 @@ app.post('/api/client/checkout/promotion-code', clientAuth, async (req, res) => 
       planName: plan.planName,
       amount: plan.amount,
       currency: getStripeCurrency(),
+      stripeCustomerId: sanitizeText(profile?.payment?.stripeCustomerId),
     });
     clientPortal.setClientAppliedPromotionCode(user.id, resolved);
     return res.json({
@@ -3256,6 +3350,7 @@ app.post('/api/client/checkout/create-session', clientAuth, async (req, res) => 
           planName,
           amount,
           currency: getStripeCurrency(),
+          stripeCustomerId: sanitizeText(profile?.payment?.stripeCustomerId),
         });
         clientPortal.setClientAppliedPromotionCode(user.id, appliedPromotion);
       } catch (error) {
