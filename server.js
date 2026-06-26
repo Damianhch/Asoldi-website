@@ -1869,6 +1869,38 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
   if (leadId) {
     const byLead = sales.getSalesClientByMyphonerLeadId(leadId);
     if (byLead) return byLead;
+    // Do not merge two distinct Myphoner winner leads onto one existing lead-linked sales row.
+    // We only allow fallback matching to rows that are not already linked to another lead ID.
+    const leadDataMap = getLeadDataMap(source);
+    const email = normalizeEmail(pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']));
+    if (email) {
+      const byUnlinkedEmail = sales.getSalesClients().find((client) => {
+        const clientEmail = normalizeEmail(client.contactEmail);
+        const linkedLeadId = sanitizeText(client.myphoner?.leadId);
+        return clientEmail === email && !linkedLeadId;
+      });
+      if (byUnlinkedEmail) return byUnlinkedEmail;
+    }
+    const phone = pickFirstNonEmpty([
+      pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
+      source.destination_number,
+    ]);
+    if (phone) {
+      const targetDigits = normalizePhoneDigits(phone);
+      const byUnlinkedPhone = sales.getSalesClients().find((client) => {
+        const linkedLeadId = sanitizeText(client.myphoner?.leadId);
+        if (linkedLeadId) return false;
+        const currentDigits = normalizePhoneDigits(client.contactPhone);
+        if (!currentDigits || !targetDigits) return false;
+        return (
+          currentDigits === targetDigits ||
+          currentDigits.endsWith(targetDigits) ||
+          targetDigits.endsWith(currentDigits)
+        );
+      });
+      if (byUnlinkedPhone) return byUnlinkedPhone;
+    }
+    return null;
   }
   const leadDataMap = getLeadDataMap(source);
   const email = normalizeEmail(pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']));
