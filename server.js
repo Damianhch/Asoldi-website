@@ -135,6 +135,7 @@ const CLOUDFLARED_WINDOWS_CANDIDATES = [
   'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
   'C:\\Program Files\\cloudflared\\cloudflared.exe',
 ];
+const LOCAL_RECORDING_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.ogg', '.flac']);
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
 let makerTunnelProcess = null;
@@ -1010,6 +1011,137 @@ function extractPhoneCandidatesFromText(text = '') {
 function pickBestPhoneFromText(text = '') {
   const candidates = extractPhoneCandidatesFromText(text);
   return candidates[0] || '';
+}
+
+function extractRecordingDestinationPhoneFromBuffer(buffer) {
+  if (!buffer || typeof buffer.length !== 'number' || buffer.length <= 0) return '';
+  const metadataText = buffer.toString('latin1');
+  if (!metadataText) return '';
+  const compactText = metadataText.replace(/[^\x20-\x7E]+/g, ' ');
+  const explicitMatch = compactText.match(/(?:Recording|Destination|Phone|To)\s*[:#-]?\s*(\+?\d[\d\s()./-]{6,}\d)/i);
+  if (explicitMatch?.[1]) {
+    const normalized = normalizePhoneCandidate(explicitMatch[1]);
+    if (normalized) return normalized;
+  }
+  return '';
+}
+
+async function listLocalRecordingFiles() {
+  const recordingDirs = [
+    path.join(distPath, 'myphoner-audio'),
+    path.join(__dirname, 'public', 'myphoner-audio'),
+  ];
+  const filesByName = new Map();
+  for (const dirPath of recordingDirs) {
+    let entries = [];
+    try {
+      entries = await fs.readdir(dirPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      const fileName = sanitizeText(entry.name);
+      const ext = path.extname(fileName).toLowerCase();
+      if (!fileName || !LOCAL_RECORDING_EXTENSIONS.has(ext)) continue;
+      if (filesByName.has(fileName)) continue;
+      const fullPath = path.join(dirPath, fileName);
+      try {
+        const stats = await fs.stat(fullPath);
+        filesByName.set(fileName, {
+          fileName,
+          fullPath,
+          mtimeMs: Number(stats.mtimeMs || 0),
+        });
+      } catch {
+        // Ignore unreadable files and continue with the rest.
+      }
+    }
+  }
+  return [...filesByName.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+async function syncLocalMyphonerRecordings({ baseUrl = '', persist = true } = {}) {
+  const normalizedBaseUrl = normalizeHttpBaseUrl(baseUrl);
+  if (!normalizedBaseUrl) {
+    throw new Error('Cannot sync recordings without a valid base URL.');
+  }
+  const files = await listLocalRecordingFiles();
+  const filesWithoutPhone = [];
+  const unmatchedByPhone = [];
+  const matchedCandidates = [];
+  for (const file of files) {
+    let fileBuffer = null;
+    try {
+      fileBuffer = await fs.readFile(file.fullPath);
+    } catch {
+      filesWithoutPhone.push({ fileName: file.fileName, reason: 'read-failed' });
+      continue;
+    }
+    const destinationPhone = extractRecordingDestinationPhoneFromBuffer(fileBuffer);
+    if (!destinationPhone) {
+      filesWithoutPhone.push({ fileName: file.fileName, reason: 'missing-phone-metadata' });
+      continue;
+    }
+    const matchedClient = findSalesClientByPhone(destinationPhone);
+    if (!matchedClient) {
+      unmatchedByPhone.push({ fileName: file.fileName, destinationPhone });
+      continue;
+    }
+    matchedCandidates.push({
+      ...file,
+      destinationPhone,
+      clientId: matchedClient.id,
+      businessName: sanitizeText(matchedClient.businessName),
+    });
+  }
+
+  const selectedByClient = new Map();
+  for (const candidate of matchedCandidates) {
+    const previous = selectedByClient.get(candidate.clientId);
+    if (!previous || candidate.mtimeMs > previous.mtimeMs) {
+      selectedByClient.set(candidate.clientId, candidate);
+    }
+  }
+
+  const applied = [];
+  for (const candidate of selectedByClient.values()) {
+    const recordingUrl = `${normalizedBaseUrl}/myphoner-audio/${encodeURIComponent(candidate.fileName)}`;
+    if (persist) {
+      sales.updateSalesClient(candidate.clientId, {
+        myphoner: {
+          latestRecordingUrl: recordingUrl,
+          latestCallId: sanitizeText(candidate.fileName.replace(/\.[^.]+$/, '')),
+          latestCallDestinationNumber: candidate.destinationPhone,
+          lastRecordingWebhookAt: nowIso(),
+          latestEventAt: nowIso(),
+        },
+      });
+    }
+    applied.push({
+      clientId: candidate.clientId,
+      businessName: candidate.businessName,
+      fileName: candidate.fileName,
+      destinationPhone: candidate.destinationPhone,
+      recordingUrl,
+    });
+  }
+
+  return {
+    summary: {
+      filesFound: files.length,
+      filesWithPhoneMetadata: matchedCandidates.length + unmatchedByPhone.length,
+      matchedFiles: matchedCandidates.length,
+      clientsSelected: selectedByClient.size,
+      clientsUpdated: persist ? applied.length : 0,
+      filesWithoutPhoneMetadata: filesWithoutPhone.length,
+      unmatchedByPhone: unmatchedByPhone.length,
+      ignoredOlderMatches: matchedCandidates.length - selectedByClient.size,
+    },
+    applied,
+    filesWithoutPhone,
+    unmatchedByPhone,
+  };
 }
 
 function resolveLeadCommentText(source = {}, leadDataMap = new Map(), extra = []) {
@@ -3513,6 +3645,30 @@ app.post('/api/admin/integrations/myphoner/attach-recording', adminAuth, (req, r
     return res.status(404).json({ ok: false, message: 'Sales client not found.' });
   }
   return res.json({ ok: true, client: updated });
+});
+
+app.post('/api/admin/sales/sync-local-recordings', adminAuth, async (req, res) => {
+  try {
+    const baseUrl = normalizeHttpBaseUrl(process.env.APP_URL || `${req.protocol}://${req.get('host')}`);
+    if (!baseUrl) {
+      return res.status(400).json({ ok: false, message: 'APP_URL (or request host) must be a valid http(s) URL.' });
+    }
+    const dryRun = Boolean(req.body?.dryRun);
+    const result = await syncLocalMyphonerRecordings({
+      baseUrl,
+      persist: !dryRun,
+    });
+    return res.json({
+      ok: true,
+      dryRun,
+      ...result,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed syncing local recordings.',
+    });
+  }
 });
 
 app.post('/api/integrations/myphoner/webhook/winner', async (req, res) => {

@@ -278,6 +278,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [applyingCorrections, setApplyingCorrections] = useState(false);
+  const [syncingLocalRecordings, setSyncingLocalRecordings] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
@@ -348,6 +349,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       flaggedTest: rows.filter((entry) => entry.testLike).length,
     };
   }, [clients]);
+  const recordingAudit = useMemo(
+    () => ({
+      total: clients.length,
+      synced: clients.filter((client) => Boolean(client.myphoner?.latestRecordingUrl)).length,
+    }),
+    [clients]
+  );
   const archivedClients = useMemo(
     () => clients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
     [clients, normalizedClientSearchQuery]
@@ -1129,6 +1137,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function syncUploadedRecordings() {
+    setSyncingLocalRecordings(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request('/admin/sales/sync-local-recordings', {
+        method: 'POST',
+        body: JSON.stringify({ dryRun: false }),
+      });
+      await loadSales();
+      const summary = result?.summary || {};
+      setNotice(
+        `Audio sync done. Files found: ${Number(summary.filesFound || 0)}, matched: ${Number(summary.matchedFiles || 0)}, clients updated: ${Number(summary.clientsUpdated || 0)}, unmatched: ${Number(summary.unmatchedByPhone || 0)}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed syncing uploaded recordings.');
+    } finally {
+      setSyncingLocalRecordings(false);
+    }
+  }
+
   function applyClientNameSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
     setClientSearchQuery(normalizeClientSearchText(clientSearchInput));
@@ -1160,6 +1189,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             >
               {applyingCorrections ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
               Apply lead corrections
+            </button>
+            <button
+              type="button"
+              onClick={() => void syncUploadedRecordings()}
+              disabled={syncingLocalRecordings}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+              title="Scan /myphoner-audio files and attach recordings to matching clients"
+            >
+              {syncingLocalRecordings ? <Loader2 size={14} className="animate-spin" /> : <Volume2 size={14} />}
+              Sync uploaded audio
             </button>
           </div>
         </div>
@@ -1209,6 +1248,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             <span className="px-2 py-1 rounded border border-amber-700/30 bg-amber-900/20 text-amber-300">Missing: {emailAudit.missing}</span>
             <span className="px-2 py-1 rounded border border-red-700/30 bg-red-900/20 text-red-300">Invalid: {emailAudit.invalid}</span>
             <span className="px-2 py-1 rounded border border-purple-700/30 bg-purple-900/20 text-purple-300">Test-like: {emailAudit.flaggedTest}</span>
+            <span className="px-2 py-1 rounded border border-blue-700/30 bg-blue-900/20 text-blue-300">Audio synced: {recordingAudit.synced}/{recordingAudit.total}</span>
           </div>
         </div>
 
@@ -1426,10 +1466,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         onClick={() => void downloadMakerExport(client)}
                         disabled={exportingId === client.id || !hasRun}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                        title="Download Hostinger-ready ZIP from Website Maker"
+                        title="Optional: export ZIP for manual hosting upload (for example Hostinger)"
                       >
                         {exportingId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-                        Download Hostinger ZIP
+                        Export website ZIP
                       </button>
                       <button
                         type="button"
@@ -1483,18 +1523,20 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       Meet link
                     </button>
                   )}
-                  {client.myphoner?.latestRecordingUrl && (
-                    <button
-                      type="button"
-                      onClick={() => void toggleInlineRecording(client)}
-                      disabled={recordingLoadingClientId === client.id}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                      title="Load and play latest synced call recording inline"
-                    >
-                      {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
-                      {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => void toggleInlineRecording(client)}
+                    disabled={recordingLoadingClientId === client.id || !client.myphoner?.latestRecordingUrl}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    title={client.myphoner?.latestRecordingUrl
+                      ? 'Load and play latest synced call recording inline'
+                      : 'No recording synced yet. Use "Sync uploaded audio" above.'}
+                  >
+                    {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
+                    {client.myphoner?.latestRecordingUrl
+                      ? (recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here')
+                      : 'No audio synced'}
+                  </button>
                   {clientOffers.length > 0 && (
                     <span className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#FF5B00]/15 text-[#ff8a4d] text-[11px]">
                       <Tag size={12} />
@@ -1719,7 +1761,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </button>
                       </div>
                       <p className="text-[11px] text-gray-500">
-                        ZIP upload is removed from this flow. Sync pulls the latest exported site directly from the linked run.
+                        Sync is the preferred flow. ZIP export is only for manual hosting uploads when needed.
                       </p>
                     </div>
 
