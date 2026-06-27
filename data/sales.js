@@ -152,8 +152,14 @@ function normalizeSalesDetails(value = {}) {
 
 function normalizeMyphoner(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
+  const leadIds = Array.isArray(input.leadIds)
+    ? input.leadIds.map((entry) => sanitizeText(entry)).filter(Boolean)
+    : [];
+  const primaryLeadId = sanitizeText(input.leadId);
+  if (primaryLeadId && !leadIds.includes(primaryLeadId)) leadIds.unshift(primaryLeadId);
   return {
-    leadId: sanitizeText(input.leadId),
+    leadId: primaryLeadId,
+    leadIds,
     listId: sanitizeText(input.listId),
     listName: sanitizeText(input.listName),
     leadResourceUrl: sanitizeText(input.leadResourceUrl),
@@ -260,7 +266,13 @@ export function getSalesClientById(id) {
 export function getSalesClientByMyphonerLeadId(leadId) {
   const target = sanitizeText(leadId);
   if (!target) return null;
-  return readState().find((entry) => sanitizeText(entry.myphoner?.leadId) === target) || null;
+  return (
+    readState().find((entry) => {
+      if (sanitizeText(entry.myphoner?.leadId) === target) return true;
+      if (!Array.isArray(entry.myphoner?.leadIds)) return false;
+      return entry.myphoner.leadIds.some((candidate) => sanitizeText(candidate) === target);
+    }) || null
+  );
 }
 
 export function createSalesClient(input = {}) {

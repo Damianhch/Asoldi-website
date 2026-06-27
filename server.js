@@ -1433,48 +1433,6 @@ function parseMyphonerMeetingAtFromFreeText(text = '', fallbackYear = 0) {
   return '';
 }
 
-function extractMyphonerCommentHints(text = '') {
-  const raw = String(text ?? '').replace(/\uFFFD/g, '').trim();
-  const hints = {
-    contactPerson: '',
-    contactEmail: '',
-    contactPhone: '',
-    meetingPlace: '',
-    meetingMode: '',
-  };
-  if (!raw) return hints;
-  const lines = raw
-    .split(/\r?\n/)
-    .map((line) => sanitizeMyphonerFieldValue(line))
-    .filter(Boolean);
-  const emailMatch = raw.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
-  if (emailMatch) hints.contactEmail = sanitizeMyphonerFieldValue(emailMatch[0]);
-  for (const line of lines) {
-    const personMatch = line.match(/^(?:navn|name)\s*[:\-]\s*(.+)$/i);
-    if (personMatch?.[1] && !hints.contactPerson) {
-      hints.contactPerson = sanitizeMyphonerFieldValue(personMatch[1]);
-    }
-    const phoneMatch = line.match(/^(?:telefon|phone|tlf|mobil)\s*[:\-]\s*(.+)$/i);
-    if (phoneMatch?.[1] && !hints.contactPhone) {
-      hints.contactPhone = sanitizeMyphonerFieldValue(phoneMatch[1]);
-    }
-    const addressMatch = line.match(/^(?:adresse|address|addresse|moteadresse|meeting\s*place)\s*[:\-]\s*(.+)$/i);
-    if (addressMatch?.[1] && !hints.meetingPlace) {
-      hints.meetingPlace = sanitizeMyphonerFieldValue(addressMatch[1]);
-    }
-    if (!hints.meetingMode) {
-      const normalizedCategory = normalizeMyphonerWinnerCategory(line);
-      if (normalizedCategory === 'irl') hints.meetingMode = 'in-person';
-      if (normalizedCategory === 'online') hints.meetingMode = 'online';
-    }
-  }
-  if (!hints.contactPhone) {
-    const fallbackPhoneMatch = raw.match(/\+?\d[\d\s().-]{6,}\d/);
-    if (fallbackPhoneMatch) hints.contactPhone = sanitizeMyphonerFieldValue(fallbackPhoneMatch[0]);
-  }
-  return hints;
-}
-
 function getLeadDataMap(lead = {}) {
   const source = lead && typeof lead === 'object' ? lead : {};
   const leadData = source.lead_data && typeof source.lead_data === 'object' ? source.lead_data : {};
@@ -1514,7 +1472,7 @@ function pickFirstNonEmpty(values = []) {
   return '';
 }
 
-function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map(), winnerComment = '') {
+function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map()) {
   const source = lead && typeof lead === 'object' ? lead : {};
   const candidates = [
     source.scheduled_for,
@@ -1537,23 +1495,6 @@ function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map(), winnerCommen
     const iso = myphonerApi.parseMyPhonerDateToIso(candidate);
     if (iso) return iso;
   }
-  const fallbackYearIso = myphonerApi.parseMyPhonerDateToIso(
-    pickFirstNonEmpty([source.last_event?.created_at, source.last_action_or_note?.created_at, source.last_updated, source.created_at])
-  );
-  const fallbackYear = Number.isFinite(new Date(fallbackYearIso).getTime())
-    ? new Date(fallbackYearIso).getUTCFullYear()
-    : new Date().getUTCFullYear();
-  const freeTextCandidates = [
-    winnerComment,
-    source.last_event?.comment,
-    source.last_action_or_note?.comment,
-    source.comment,
-    pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note', 'meeting_notes']),
-  ];
-  for (const candidate of freeTextCandidates) {
-    const fromText = parseMyphonerMeetingAtFromFreeText(candidate, fallbackYear);
-    if (fromText) return fromText;
-  }
   return '';
 }
 
@@ -1567,14 +1508,12 @@ function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), me
       source.last_event?.category,
       source.last_action_or_note?.category,
       pickLeadDataValue(leadDataMap, ['winner_category', 'meeting_category', 'appointment_category']),
-      opts.commentText,
     ])
   );
   if (explicitCategory === 'irl') return 'in-person';
   if (explicitCategory === 'online') return 'online';
 
   const explicitMode = pickLeadDataValue(leadDataMap, ['meeting_mode', 'mode', 'moteform', 'meetingtype', 'appointment_type']);
-  if (sanitizeText(opts.commentModeHint)) return normalizeMeetingMode(opts.commentModeHint);
   const onlineHints = ['online', 'digital', 'remote', 'zoom', 'google meet', 'meet', 'teams', 'telefon', 'phone', 'call'];
   const inPersonHints = ['irl', 'in person', 'in-person', 'fysisk', 'physical', 'office', 'kontor', 'hos', 'besok', 'visit'];
   const normalizeText = (value = '') => sanitizeText(value).toLowerCase();
@@ -1587,17 +1526,13 @@ function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), me
     source.status,
     source.category,
     source.last_event?.category,
-    source.last_event?.comment,
     source.last_action_or_note?.category,
-    source.last_action_or_note?.comment,
     source.outcome,
-    source.comment,
     source.primary_identifier,
     source.secondary_identifier,
     source.tertiary_identifier,
     meetingPlace,
-    opts.commentText,
-    pickLeadDataValue(leadDataMap, ['winner_category', 'winner_comment', 'comment', 'note', 'notes']),
+    pickLeadDataValue(leadDataMap, ['winner_category']),
   ].join(' '));
   const hasOnline = onlineHints.some((token) => corpus.includes(token));
   const hasInPerson = inPersonHints.some((token) => corpus.includes(token));
@@ -1678,13 +1613,6 @@ function getMyphonerLeadId(lead = {}, resourcePath = '') {
 function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
   const source = lead && typeof lead === 'object' ? lead : {};
   const leadDataMap = getLeadDataMap(source);
-  const winnerComment = pickFirstNonEmpty([
-    source.last_event?.comment,
-    source.last_action_or_note?.comment,
-    source.comment,
-    pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note']),
-  ]);
-  const commentHints = extractMyphonerCommentHints(winnerComment);
   const fullName = pickLeadDataValue(leadDataMap, ['contact_person', 'full_name', 'fullname', 'contact_name', 'name']);
   const firstName = pickLeadDataValue(leadDataMap, ['first_name', 'firstname']);
   const lastName = pickLeadDataValue(leadDataMap, ['last_name', 'lastname']);
@@ -1692,7 +1620,6 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
     pickLeadDataValue(leadDataMap, ['contact_person', 'kontaktperson']),
     fullName,
     `${firstName} ${lastName}`.trim(),
-    commentHints.contactPerson,
     source.secondary_identifier,
     source.primary_identifier,
   ]);
@@ -1705,7 +1632,6 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
   ]);
   const meetingPlaceRaw = pickFirstNonEmpty([
     pickLeadDataValue(leadDataMap, ['meeting_place', 'meeting_address', 'address', 'visiting_address', 'besoksadresse', 'moteadresse']),
-    commentHints.meetingPlace,
     pickLeadDataValue(leadDataMap, ['city', 'town', 'post_place', 'poststed']),
   ]);
   const winnerCategory = normalizeMyphonerWinnerCategory(
@@ -1714,19 +1640,14 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
       source.last_event?.category,
       source.last_action_or_note?.category,
       pickLeadDataValue(leadDataMap, ['winner_category', 'meeting_category', 'appointment_category']),
-      commentHints.meetingMode,
-      winnerComment,
     ])
   );
   const meetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceRaw, {
     winnerCategory,
-    commentText: winnerComment,
-    commentModeHint: commentHints.meetingMode,
   });
-  const meetingAt = parseMyphonerMeetingAt(source, leadDataMap, winnerComment);
+  const meetingAt = parseMyphonerMeetingAt(source, leadDataMap);
   const contactEmail = pickFirstNonEmpty([
     pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']),
-    commentHints.contactEmail,
   ]);
   const websiteDomain = extractDomainFromMyphonerValue(
     pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside'])
@@ -1748,7 +1669,6 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
         ]),
         source.tertiary_identifier,
         source.destination_number,
-        commentHints.contactPhone,
       ]),
       meetingMode,
       meetingPlace: meetingMode === 'in-person' ? meetingPlaceRaw : '',
@@ -1838,7 +1758,6 @@ function buildMyphonerMetaPatch({
     );
     const inferredMeetingMode = inferMeetingModeFromMyphonerLead(source, leadDataMap, meetingPlaceHint, {
       winnerCategory: category,
-      commentText: pickFirstNonEmpty([winnerComment, source.last_event?.comment, source.last_action_or_note?.comment, source.comment]),
     });
     patch.winnerCategory = category || (inferredMeetingMode === 'in-person' ? 'irl' : 'online');
     const comment = pickFirstNonEmpty([winnerComment, source.last_event?.comment, source.last_action_or_note?.comment, source.comment]);
@@ -1912,6 +1831,46 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
         );
       });
       if (byUnlinkedPhone) return byUnlinkedPhone;
+
+      const incomingBusinessKey = normalizeLooseKey(
+        pickFirstNonEmpty([
+          pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
+          source.primary_identifier,
+        ])
+      );
+      const incomingContactKey = normalizeLooseKey(
+        pickFirstNonEmpty([
+          pickLeadDataValue(leadDataMap, ['contact_person', 'kontaktperson', 'full_name', 'name']),
+          source.secondary_identifier,
+        ])
+      );
+      const byLinkedDuplicate = sales.getSalesClients().find((client) => {
+        const linkedLeadId = sanitizeText(client.myphoner?.leadId);
+        if (!linkedLeadId || linkedLeadId === leadId) return false;
+        const currentDigits = normalizePhoneDigits(client.contactPhone);
+        if (!currentDigits || !targetDigits) return false;
+        const phoneMatches =
+          currentDigits === targetDigits ||
+          currentDigits.endsWith(targetDigits) ||
+          targetDigits.endsWith(currentDigits);
+        if (!phoneMatches) return false;
+        const businessKey = normalizeLooseKey(client.businessName);
+        const contactKey = normalizeLooseKey(client.contactPerson);
+        const businessMatches =
+          incomingBusinessKey &&
+          businessKey &&
+          (businessKey === incomingBusinessKey ||
+            businessKey.includes(incomingBusinessKey) ||
+            incomingBusinessKey.includes(businessKey));
+        const contactMatches =
+          incomingContactKey &&
+          contactKey &&
+          (contactKey === incomingContactKey ||
+            contactKey.includes(incomingContactKey) ||
+            incomingContactKey.includes(contactKey));
+        return Boolean(businessMatches || (contactMatches && incomingBusinessKey && !businessKey));
+      });
+      if (byLinkedDuplicate) return byLinkedDuplicate;
     }
     return null;
   }
@@ -1986,16 +1945,35 @@ async function upsertSalesClientFromMyphonerLead({
   const leadId = getMyphonerLeadId(source, resourcePath);
   const existing = findSalesClientForMyphonerLead(source, resourcePath);
   const incomingInput = buildSalesInputFromMyphonerLead(source, resourcePath);
+  const leadDataMap = getLeadDataMap(source);
+  const winnerCommentText = pickFirstNonEmpty([
+    winnerComment,
+    source.last_event?.comment,
+    source.last_action_or_note?.comment,
+    source.comment,
+    pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note']),
+  ]);
   const storedRecording = leadId ? myphonerIntegration.getRecordingForLead(leadId) : null;
   const resolvedOwnerId = await resolveMyphonerSalesOwnerId(source, existing?.ownerId || '');
   const myphonerPatch = buildMyphonerMetaPatch({
     lead: source,
     resourcePath,
     winnerCategory,
-    winnerComment,
+    winnerComment: winnerCommentText,
     recording: storedRecording,
     eventType: 'winner',
   });
+  const mergedLeadIds = Array.from(
+    new Set(
+      [
+        myphonerPatch.leadId,
+        existing?.myphoner?.leadId,
+        ...(Array.isArray(existing?.myphoner?.leadIds) ? existing.myphoner.leadIds : []),
+      ]
+        .map((entry) => sanitizeText(entry))
+        .filter(Boolean)
+    )
+  );
   let client;
   if (existing) {
     const mergedInput = mergeMyphonerSalesInput(existing, incomingInput);
@@ -2005,13 +1983,17 @@ async function upsertSalesClientFromMyphonerLead({
       myphoner: {
         ...(existing.myphoner || {}),
         ...myphonerPatch,
+        leadIds: mergedLeadIds,
       },
     });
   } else {
     const createPayload = {
       ...incomingInput,
       ownerId: resolvedOwnerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
-      myphoner: myphonerPatch,
+      myphoner: {
+        ...myphonerPatch,
+        leadIds: mergedLeadIds,
+      },
     };
     if (!createPayload.businessName) createPayload.businessName = incomingInput.contactPerson || 'Myphoner client';
     if (!createPayload.contactPerson) createPayload.contactPerson = createPayload.businessName;
@@ -3129,6 +3111,52 @@ app.post('/api/admin/integrations/myphoner/reconcile', adminAuth, async (_req, r
       message: sanitizeText(error?.message) || 'Failed to reconcile Myphoner webhooks.',
     });
   }
+});
+
+app.post('/api/admin/integrations/myphoner/attach-recording', adminAuth, (req, res) => {
+  const clientId = sanitizeText(req.body?.clientId);
+  const leadId = sanitizeText(req.body?.leadId);
+  const inputUrl = sanitizeText(req.body?.recordingUrl || req.body?.url);
+  if (!clientId && !leadId) {
+    return res.status(400).json({ ok: false, message: 'clientId or leadId is required.' });
+  }
+  if (!inputUrl) {
+    return res.status(400).json({ ok: false, message: 'recordingUrl is required.' });
+  }
+  const baseUrl = normalizeHttpBaseUrl(process.env.APP_URL || `${req.protocol}://${req.get('host')}`);
+  const recordingUrl = inputUrl.startsWith('/') ? `${baseUrl}${inputUrl}` : inputUrl;
+  if (!/^https?:\/\//i.test(recordingUrl)) {
+    return res.status(400).json({ ok: false, message: 'recordingUrl must be an absolute http(s) URL or root-relative path.' });
+  }
+
+  const existing = clientId
+    ? sales.getSalesClientById(clientId)
+    : sales.getSalesClientByMyphonerLeadId(leadId);
+  if (!existing) {
+    return res.status(404).json({ ok: false, message: 'Sales client not found for provided clientId/leadId.' });
+  }
+
+  const callDurationSeconds = Number(req.body?.callDurationSeconds);
+  const updated = sales.updateSalesClient(existing.id, {
+    myphoner: {
+      latestRecordingUrl: recordingUrl,
+      latestCallId: sanitizeText(req.body?.callId || existing?.myphoner?.latestCallId),
+      latestCallStartedAt: sanitizeText(req.body?.callStartedAt || existing?.myphoner?.latestCallStartedAt),
+      latestCallUserEmail: sanitizeText(req.body?.callUserEmail || existing?.myphoner?.latestCallUserEmail),
+      latestCallDestinationNumber: sanitizeText(
+        req.body?.callDestinationNumber || req.body?.destinationNumber || existing?.myphoner?.latestCallDestinationNumber
+      ),
+      latestCallDurationSeconds: Number.isFinite(callDurationSeconds)
+        ? callDurationSeconds
+        : Number(existing?.myphoner?.latestCallDurationSeconds || 0),
+      lastRecordingWebhookAt: nowIso(),
+      latestEventAt: nowIso(),
+    },
+  });
+  if (!updated) {
+    return res.status(404).json({ ok: false, message: 'Sales client not found.' });
+  }
+  return res.json({ ok: true, client: updated });
 });
 
 app.post('/api/integrations/myphoner/webhook/winner', async (req, res) => {

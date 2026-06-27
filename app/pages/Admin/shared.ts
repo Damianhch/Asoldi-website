@@ -161,6 +161,7 @@ export type SalesClientDetails = {
 
 export type SalesMyphonerMeta = {
   leadId: string;
+  leadIds: string[];
   listId: string;
   listName: string;
   leadResourceUrl: string;
