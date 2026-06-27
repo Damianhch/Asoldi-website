@@ -164,6 +164,30 @@ function formatDateTime(value = '') {
   return date.toLocaleString('nb-NO');
 }
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+
+function normalizeEmail(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function isTestLikeEmail(value = '') {
+  const email = normalizeEmail(value);
+  if (!email) return false;
+  if (/(?:^|@)(?:example\.com|example\.org|example\.net|test\.com|mailinator\.com)$/i.test(email)) return true;
+  const [localPart = ''] = email.split('@');
+  return /(?:^|[-_.])(test|demo|sample|fake|qa|no-?reply|noreply)(?:[-_.]|\d|$)/i.test(localPart);
+}
+
+function buildRecordingProxyUrl(clientId = '') {
+  const id = String(clientId || '').trim();
+  if (!id) return '';
+  return `${API}/admin/sales/${encodeURIComponent(id)}/recording`;
+}
+
+function normalizeClientSearchText(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
 function parseMeetingTimestamp(value = '') {
   if (!value) return null;
   const date = new Date(value);
@@ -237,6 +261,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [clientSearchInput, setClientSearchInput] = useState('');
+  const [clientSearchQuery, setClientSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
@@ -250,6 +277,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [exportingId, setExportingId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
+  const [applyingCorrections, setApplyingCorrections] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
@@ -259,9 +287,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [meetingMapLoading, setMeetingMapLoading] = useState(false);
   const [meetingMapError, setMeetingMapError] = useState('');
   const [meetingMapUnresolvedCount, setMeetingMapUnresolvedCount] = useState(0);
+  const [recordingBlobUrlByClient, setRecordingBlobUrlByClient] = useState<Record<string, string>>({});
+  const [recordingOpenClientId, setRecordingOpenClientId] = useState<string | null>(null);
+  const [recordingLoadingClientId, setRecordingLoadingClientId] = useState<string | null>(null);
+  const [recordingErrorByClient, setRecordingErrorByClient] = useState<Record<string, string>>({});
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
+  const recordingBlobUrlsRef = useRef<Record<string, string>>({});
 
   // Website offers (tier + nettsidekode given to a client).
   const [offers, setOffers] = useState<WebsiteOffer[]>([]);
@@ -276,17 +309,52 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [lastCreatedCode, setLastCreatedCode] = useState<string | null>(null);
 
   const formDuration = useMemo(() => durationForMode(form.meetingMode), [form.meetingMode]);
-  const activeClients = useMemo(
-    () => clients.filter((client) => client.status === 'active'),
-    [clients]
+  const normalizedClientSearchQuery = useMemo(
+    () => normalizeClientSearchText(clientSearchQuery),
+    [clientSearchQuery]
   );
+  const clientMatchesNameSearch = (client: SalesClient) => {
+    if (!normalizedClientSearchQuery) return true;
+    const haystack = [
+      client.businessName,
+      client.contactPerson,
+      client.contactEmail,
+      client.contactPhone,
+    ]
+      .map((entry) => normalizeClientSearchText(entry))
+      .filter(Boolean)
+      .join(' ');
+    return haystack.includes(normalizedClientSearchQuery);
+  };
+  const activeClients = useMemo(
+    () => clients.filter((client) => client.status === 'active' && clientMatchesNameSearch(client)),
+    [clients, normalizedClientSearchQuery]
+  );
+  const emailAudit = useMemo(() => {
+    const rows = clients.map((client) => {
+      const email = normalizeEmail(client.contactEmail);
+      const hasEmail = Boolean(email);
+      const valid = hasEmail && EMAIL_RE.test(email);
+      const testLike = valid && isTestLikeEmail(email);
+      return { hasEmail, valid, testLike };
+    });
+    return {
+      total: rows.length,
+      withAnyEmail: rows.filter((entry) => entry.hasEmail).length,
+      valid: rows.filter((entry) => entry.valid).length,
+      validNonTest: rows.filter((entry) => entry.valid && !entry.testLike).length,
+      missing: rows.filter((entry) => !entry.hasEmail).length,
+      invalid: rows.filter((entry) => entry.hasEmail && !entry.valid).length,
+      flaggedTest: rows.filter((entry) => entry.testLike).length,
+    };
+  }, [clients]);
   const archivedClients = useMemo(
-    () => clients.filter((client) => client.status === 'not-sold'),
-    [clients]
+    () => clients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
+    [clients, normalizedClientSearchQuery]
   );
   const secondaryClients = useMemo(
-    () => clients.filter((client) => client.status === 'secondary'),
-    [clients]
+    () => clients.filter((client) => client.status === 'secondary' && clientMatchesNameSearch(client)),
+    [clients, normalizedClientSearchQuery]
   );
   const activeMeetingGroups = useMemo(() => {
     const upcoming: SalesClient[] = [];
@@ -385,6 +453,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   useEffect(() => {
     const timer = window.setInterval(() => setMeetingNowMs(Date.now()), 60_000);
     return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    recordingBlobUrlsRef.current = recordingBlobUrlByClient;
+  }, [recordingBlobUrlByClient]);
+
+  useEffect(() => () => {
+    for (const url of Object.values(recordingBlobUrlsRef.current || {}) as string[]) {
+      if (!url) continue;
+      URL.revokeObjectURL(url);
+    }
   }, []);
 
   useEffect(() => {
@@ -814,6 +893,40 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function toggleInlineRecording(client: SalesClient) {
+    const existingBlobUrl = recordingBlobUrlByClient[client.id];
+    if (recordingOpenClientId === client.id) {
+      setRecordingOpenClientId(null);
+      return;
+    }
+    if (existingBlobUrl) {
+      setRecordingOpenClientId(client.id);
+      return;
+    }
+    setRecordingLoadingClientId(client.id);
+    setRecordingErrorByClient((prev) => ({ ...prev, [client.id]: '' }));
+    try {
+      const response = await fetch(buildRecordingProxyUrl(client.id), {
+        method: 'GET',
+        headers: salesAuthHeaders(),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || 'Failed loading recording audio.');
+      }
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      setRecordingBlobUrlByClient((prev) => ({ ...prev, [client.id]: blobUrl }));
+      setRecordingOpenClientId(client.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed loading recording audio.';
+      setRecordingErrorByClient((prev) => ({ ...prev, [client.id]: message }));
+      setRecordingOpenClientId(client.id);
+    } finally {
+      setRecordingLoadingClientId(null);
+    }
+  }
+
   async function promoteClient(client: SalesClient) {
     setPromotingId(client.id);
     setError('');
@@ -997,6 +1110,39 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function applyBundledContactCorrections() {
+    setApplyingCorrections(true);
+    setError('');
+    setNotice('');
+    try {
+      const result = await request('/admin/sales/apply-contact-corrections', {
+        method: 'POST',
+        body: JSON.stringify({ createMissing: true }),
+      });
+      await loadSales();
+      const updated = Number(result.updated || 0);
+      const created = Number(result.created || 0);
+      const unmatched = Array.isArray(result.unmatched) ? result.unmatched.length : 0;
+      setNotice(
+        `Contact corrections applied. Updated: ${updated}, created: ${created}, unmatched: ${unmatched}.`
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed applying bundled contact corrections.');
+    } finally {
+      setApplyingCorrections(false);
+    }
+  }
+
+  function applyClientNameSearch(e?: React.FormEvent) {
+    if (e) e.preventDefault();
+    setClientSearchQuery(normalizeClientSearchText(clientSearchInput));
+  }
+
+  function clearClientNameSearch() {
+    setClientSearchInput('');
+    setClientSearchQuery('');
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
@@ -1010,6 +1156,63 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               <Plus size={16} />
               Add client
             </button>
+            <button
+              type="button"
+              onClick={() => void applyBundledContactCorrections()}
+              disabled={applyingCorrections}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+            >
+              {applyingCorrections ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              Apply lead corrections
+            </button>
+          </div>
+        </div>
+
+        <form onSubmit={applyClientNameSearch} className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+          <label className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Search clients by name</label>
+          <div className="mt-2 flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+              <input
+                value={clientSearchInput}
+                onChange={(e) => setClientSearchInput(e.target.value)}
+                placeholder="Business or contact person"
+                className="w-full pl-9 pr-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm"
+              />
+            </div>
+            <button
+              type="submit"
+              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200]"
+            >
+              <Search size={14} />
+              Search
+            </button>
+            {clientSearchQuery && (
+              <button
+                type="button"
+                onClick={clearClientNameSearch}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+              >
+                <X size={14} />
+                Clear
+              </button>
+            )}
+          </div>
+          {clientSearchQuery && (
+            <p className="mt-2 text-[11px] text-gray-400">
+              Showing matches for: <span className="text-white">{clientSearchQuery}</span>
+            </p>
+          )}
+        </form>
+
+        <div className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Email coverage</div>
+          <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+            <span className="px-2 py-1 rounded border border-white/10 bg-black/30 text-gray-300">Total: {emailAudit.total}</span>
+            <span className="px-2 py-1 rounded border border-green-700/30 bg-green-900/20 text-green-300">Valid (non-test): {emailAudit.validNonTest}</span>
+            <span className="px-2 py-1 rounded border border-amber-700/30 bg-amber-900/20 text-amber-300">Missing: {emailAudit.missing}</span>
+            <span className="px-2 py-1 rounded border border-red-700/30 bg-red-900/20 text-red-300">Invalid: {emailAudit.invalid}</span>
+            <span className="px-2 py-1 rounded border border-purple-700/30 bg-purple-900/20 text-purple-300">Test-like: {emailAudit.flaggedTest}</span>
           </div>
         </div>
 
@@ -1052,6 +1255,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       </div>
 
       {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3">{error}</div>}
+      {notice && <div className="rounded-xl border border-green-500/20 bg-green-500/10 text-green-300 px-4 py-3">{notice}</div>}
 
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -1281,12 +1485,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   {client.myphoner?.latestRecordingUrl && (
                     <button
                       type="button"
-                      onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                      title="Open latest synced call recording"
+                      onClick={() => void toggleInlineRecording(client)}
+                      disabled={recordingLoadingClientId === client.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                      title="Load and play latest synced call recording inline"
                     >
-                      <Volume2 size={13} />
-                      Last talk audio
+                      {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
+                      {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
                     </button>
                   )}
                   {clientOffers.length > 0 && (
@@ -1296,6 +1501,28 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     </span>
                   )}
                 </div>
+
+                {recordingOpenClientId === client.id && (
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
+                    {recordingBlobUrlByClient[client.id] ? (
+                      <>
+                        <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
+                        <button
+                          type="button"
+                          onClick={() => window.open(client.myphoner?.latestRecordingUrl || '', '_blank')}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        >
+                          <ExternalLink size={12} />
+                          Open source URL
+                        </button>
+                      </>
+                    ) : (
+                      <div className="text-xs text-amber-300">
+                        {recordingErrorByClient[client.id] || 'Could not load audio in-app for this recording.'}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="flex items-center justify-between gap-2 mt-auto pt-1">
                   <button
@@ -1386,13 +1613,29 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           <div className="mt-3 space-y-2">
                             <button
                               type="button"
+                              onClick={() => void toggleInlineRecording(client)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                            >
+                              {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
+                              {recordingOpenClientId === client.id ? 'Hide inline audio' : 'Listen in Sales UI'}
+                            </button>
+                            {recordingOpenClientId === client.id ? (
+                              recordingBlobUrlByClient[client.id] ? (
+                                <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
+                              ) : (
+                                <p className="text-xs text-amber-300">
+                                  {recordingErrorByClient[client.id] || 'Could not load inline audio. Open source URL instead.'}
+                                </p>
+                              )
+                            ) : null}
+                            <button
+                              type="button"
                               onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
                               className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
                             >
-                              <Volume2 size={13} />
-                              Open audio in new tab
+                              <ExternalLink size={12} />
+                              Open source URL
                             </button>
-                            <audio controls preload="none" src={client.myphoner.latestRecordingUrl} className="w-full" />
                           </div>
                         ) : (
                           <p className="mt-2 text-xs text-gray-500">No call recording synced yet for this lead.</p>
@@ -1647,7 +1890,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
           {activeClients.length === 0 && (
             <div className="lg:col-span-2 2xl:col-span-3 rounded-2xl bg-[#2a2a2a] border border-white/10 p-8 text-center text-gray-400">
-              No active sales clients right now. Click <strong className="text-white">Add client</strong> to start.
+              {clientSearchQuery
+                ? (
+                  <>
+                    No active clients matched <strong className="text-white">"{clientSearchQuery}"</strong>.
+                  </>
+                )
+                : (
+                  <>
+                    No active sales clients right now. Click <strong className="text-white">Add client</strong> to start.
+                  </>
+                )}
             </div>
           )}
         </div>

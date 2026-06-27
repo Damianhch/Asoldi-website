@@ -14,6 +14,7 @@ import {
   getToken,
   setToken,
   type AdminUser,
+  type ClientPaymentRequest,
   type EmployeeRoleOption,
   fromEmployeeRoleOption,
   type Features,
@@ -40,6 +41,8 @@ export const Admin = () => {
   const [changePasswordError, setChangePasswordError] = useState('');
   const [userRoleSaving, setUserRoleSaving] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
+  const [paymentRequests, setPaymentRequests] = useState<ClientPaymentRequest[]>([]);
+  const [markingPaymentRequestId, setMarkingPaymentRequestId] = useState<string | null>(null);
   const [addSiteOpen, setAddSiteOpen] = useState(false);
   const [addSiteName, setAddSiteName] = useState('');
   const [addSiteDomain, setAddSiteDomain] = useState('');
@@ -73,6 +76,18 @@ export const Admin = () => {
     setSites(Array.isArray(data) ? data : []);
   }, []);
 
+  const fetchPaymentRequests = useCallback(async () => {
+    const res = await fetch(`${API}/admin/client-payment-requests`, { headers: authHeaders() });
+    if (res.status === 401) {
+      clearToken();
+      setLoggedIn(false);
+      return;
+    }
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    setPaymentRequests(Array.isArray(data?.requests) ? data.requests : []);
+  }, []);
+
   useEffect(() => {
     fetch(`${API}/cms/config`)
       .then((res) => (res.ok ? res.json() : null))
@@ -89,8 +104,8 @@ export const Admin = () => {
       setLoggedIn(false);
       return;
     }
-    Promise.all([fetchUsers(), fetchSites()]).then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
-  }, [fetchUsers, fetchSites]);
+    Promise.all([fetchUsers(), fetchSites(), fetchPaymentRequests()]).then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
+  }, [fetchUsers, fetchSites, fetchPaymentRequests]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -109,7 +124,7 @@ export const Admin = () => {
       }
       setToken(data.token);
       setLoggedIn(true);
-      await Promise.all([fetchUsers(), fetchSites()]);
+      await Promise.all([fetchUsers(), fetchSites(), fetchPaymentRequests()]);
     } catch {
       setLoginError('Network error');
     } finally {
@@ -141,6 +156,25 @@ export const Admin = () => {
       await fetchUsers();
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function handleMarkPaymentRequestHandled(userId: string) {
+    if (!userId) return;
+    setMarkingPaymentRequestId(userId);
+    try {
+      const res = await fetch(`${API}/admin/client-payment-requests/${encodeURIComponent(userId)}/mark-handled`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        alert(data.message || 'Failed to mark payment request as handled');
+        return;
+      }
+      await fetchPaymentRequests();
+    } finally {
+      setMarkingPaymentRequestId(null);
     }
   }
 
@@ -368,6 +402,8 @@ export const Admin = () => {
             <UsersSection
               users={users}
               loading={loading}
+              paymentRequests={paymentRequests}
+              handlingPaymentRequestId={markingPaymentRequestId}
               userForm={userForm}
               editingId={editingId}
               editPassword={editPassword}
@@ -379,6 +415,7 @@ export const Admin = () => {
               onUpdateUser={handleUpdateUser}
               onDeleteUser={handleDeleteUser}
               onRoleChange={handleUserRoleChange}
+              onMarkPaymentRequestHandled={handleMarkPaymentRequestHandled}
             />
           )}
           {tab === 'employees' && <EmployeesSection />}

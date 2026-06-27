@@ -11,6 +11,7 @@ import * as store from './data/store.js';
 import * as hub from './data/hub.js';
 import * as employees from './data/employees.js';
 import * as sales from './data/sales.js';
+import { SALES_CONTACT_CORRECTIONS } from './data/sales-contact-corrections.js';
 import * as clientPortal from './data/client-portal.js';
 import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
@@ -925,6 +926,139 @@ function isMissingEmailPlaceholder(value = '') {
   return ['', 'not found', 'n/a', 'na', 'none', 'unknown'].includes(email);
 }
 
+function isLikelyTestEmail(value = '') {
+  const email = normalizeEmail(value);
+  if (!email) return false;
+  if (isSyntheticMyphonerFallbackEmail(email)) return true;
+  if (/(?:^|@)(?:example\.com|example\.org|example\.net|test\.com|mailinator\.com)$/i.test(email)) return true;
+  const [localPart = ''] = email.split('@');
+  return /(?:^|[-_.])(test|demo|sample|fake|qa|no-?reply|noreply)(?:[-_.]|\d|$)/i.test(localPart);
+}
+
+function hasPreferredEmailContext(text = '') {
+  return /\b(?:bruk\s+denne|use\s+this|primary|preferred|hoved|main)\b/i.test(String(text || ''));
+}
+
+function hasBlockedEmailContext(text = '') {
+  return /\b(?:ikke\s+bruk|ikke\s+denne|do\s+not\s+use|don't\s+use|not\s+use)\b/i.test(String(text || ''));
+}
+
+function extractEmailCandidatesFromText(text = '') {
+  const raw = String(text || '').replace(/\uFFFD/g, ' ');
+  if (!raw) return [];
+  const emailRegex = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+  const seen = new Set();
+  const candidates = [];
+  for (const match of raw.matchAll(emailRegex)) {
+    const candidate = normalizeEmail(match[0] || '');
+    if (!candidate || !isValidEmail(candidate) || seen.has(candidate)) continue;
+    const index = Number(match.index || 0);
+    const windowStart = Math.max(0, index - 80);
+    const windowEnd = Math.min(raw.length, index + candidate.length + 80);
+    const context = raw.slice(windowStart, windowEnd);
+    candidates.push({
+      email: candidate,
+      preferred: hasPreferredEmailContext(context),
+      blocked: hasBlockedEmailContext(context),
+    });
+    seen.add(candidate);
+  }
+  return candidates;
+}
+
+function pickBestEmailFromText(text = '') {
+  const candidates = extractEmailCandidatesFromText(text);
+  if (!candidates.length) return '';
+  const preferred = candidates.find((entry) => entry.preferred && !entry.blocked && !isLikelyTestEmail(entry.email));
+  if (preferred) return preferred.email;
+  const firstGood = candidates.find((entry) => !entry.blocked && !isLikelyTestEmail(entry.email));
+  if (firstGood) return firstGood.email;
+  return '';
+}
+
+function normalizePhoneCandidate(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const compact = raw.replace(/[^\d+]/g, '');
+  if (!compact) return '';
+  const normalized = compact.startsWith('00') ? `+${compact.slice(2)}` : compact;
+  const digitsOnly = normalized.replace(/\D/g, '');
+  if (digitsOnly.length < 8 || digitsOnly.length > 15) return '';
+  return normalized;
+}
+
+function extractPhoneCandidatesFromText(text = '') {
+  const raw = String(text || '').replace(/\uFFFD/g, ' ');
+  if (!raw) return [];
+  const fragments = [];
+  const regex = /(?:\+?\d[\d\s()./-]{6,}\d)/g;
+  for (const match of raw.matchAll(regex)) {
+    const candidate = sanitizeText(match[0]);
+    if (!candidate) continue;
+    const split = candidate.includes('/') ? candidate.split('/').map((entry) => sanitizeText(entry)) : [candidate];
+    for (const part of split) {
+      if (!part) continue;
+      if (/^\d{1,2}[./-]\d{1,2}[./-]\d{2,4}$/.test(part)) continue;
+      if (/\d{1,2}[:.]\d{2}/.test(part)) continue;
+      const normalized = normalizePhoneCandidate(part);
+      if (normalized) fragments.push(normalized);
+    }
+  }
+  return [...new Set(fragments)];
+}
+
+function pickBestPhoneFromText(text = '') {
+  const candidates = extractPhoneCandidatesFromText(text);
+  return candidates[0] || '';
+}
+
+function resolveLeadCommentText(source = {}, leadDataMap = new Map(), extra = []) {
+  const extras = Array.isArray(extra) ? extra : [extra];
+  const fragments = [
+    ...extras,
+    source?.last_event?.comment,
+    source?.last_action_or_note?.comment,
+    source?.comment,
+    pickLeadDataValue(leadDataMap, ['winner_comment']),
+    pickLeadDataValue(leadDataMap, ['comment']),
+    pickLeadDataValue(leadDataMap, ['notes']),
+    pickLeadDataValue(leadDataMap, ['note']),
+    pickLeadDataValue(leadDataMap, ['description']),
+  ]
+    .map((entry) => sanitizeMyphonerFieldValue(entry))
+    .filter(Boolean);
+  return [...new Set(fragments)].join('\n');
+}
+
+function pickMyphonerLeadEmail(source = {}, leadDataMap = new Map(), commentText = '') {
+  const structuredEmail = normalizeEmail(
+    pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost', 'business_email', 'email_address'])
+  );
+  const fromComments = pickBestEmailFromText(commentText);
+  if (fromComments) return fromComments;
+  if (!structuredEmail) return '';
+  if (!isValidEmail(structuredEmail) || isMissingEmailPlaceholder(structuredEmail) || isLikelyTestEmail(structuredEmail)) return '';
+  return structuredEmail;
+}
+
+function pickMyphonerLeadPhone(source = {}, leadDataMap = new Map(), commentText = '') {
+  const structuredPhone = normalizePhoneCandidate(
+    pickLeadDataValue(leadDataMap, [
+      'mobile_phone',
+      'phone',
+      'business_phone',
+      'phone_number',
+      'work_office_phone',
+      'telephone',
+      'telefon',
+    ])
+  );
+  if (structuredPhone) return structuredPhone;
+  const fromComments = pickBestPhoneFromText(commentText);
+  if (fromComments) return fromComments;
+  return '';
+}
+
 function passwordValid(value = '') {
   return String(value || '').length >= 8;
 }
@@ -1025,6 +1159,242 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     throw new Error('Meeting date/time must be a valid ISO date.');
   }
   return payload;
+}
+
+function normalizeBusinessNameForMatch(value = '') {
+  const normalized = String(value || '')
+    .replace(/[æÆ]/g, 'ae')
+    .replace(/[øØ]/g, 'o')
+    .replace(/[åÅ]/g, 'a')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '');
+  return normalizeLooseKey(normalized);
+}
+
+function resolveCorrectionMeetingAt(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const parsedIso = myphonerApi.parseMyPhonerDateToIso(raw);
+  if (parsedIso) return parsedIso;
+  return parseMyphonerMeetingAtFromFreeText(raw);
+}
+
+function shouldOverrideEmail(currentValue = '', nextValue = '', force = false) {
+  const current = normalizeEmail(currentValue);
+  const next = normalizeEmail(nextValue);
+  if (!next || !isValidEmail(next) || isLikelyTestEmail(next)) return false;
+  if (force) return current !== next;
+  if (!current) return true;
+  if (!isValidEmail(current)) return true;
+  if (isMissingEmailPlaceholder(current)) return true;
+  if (isLikelyTestEmail(current)) return true;
+  return false;
+}
+
+function correctionMatchesClient(correction = {}, client = {}) {
+  const names = [correction.businessName, ...(Array.isArray(correction.aliases) ? correction.aliases : [])]
+    .map((entry) => normalizeBusinessNameForMatch(entry))
+    .filter(Boolean);
+  if (!names.length) return false;
+  const businessName = normalizeBusinessNameForMatch(client.businessName);
+  if (!businessName) return false;
+  return names.some((name) => businessName === name || businessName.includes(name) || name.includes(businessName));
+}
+
+function normalizeCorrectionTargetStatus(value = '') {
+  const normalized = sanitizeText(value).toLowerCase();
+  if (normalized === 'secondary' || normalized === 'not-sold' || normalized === 'active') return normalized;
+  return '';
+}
+
+function applyConfiguredSalesContactCorrections({ createMissing = true } = {}) {
+  if (!Array.isArray(SALES_CONTACT_CORRECTIONS) || !SALES_CONTACT_CORRECTIONS.length) {
+    return { scanned: 0, matched: 0, updated: 0, created: 0, unmatched: [] };
+  }
+  const clients = sales.getSalesClients();
+  const unmatched = [];
+  let matched = 0;
+  let updated = 0;
+  let created = 0;
+
+  for (const correction of SALES_CONTACT_CORRECTIONS) {
+    const correctionPhone = normalizePhoneCandidate(correction.contactPhone);
+    const correctionPhoneDigits = normalizePhoneDigits(correctionPhone);
+    let existing = clients.find((client) => correctionMatchesClient(correction, client));
+    if (!existing && correctionPhoneDigits) {
+      existing = clients.find((client) => {
+        const currentDigits = normalizePhoneDigits(client.contactPhone);
+        if (!currentDigits) return false;
+        return (
+          currentDigits === correctionPhoneDigits ||
+          currentDigits.endsWith(correctionPhoneDigits) ||
+          correctionPhoneDigits.endsWith(currentDigits)
+        );
+      });
+    }
+    const correctionEmail = normalizeEmail(correction.contactEmail);
+    const correctionPerson = sanitizeText(correction.contactPerson);
+    const correctionPlace = sanitizeText(correction.meetingPlace);
+    const correctionNotes = sanitizeText(correction.notes);
+    const correctionTargetStatus = normalizeCorrectionTargetStatus(correction.targetStatus || correction.status);
+    const correctionStatusReason = sanitizeText(correction.statusReason || correction.notes);
+    const correctionMeetingAt = resolveCorrectionMeetingAt(correction.meetingAtHint || correction.meetingAt || '');
+    const correctionMode = correction.meetingMode ? normalizeMeetingMode(correction.meetingMode) : '';
+    const shouldCreate = parseBoolean(correction.createIfMissing, false);
+
+    if (!existing) {
+      unmatched.push(sanitizeText(correction.businessName));
+      if (!createMissing || !shouldCreate) continue;
+      const createdClient = sales.createSalesClient({
+        ownerId: sanitizeText(MYPHONER_DEFAULT_SALES_OWNER_KEY),
+        businessName: sanitizeText(correction.businessName),
+        contactPerson: correctionPerson || sanitizeText(correction.businessName),
+        contactEmail: isValidEmail(correctionEmail) && !isLikelyTestEmail(correctionEmail) ? correctionEmail : '',
+        contactPhone: correctionPhone,
+        meetingMode: correctionMode || 'online',
+        meetingPlace: correctionMode === 'in-person' ? correctionPlace : '',
+        agreedTime: Boolean(correctionMeetingAt),
+        meetingAt: correctionMeetingAt,
+        myphoner: {
+          winnerComment: correctionNotes,
+        },
+      });
+      let createdRecord = createdClient;
+      if (correctionTargetStatus && correctionTargetStatus !== 'active' && createdRecord.status !== correctionTargetStatus) {
+        const moved = sales.setSalesStatus(createdRecord.id, correctionTargetStatus, {
+          reason: correctionStatusReason,
+        });
+        if (moved) createdRecord = moved;
+      }
+      clients.push(createdRecord);
+      created += 1;
+      continue;
+    }
+
+    matched += 1;
+    const patch = {};
+    if (correctionPerson && (parseBoolean(correction.forceContactPerson, false) || !sanitizeText(existing.contactPerson))) {
+      patch.contactPerson = correctionPerson;
+    }
+    if (correctionPhone && (parseBoolean(correction.forcePhone, false) || !sanitizeText(existing.contactPhone))) {
+      patch.contactPhone = correctionPhone;
+    }
+    if (correctionPlace && (parseBoolean(correction.forceMeetingPlace, false) || !sanitizeText(existing.meetingPlace))) {
+      patch.meetingPlace = correctionPlace;
+    }
+    if (correctionMode && correctionMode !== normalizeMeetingMode(existing.meetingMode)) {
+      patch.meetingMode = correctionMode;
+      if (correctionMode === 'online' && !parseBoolean(correction.forceMeetingPlace, false)) {
+        patch.meetingPlace = '';
+      } else if (correctionMode === 'in-person' && correctionPlace) {
+        patch.meetingPlace = correctionPlace;
+      }
+    }
+    if (
+      correctionMeetingAt &&
+      (parseBoolean(correction.forceMeetingAt, false) || !sanitizeText(existing.meetingAt))
+    ) {
+      patch.meetingAt = correctionMeetingAt;
+      patch.agreedTime = true;
+    }
+    if (shouldOverrideEmail(existing.contactEmail, correctionEmail, parseBoolean(correction.forceEmail, false))) {
+      patch.contactEmail = correctionEmail;
+    }
+    if (correctionNotes) {
+      const currentComment = sanitizeText(existing.myphoner?.winnerComment);
+      if (!currentComment.toLowerCase().includes(correctionNotes.toLowerCase())) {
+        patch.myphoner = {
+          ...(patch.myphoner || {}),
+          winnerComment: currentComment ? `${currentComment}\n\n${correctionNotes}` : correctionNotes,
+        };
+      }
+    }
+
+    let next = existing;
+    let changed = false;
+    if (Object.keys(patch).length) {
+      const saved = sales.updateSalesClient(existing.id, patch);
+      if (saved) {
+        next = saved;
+        changed = true;
+      }
+    }
+    if (correctionTargetStatus && correctionTargetStatus !== next.status) {
+      const moved = sales.setSalesStatus(next.id, correctionTargetStatus, {
+        reason: correctionStatusReason,
+      });
+      if (moved) {
+        next = moved;
+        changed = true;
+      }
+    }
+    if (changed) {
+      const index = clients.findIndex((client) => client.id === existing.id);
+      if (index !== -1) clients[index] = next;
+      updated += 1;
+    }
+  }
+
+  return {
+    scanned: SALES_CONTACT_CORRECTIONS.length,
+    matched,
+    updated,
+    created,
+    unmatched: [...new Set(unmatched.filter(Boolean))],
+  };
+}
+
+function buildSalesEmailAudit(clients = []) {
+  const rows = (Array.isArray(clients) ? clients : []).map((client) => {
+    const email = normalizeEmail(client.contactEmail);
+    const hasEmail = Boolean(email);
+    const valid = hasEmail && isValidEmail(email);
+    const testLike = valid && isLikelyTestEmail(email);
+    return {
+      id: sanitizeText(client.id),
+      businessName: sanitizeText(client.businessName),
+      contactPerson: sanitizeText(client.contactPerson),
+      contactPhone: sanitizeText(client.contactPhone),
+      email,
+      hasEmail,
+      valid,
+      testLike,
+    };
+  });
+
+  return {
+    totals: {
+      total: rows.length,
+      withAnyEmail: rows.filter((row) => row.hasEmail).length,
+      valid: rows.filter((row) => row.valid).length,
+      validNonTest: rows.filter((row) => row.valid && !row.testLike).length,
+      missing: rows.filter((row) => !row.hasEmail).length,
+      invalid: rows.filter((row) => row.hasEmail && !row.valid).length,
+      flaggedTest: rows.filter((row) => row.valid && row.testLike).length,
+    },
+    missing: rows
+      .filter((row) => !row.hasEmail)
+      .map((row) => ({
+        id: row.id,
+        businessName: row.businessName,
+        contactPerson: row.contactPerson,
+        contactPhone: row.contactPhone,
+      })),
+    invalid: rows
+      .filter((row) => row.hasEmail && !row.valid)
+      .map((row) => ({
+        id: row.id,
+        businessName: row.businessName,
+        email: row.email,
+      })),
+    flaggedTest: rows
+      .filter((row) => row.valid && row.testLike)
+      .map((row) => ({
+        id: row.id,
+        businessName: row.businessName,
+        email: row.email,
+      })),
+  };
 }
 
 function formatBrregAddress(input = {}) {
@@ -1646,9 +2016,9 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
     winnerCategory,
   });
   const meetingAt = parseMyphonerMeetingAt(source, leadDataMap);
-  const contactEmail = pickFirstNonEmpty([
-    pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']),
-  ]);
+  const commentText = resolveLeadCommentText(source, leadDataMap);
+  const contactEmail = pickMyphonerLeadEmail(source, leadDataMap, commentText);
+  const contactPhone = pickMyphonerLeadPhone(source, leadDataMap, commentText);
   const websiteDomain = extractDomainFromMyphonerValue(
     pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside'])
   );
@@ -1656,20 +2026,12 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
     {
       businessName,
       contactPerson: contactPerson || businessName,
-      contactEmail: isValidEmail(contactEmail) ? contactEmail : '',
-      contactPhone: pickFirstNonEmpty([
-        pickLeadDataValue(leadDataMap, [
-          'mobile_phone',
-          'phone',
-          'business_phone',
-          'phone_number',
-          'work_office_phone',
-          'telephone',
-          'telefon',
-        ]),
-        source.tertiary_identifier,
-        source.destination_number,
-      ]),
+      contactEmail,
+      contactPhone:
+        contactPhone ||
+        normalizePhoneCandidate(
+          pickFirstNonEmpty([source.tertiary_identifier, source.destination_number])
+        ),
       meetingMode,
       meetingPlace: meetingMode === 'in-person' ? meetingPlaceRaw : '',
       agreedTime: Boolean(meetingAt),
@@ -1797,14 +2159,15 @@ function findSalesClientByPhone(phone = '') {
 
 function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
   const source = lead && typeof lead === 'object' ? lead : {};
+  const leadDataMap = getLeadDataMap(source);
+  const commentText = resolveLeadCommentText(source, leadDataMap);
   const leadId = getMyphonerLeadId(source, resourcePath);
   if (leadId) {
     const byLead = sales.getSalesClientByMyphonerLeadId(leadId);
     if (byLead) return byLead;
     // Do not merge two distinct Myphoner winner leads onto one existing lead-linked sales row.
     // We only allow fallback matching to rows that are not already linked to another lead ID.
-    const leadDataMap = getLeadDataMap(source);
-    const email = normalizeEmail(pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']));
+    const email = normalizeEmail(pickMyphonerLeadEmail(source, leadDataMap, commentText));
     if (email) {
       const byUnlinkedEmail = sales.getSalesClients().find((client) => {
         const clientEmail = normalizeEmail(client.contactEmail);
@@ -1813,10 +2176,7 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
       });
       if (byUnlinkedEmail) return byUnlinkedEmail;
     }
-    const phone = pickFirstNonEmpty([
-      pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
-      source.destination_number,
-    ]);
+    const phone = pickMyphonerLeadPhone(source, leadDataMap, commentText) || normalizePhoneCandidate(source.destination_number);
     if (phone) {
       const targetDigits = normalizePhoneDigits(phone);
       const byUnlinkedPhone = sales.getSalesClients().find((client) => {
@@ -1874,16 +2234,12 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
     }
     return null;
   }
-  const leadDataMap = getLeadDataMap(source);
-  const email = normalizeEmail(pickLeadDataValue(leadDataMap, ['email', 'e_mail', 'mail', 'epost']));
+  const email = normalizeEmail(pickMyphonerLeadEmail(source, leadDataMap, commentText));
   if (email) {
     const byEmail = sales.getSalesClients().find((client) => normalizeEmail(client.contactEmail) === email);
     if (byEmail) return byEmail;
   }
-  const phone = pickFirstNonEmpty([
-    pickLeadDataValue(leadDataMap, ['mobile_phone', 'phone', 'phone_number', 'work_office_phone', 'telephone', 'telefon']),
-    source.destination_number,
-  ]);
+  const phone = pickMyphonerLeadPhone(source, leadDataMap, commentText) || normalizePhoneCandidate(source.destination_number);
   return findSalesClientByPhone(phone);
 }
 
@@ -4560,6 +4916,26 @@ app.get('/api/admin/sales', salesAuth, (req, res) => {
   });
 });
 
+app.get('/api/admin/sales/email-audit', salesAuth, (req, res) => {
+  const all = sales.getSalesClients();
+  const visible = req.salesUser.isAdmin
+    ? all
+    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+  res.json(buildSalesEmailAudit(visible));
+});
+
+app.post('/api/admin/sales/apply-contact-corrections', salesAuth, (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can apply bundled contact corrections.' });
+  }
+  const createMissing = parseBoolean(req.body?.createMissing, true);
+  const summary = applyConfiguredSalesContactCorrections({ createMissing });
+  return res.json({
+    ok: true,
+    ...summary,
+  });
+});
+
 app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
@@ -4637,6 +5013,92 @@ app.get('/api/admin/sales/:id', salesAuth, (req, res) => {
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   res.json({ client });
+});
+
+// Streams the latest synced call recording through this backend so the Sales UI
+// can play audio inline without relying on direct third-party CORS/browser auth.
+app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const rawUrl = sanitizeText(client.myphoner?.latestRecordingUrl);
+  const recordingUrl = normalizeAbsoluteHttpUrl(rawUrl);
+  if (!recordingUrl) {
+    return res.status(404).json({ message: 'No recording URL is synced for this client.' });
+  }
+
+  let target;
+  try {
+    target = new URL(recordingUrl);
+  } catch {
+    return res.status(400).json({ message: 'Recording URL is invalid.' });
+  }
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    return res.status(400).json({ message: 'Recording URL must use http(s).' });
+  }
+
+  const myphonerConfig = myphonerApi.getMyPhonerConfig();
+  const myphonerHost = sanitizeText(myphonerConfig?.subdomain)
+    ? `${sanitizeText(myphonerConfig.subdomain).toLowerCase()}.myphoner.com`
+    : '';
+  const appBase = normalizeHttpBaseUrl(process.env.APP_URL || `${req.protocol}://${req.get('host')}`);
+  let appHost = '';
+  try {
+    if (appBase) appHost = new URL(appBase).host.toLowerCase();
+  } catch {
+    appHost = '';
+  }
+  const requestHost = sanitizeText(req.get('host')).toLowerCase();
+  const allowedHosts = new Set([myphonerHost, appHost, requestHost].map((entry) => sanitizeText(entry).toLowerCase()).filter(Boolean));
+
+  const targetHost = String(target.host || '').toLowerCase();
+  const isMyphonerHost = Boolean(myphonerHost && targetHost === myphonerHost);
+  const isAppHost = Boolean(allowedHosts.has(targetHost));
+  if (!isAppHost) {
+    return res.status(403).json({ message: 'Recording host is not allowed.' });
+  }
+  if (/^\/api\/admin\/sales\/[^/]+\/recording$/i.test(target.pathname)) {
+    return res.status(400).json({ message: 'Recording URL points to this proxy endpoint.' });
+  }
+
+  const headers = {
+    Accept: '*/*',
+  };
+  if (isMyphonerHost) {
+    if (!myphonerApi.isMyPhonerConfigured(myphonerConfig)) {
+      return res.status(503).json({ message: 'Myphoner integration is not configured.' });
+    }
+    headers.Authorization = `Token "${myphonerConfig.apiKey}"`;
+  }
+
+  try {
+    const upstream = await fetch(recordingUrl, {
+      method: 'GET',
+      headers,
+      redirect: 'follow',
+    });
+    if (!upstream.ok) {
+      const body = await upstream.text().catch(() => '');
+      return res.status(upstream.status).json({
+        message: sanitizeText(body) || `Failed fetching recording (${upstream.status}).`,
+      });
+    }
+
+    const contentType = sanitizeText(upstream.headers.get('content-type')) || 'audio/mpeg';
+    const contentLengthRaw = upstream.headers.get('content-length');
+    const contentLength = Number(contentLengthRaw);
+    const payload = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', contentType);
+    if (Number.isFinite(contentLength) && contentLength > 0) {
+      res.setHeader('Content-Length', String(contentLength));
+    }
+    return res.send(payload);
+  } catch (error) {
+    return res.status(502).json({
+      message: sanitizeText(error?.message) || 'Failed streaming recording.',
+    });
+  }
 });
 
 app.post('/api/admin/sales', salesAuth, async (req, res) => {
@@ -5328,6 +5790,12 @@ async function ensureData() {
   employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
   await fs.mkdir(SALES_IMPORTS_ROOT, { recursive: true }).catch(() => {});
+  const correctionSummary = applyConfiguredSalesContactCorrections({ createMissing: true });
+  if (correctionSummary.updated || correctionSummary.created) {
+    console.log(
+      `[sales] applied bundled contact corrections: updated=${correctionSummary.updated}, created=${correctionSummary.created}, matched=${correctionSummary.matched}`
+    );
+  }
 }
 
 ensureData().then(() => {
