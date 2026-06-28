@@ -1061,7 +1061,11 @@ async function listLocalRecordingFiles() {
   return [...filesByName.values()].sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-async function syncLocalMyphonerRecordings({ baseUrl = '', persist = true } = {}) {
+async function syncLocalMyphonerRecordings({
+  baseUrl = '',
+  persist = true,
+  fillMissingOnly = false,
+} = {}) {
   const normalizedBaseUrl = normalizeHttpBaseUrl(baseUrl);
   if (!normalizedBaseUrl) {
     throw new Error('Cannot sync recordings without a valid base URL.');
@@ -1105,9 +1109,16 @@ async function syncLocalMyphonerRecordings({ baseUrl = '', persist = true } = {}
   }
 
   const applied = [];
+  let skippedExistingRecording = 0;
   for (const candidate of selectedByClient.values()) {
     const recordingUrl = `${normalizedBaseUrl}/myphoner-audio/${encodeURIComponent(candidate.fileName)}`;
     if (persist) {
+      const currentClient = sales.getSalesClientById(candidate.clientId);
+      const existingRecordingUrl = sanitizeText(currentClient?.myphoner?.latestRecordingUrl);
+      if (fillMissingOnly && existingRecordingUrl) {
+        skippedExistingRecording += 1;
+        continue;
+      }
       sales.updateSalesClient(candidate.clientId, {
         myphoner: {
           latestRecordingUrl: recordingUrl,
@@ -1137,6 +1148,7 @@ async function syncLocalMyphonerRecordings({ baseUrl = '', persist = true } = {}
       filesWithoutPhoneMetadata: filesWithoutPhone.length,
       unmatchedByPhone: unmatchedByPhone.length,
       ignoredOlderMatches: matchedCandidates.length - selectedByClient.size,
+      skippedExistingRecording,
     },
     applied,
     filesWithoutPhone,
@@ -3654,13 +3666,16 @@ app.post('/api/admin/sales/sync-local-recordings', adminAuth, async (req, res) =
       return res.status(400).json({ ok: false, message: 'APP_URL (or request host) must be a valid http(s) URL.' });
     }
     const dryRun = Boolean(req.body?.dryRun);
+    const fillMissingOnly = parseBoolean(req.body?.fillMissingOnly, false);
     const result = await syncLocalMyphonerRecordings({
       baseUrl,
       persist: !dryRun,
+      fillMissingOnly,
     });
     return res.json({
       ok: true,
       dryRun,
+      fillMissingOnly,
       ...result,
     });
   } catch (error) {
@@ -5990,6 +6005,29 @@ function ensureHubDefaultSite() {
   console.log('Hub: seeded default site Mong Sushi (mongsushi.no). Copy its site key and set CMS_SITE_KEY on the client.');
 }
 
+async function runStartupSalesRecordingBackfill() {
+  const baseUrl =
+    normalizeHttpBaseUrl(process.env.APP_URL || '') ||
+    normalizeHttpBaseUrl(`http://127.0.0.1:${PORT}`);
+  if (!baseUrl) {
+    console.log('[sales] startup recording backfill skipped: no valid base URL');
+    return;
+  }
+  try {
+    const result = await syncLocalMyphonerRecordings({
+      baseUrl,
+      persist: true,
+      fillMissingOnly: true,
+    });
+    const summary = result?.summary || {};
+    console.log(
+      `[sales] startup recording backfill: files=${Number(summary.filesFound || 0)}, updated=${Number(summary.clientsUpdated || 0)}, skippedExisting=${Number(summary.skippedExistingRecording || 0)}, unmatched=${Number(summary.unmatchedByPhone || 0)}`
+    );
+  } catch (error) {
+    console.error('[sales] startup recording backfill failed:', sanitizeText(error?.message) || error);
+  }
+}
+
 async function ensureData() {
   await ensureAdminExists();
   employees.ensureWorkersForUsers(await store.getAllUsers());
@@ -6001,6 +6039,7 @@ async function ensureData() {
       `[sales] applied bundled contact corrections: updated=${correctionSummary.updated}, created=${correctionSummary.created}, matched=${correctionSummary.matched}`
     );
   }
+  await runStartupSalesRecordingBackfill();
 }
 
 ensureData().then(() => {
