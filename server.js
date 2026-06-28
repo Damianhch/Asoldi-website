@@ -5171,6 +5171,48 @@ app.get('/api/admin/sales/:id', salesAuth, (req, res) => {
   res.json({ client });
 });
 
+function recordingContentTypeForPath(filePath = '') {
+  const ext = String(path.extname(filePath || '')).toLowerCase();
+  if (ext === '.wav') return 'audio/wav';
+  if (ext === '.mp3') return 'audio/mpeg';
+  if (ext === '.m4a') return 'audio/mp4';
+  if (ext === '.ogg') return 'audio/ogg';
+  if (ext === '.flac') return 'audio/flac';
+  return 'application/octet-stream';
+}
+
+async function resolveLocalRecordingAsset(targetPathname = '') {
+  let decoded = '';
+  try {
+    decoded = decodeURIComponent(String(targetPathname || ''));
+  } catch {
+    return '';
+  }
+  const stripped = decoded.replace(/^[/\\]+/, '');
+  if (!stripped) return '';
+  const normalized = path.normalize(stripped);
+  if (!normalized || normalized.startsWith('..') || normalized.includes(`..${path.sep}`)) {
+    return '';
+  }
+
+  const roots = [
+    path.resolve(distPath),
+    path.resolve(__dirname, 'public'),
+  ];
+
+  for (const root of roots) {
+    const candidate = path.resolve(root, normalized);
+    if (!candidate.startsWith(root)) continue;
+    try {
+      const stats = await fs.stat(candidate);
+      if (stats.isFile()) return candidate;
+    } catch {
+      // Keep trying other roots.
+    }
+  }
+  return '';
+}
+
 // Streams the latest synced call recording through this backend so the Sales UI
 // can play audio inline without relying on direct third-party CORS/browser auth.
 app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
@@ -5215,6 +5257,13 @@ app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
   }
   if (/^\/api\/admin\/sales\/[^/]+\/recording$/i.test(target.pathname)) {
     return res.status(400).json({ message: 'Recording URL points to this proxy endpoint.' });
+  }
+
+  const localAssetPath = await resolveLocalRecordingAsset(target.pathname);
+  if (localAssetPath) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', recordingContentTypeForPath(localAssetPath));
+    return res.sendFile(localAssetPath);
   }
 
   const headers = {
