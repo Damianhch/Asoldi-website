@@ -22,6 +22,24 @@ function sanitizeText(value = '') {
   return String(value ?? '').trim();
 }
 
+function normalizeWebsiteDomain(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `https://${raw}`;
+  let host = '';
+  try {
+    host = new URL(withProtocol).host.toLowerCase().replace(/^www\./, '');
+  } catch {
+    host = raw
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .split('/')[0]
+      .replace(/^www\./, '');
+  }
+  if (host === 'myphoner.com' || host.endsWith('.myphoner.com')) return '';
+  return raw;
+}
+
 function normalizeSalesStatus(value = '') {
   const raw = sanitizeText(value).toLowerCase();
   if (SALES_STATUSES.includes(raw)) return raw;
@@ -201,7 +219,7 @@ function normalizeSalesClient(raw = {}) {
     meetingDurationMinutes: durationForMode(meetingMode),
     agreedTime,
     meetingAt,
-    websiteDomain: sanitizeText(raw.websiteDomain),
+    websiteDomain: normalizeWebsiteDomain(raw.websiteDomain),
     details: normalizeSalesDetails(raw.details),
     myphoner: normalizeMyphoner(raw.myphoner),
     progression: normalizeProgression(raw.progression, agreedTime),

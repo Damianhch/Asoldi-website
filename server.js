@@ -152,9 +152,23 @@ const MYPHONER_WEBHOOK_RECONCILE_ENABLED = String(process.env.MYPHONER_WEBHOOK_R
 const MYPHONER_WEBHOOK_RECONCILE_MS = Number(process.env.MYPHONER_WEBHOOK_RECONCILE_MS || 10 * 60 * 1000);
 const MYPHONER_DEFAULT_SALES_OWNER_KEY =
   sanitizeText(process.env.MYPHONER_DEFAULT_SALES_OWNER_KEY) || 'admin:daracha777@gmail.com';
+const MYPHONER_AUTO_LINK_ENRICH_ENABLED = String(process.env.MYPHONER_AUTO_LINK_ENRICH || '1') !== '0';
+const MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS = Number(process.env.MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS || 6000);
+const MYPHONER_AUTO_LINK_SEARCH_CACHE_MS = Number(process.env.MYPHONER_AUTO_LINK_SEARCH_CACHE_MS || 6 * 60 * 60 * 1000);
+const SERPAPI_API_KEY = sanitizeText(process.env.SERPAPI_API_KEY || process.env.SERP_API_KEY);
+const SERPAPI_ENGINE = sanitizeText(process.env.SERPAPI_ENGINE || 'google') || 'google';
+const SERPAPI_TIMEOUT_MS = Number(process.env.SERPAPI_TIMEOUT_MS || MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS || 6000);
+const SERPAPI_HL = sanitizeText(process.env.SERPAPI_HL || '');
+const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 6);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 2);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 2);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 let myphonerWebhookReconcileInterval = null;
 let myphonerWebhookReconcileRunning = false;
+const pendingSalesLinkEnrichment = new Set();
+const salesSearchCache = new Map();
+let serpApiMissingKeyWarned = false;
 
 const CLIENT_WEBSITE_PLANS = [
   {
@@ -1288,7 +1302,7 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     meetingMode: mode,
     agreedTime,
     meetingAt,
-    websiteDomain: sanitizeText(source.websiteDomain ?? existing?.websiteDomain),
+    websiteDomain: sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
     details: normalizeSalesDetailLinks(source.details, existing?.details),
   };
 
@@ -1485,6 +1499,21 @@ function applyConfiguredSalesContactCorrections({ createMissing = true } = {}) {
     updated,
     created,
     unmatched: [...new Set(unmatched.filter(Boolean))],
+  };
+}
+
+function cleanupBlockedSalesWebsiteDomains() {
+  const clients = sales.getSalesClients();
+  let cleaned = 0;
+  for (const client of clients) {
+    const current = sanitizeText(client.websiteDomain);
+    if (!current || !isBlockedSalesWebsiteDomain(current)) continue;
+    const updated = sales.updateSalesClient(client.id, { websiteDomain: '' });
+    if (updated) cleaned += 1;
+  }
+  return {
+    scanned: clients.length,
+    cleaned,
   };
 }
 
@@ -1769,6 +1798,36 @@ function normalizeLooseKey(value = '') {
 
 function normalizePhoneDigits(value = '') {
   return String(value || '').replace(/\D+/g, '');
+}
+
+function extractHostFromDomainLikeValue(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `https://${raw}`;
+  try {
+    return sanitizeText(new URL(withProtocol).host.toLowerCase().replace(/^www\./, ''));
+  } catch {
+    return sanitizeText(
+      raw
+        .toLowerCase()
+        .replace(/^https?:\/\//, '')
+        .split('/')[0]
+        .replace(/^www\./, '')
+    );
+  }
+}
+
+function isBlockedSalesWebsiteDomain(value = '') {
+  const host = extractHostFromDomainLikeValue(value);
+  if (!host) return false;
+  return host === 'myphoner.com' || host.endsWith('.myphoner.com');
+}
+
+function sanitizeSalesWebsiteDomain(value = '') {
+  const raw = sanitizeText(value);
+  if (!raw) return '';
+  if (isBlockedSalesWebsiteDomain(raw)) return '';
+  return raw;
 }
 
 function splitMultilineValues(value = '') {
@@ -2058,10 +2117,19 @@ function inferMeetingModeFromMyphonerLead(lead = {}, leadDataMap = new Map(), me
 
 function collectUrlCandidatesFromLead(lead = {}, leadDataMap = new Map()) {
   const values = [
-    pickLeadDataValue(leadDataMap, ['instagram', 'instagram_url', 'instagram_profile']),
-    pickLeadDataValue(leadDataMap, ['facebook', 'facebook_url', 'facebook_profile']),
-    pickLeadDataValue(leadDataMap, ['proff', 'proff_url', 'proff_link']),
-    pickLeadDataValue(leadDataMap, ['google_business_profile', 'google_maps', 'google_maps_url', 'gbp']),
+    pickLeadDataValue(leadDataMap, ['instagram', 'instagram_url', 'instagram_profile', 'instagram_link']),
+    pickLeadDataValue(leadDataMap, ['facebook', 'facebook_url', 'facebook_profile', 'facebook_link']),
+    pickLeadDataValue(leadDataMap, ['proff', 'proff_url', 'proff_link', 'proffno']),
+    pickLeadDataValue(leadDataMap, [
+      'google_business_profile',
+      'google_business_url',
+      'google_maps',
+      'google_maps_url',
+      'google_maps_link',
+      'google_map_url',
+      'maps_url',
+      'gbp',
+    ]),
     pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside']),
   ];
   for (const value of leadDataMap.values()) {
@@ -2101,12 +2169,512 @@ function buildSalesDetailsFromMyphonerLead(lead = {}, leadDataMap = new Map()) {
   });
 }
 
+function normalizeSearchText(value = '') {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function pruneSalesSearchCache(nowMs = Date.now()) {
+  for (const [key, cached] of salesSearchCache.entries()) {
+    if (!cached || Number(cached.expiresAt || 0) <= nowMs) {
+      salesSearchCache.delete(key);
+    }
+  }
+  if (salesSearchCache.size > 200) {
+    salesSearchCache.clear();
+  }
+}
+
+async function searchSerpApi(queryText = '') {
+  const query = sanitizeText(queryText);
+  if (!query) return [];
+  if (!SERPAPI_API_KEY) {
+    if (!serpApiMissingKeyWarned) {
+      serpApiMissingKeyWarned = true;
+      console.warn('[sales] SERPAPI_API_KEY missing: social link enrichment search is disabled.');
+    }
+    return [];
+  }
+
+  const cacheKey = `serpapi:${normalizeLooseKey(query)}`;
+  const nowMs = Date.now();
+  pruneSalesSearchCache(nowMs);
+  const cached = salesSearchCache.get(cacheKey);
+  if (cached && Number(cached.expiresAt || 0) > nowMs && Array.isArray(cached.results)) {
+    return cached.results;
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1000, SERPAPI_TIMEOUT_MS));
+  try {
+    const params = new URLSearchParams({
+      engine: SERPAPI_ENGINE,
+      q: query,
+      api_key: SERPAPI_API_KEY,
+      num: '10',
+    });
+    if (SERPAPI_HL) params.set('hl', SERPAPI_HL);
+    if (SERPAPI_GL) params.set('gl', SERPAPI_GL);
+
+    const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    const payload = await response.json().catch(() => ({}));
+    const rawResults = Array.isArray(payload?.organic_results) ? payload.organic_results : [];
+    const results = rawResults
+      .map((entry) => ({
+        url: coerceHttpUrl(entry?.link || entry?.redirect_link || ''),
+        title: sanitizeText(entry?.title || ''),
+        snippet: sanitizeText(entry?.snippet || entry?.snippet_highlighted_words?.join(' ') || ''),
+      }))
+      .filter((entry) => entry.url)
+      .slice(0, 10);
+    salesSearchCache.set(cacheKey, {
+      expiresAt: nowMs + Math.max(60_000, MYPHONER_AUTO_LINK_SEARCH_CACHE_MS),
+      results,
+    });
+    return results;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function buildBusinessSearchTokens(values = []) {
+  const stopWords = new Set([
+    'as', 'og', 'the', 'for', 'and', 'med', 'til', 'hos', 'butikk', 'restaurant', 'cafe', 'bar', 'norge',
+  ]);
+  const tokens = normalizeSearchText((Array.isArray(values) ? values : [values]).join(' '))
+    .split(' ')
+    .map((entry) => sanitizeText(entry))
+    .filter((entry) => entry.length >= 3 && !stopWords.has(entry));
+  return [...new Set(tokens)].slice(0, 10);
+}
+
+function scoreSalesSearchCandidate(candidate = {}, context = {}) {
+  const haystack = normalizeSearchText(
+    `${sanitizeText(candidate.title)} ${sanitizeText(candidate.snippet)} ${sanitizeText(candidate.url)}`
+  );
+  if (!haystack) return 0;
+  const businessTokens = Array.isArray(context.businessTokens) ? context.businessTokens : [];
+  const cityToken = sanitizeText(context.cityToken);
+  const organizationNumber = sanitizeText(context.organizationNumber);
+  let score = 0;
+  for (const token of businessTokens) {
+    if (token && haystack.includes(token)) score += 2;
+  }
+  if (cityToken && haystack.includes(cityToken)) score += 2;
+  if (organizationNumber && haystack.includes(organizationNumber)) score += 3;
+  return score;
+}
+
+function canonicalizeInstagramProfileUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.host.toLowerCase();
+    if (!host.includes('instagram.com')) return '';
+    const segments = parsed.pathname.split('/').map((entry) => sanitizeText(entry)).filter(Boolean);
+    const firstSegment = sanitizeText(segments[0]).toLowerCase();
+    const blocked = new Set([
+      'p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'developer', 'legal', 'about',
+    ]);
+    if (!firstSegment || blocked.has(firstSegment)) return '';
+    return `https://www.instagram.com/${segments[0]}/`;
+  } catch {
+    return '';
+  }
+}
+
+function canonicalizeFacebookProfileUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.host.toLowerCase();
+    if (!(host.includes('facebook.com') || host.includes('fb.com') || host.includes('m.me'))) return '';
+    if (host.includes('m.me')) return normalized;
+    const segments = parsed.pathname.split('/').map((entry) => sanitizeText(entry)).filter(Boolean);
+    if (!segments.length) return '';
+    const firstSegment = sanitizeText(segments[0]).toLowerCase();
+    if (firstSegment === 'profile.php') {
+      const profileId = sanitizeText(parsed.searchParams.get('id'));
+      if (!profileId) return '';
+      return `https://www.facebook.com/profile.php?id=${encodeURIComponent(profileId)}`;
+    }
+    const blocked = new Set([
+      'share', 'sharer', 'photos', 'photo', 'events', 'groups', 'watch', 'reel', 'reels', 'story.php', 'permalink.php',
+      'marketplace', 'search', 'plugins', 'dialog', 'login',
+    ]);
+    if (blocked.has(firstSegment)) return '';
+    if ((firstSegment === 'pages' || firstSegment === 'people') && segments[1]) {
+      return `https://www.facebook.com/${segments[0]}/${segments[1]}/`;
+    }
+    return `https://www.facebook.com/${segments[0]}/`;
+  } catch {
+    return '';
+  }
+}
+
+function getSearchContextBusinessTokens(context = {}) {
+  return (Array.isArray(context.businessTokens) ? context.businessTokens : [])
+    .map((entry) => normalizeSearchText(entry))
+    .filter(Boolean);
+}
+
+function getCandidateSearchHaystack(candidate = {}) {
+  return normalizeSearchText(
+    `${sanitizeText(candidate.title)} ${sanitizeText(candidate.snippet)} ${sanitizeText(candidate.url)}`
+  );
+}
+
+function collectMatchedBusinessTokens(haystack = '', businessTokens = []) {
+  const matched = [];
+  for (const token of Array.isArray(businessTokens) ? businessTokens : []) {
+    if (!token || !haystack.includes(token)) continue;
+    if (!matched.includes(token)) matched.push(token);
+  }
+  return matched;
+}
+
+function extractSocialProfileIdentifier(url = '') {
+  const normalized = coerceHttpUrl(url);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    const segments = parsed.pathname.split('/').map((entry) => sanitizeText(entry)).filter(Boolean);
+    if (!segments.length) return '';
+    const first = sanitizeText(segments[0]).toLowerCase();
+    if (first === 'profile.php') return '';
+    if ((first === 'pages' || first === 'people') && segments[1]) {
+      return normalizeSearchText(segments[1]).replace(/\s+/g, '');
+    }
+    return normalizeSearchText(segments[0]).replace(/\s+/g, '');
+  } catch {
+    return '';
+  }
+}
+
+function hasStrongSocialIdentifierMatch({ url = '', matchedTokens = [], context = {} } = {}) {
+  const profileIdentifier = extractSocialProfileIdentifier(url);
+  if (!profileIdentifier) return false;
+  const normalizedBusinessName = normalizeSearchText(context.businessName || '').replace(/\s+/g, '');
+  if (normalizedBusinessName && profileIdentifier.includes(normalizedBusinessName)) return true;
+  for (const token of Array.isArray(matchedTokens) ? matchedTokens : []) {
+    const compact = normalizeSearchText(token).replace(/\s+/g, '');
+    if (compact && profileIdentifier.includes(compact)) return true;
+  }
+  return false;
+}
+
+function selectBestSearchUrl(
+  results = [],
+  {
+    context = {},
+    normalizeUrl = () => '',
+    minScore = 2,
+    minConfidenceMargin = 0,
+    minBusinessTokenMatches = 1,
+    strictConfidence = false,
+  } = {}
+) {
+  const businessTokens = getSearchContextBusinessTokens(context);
+  const normalizedBusinessName = normalizeSearchText(context.businessName || '');
+  const scored = (Array.isArray(results) ? results : [])
+    .map((entry) => {
+      const url = normalizeUrl(entry?.url || '');
+      if (!url) return null;
+      const haystack = getCandidateSearchHaystack(entry);
+      const score = scoreSalesSearchCandidate(entry, context);
+      const matchedTokens = collectMatchedBusinessTokens(haystack, businessTokens);
+      const tokenMatches = matchedTokens.length;
+      const exactBusinessNameMatch = Boolean(normalizedBusinessName && haystack.includes(normalizedBusinessName));
+      const strongIdentifierMatch = hasStrongSocialIdentifierMatch({
+        url,
+        matchedTokens,
+        context,
+      });
+      const confidencePoints =
+        score +
+        tokenMatches * 2 +
+        (exactBusinessNameMatch ? 2 : 0) +
+        (strongIdentifierMatch ? 2 : 0);
+      return {
+        url,
+        score,
+        confidencePoints,
+        tokenMatches,
+        exactBusinessNameMatch,
+        strongIdentifierMatch,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => {
+      if (b.confidencePoints !== a.confidencePoints) return b.confidencePoints - a.confidencePoints;
+      if (b.score !== a.score) return b.score - a.score;
+      return b.tokenMatches - a.tokenMatches;
+    });
+  if (!scored.length) return '';
+  const top = scored[0];
+  const runnerUp = scored[1] || null;
+  if (top.score < minScore) return '';
+
+  if (strictConfidence) {
+    const availableTokens = Math.max(1, businessTokens.length);
+    const requiredTokenMatches = Math.max(1, Math.min(minBusinessTokenMatches, availableTokens));
+    if (top.tokenMatches < requiredTokenMatches) return '';
+    if (!top.strongIdentifierMatch && !top.exactBusinessNameMatch) return '';
+    if (runnerUp && top.confidencePoints - runnerUp.confidencePoints < Math.max(0, Number(minConfidenceMargin || 0))) {
+      return '';
+    }
+  } else if (runnerUp && top.score === runnerUp.score && top.score < minScore + 2) {
+    return '';
+  }
+  return top.url;
+}
+
+function extractOrganizationNumberFromLead(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const candidates = [
+    pickLeadDataValue(leadDataMap, [
+      'organisasjonsnummer',
+      'organization_number',
+      'organisation_number',
+      'orgnr',
+      'org_nr',
+      'org_number',
+      'brreg_number',
+    ]),
+    source.organisasjonsnummer,
+    source.organization_number,
+    source.organizationNumber,
+  ];
+  for (const value of leadDataMap.values()) {
+    if (typeof value === 'string' || typeof value === 'number') candidates.push(value);
+  }
+  for (const candidate of candidates) {
+    const match = String(candidate || '').match(/\b(\d{3}\s?\d{3}\s?\d{3})\b/);
+    if (!match?.[1]) continue;
+    const digits = match[1].replace(/\D+/g, '');
+    if (digits.length === 9) return digits;
+  }
+  return '';
+}
+
+function extractMyphonerLocationHint(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  return pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, [
+      'city',
+      'town',
+      'post_place',
+      'poststed',
+      'municipality',
+      'kommune',
+      'location',
+      'county',
+    ]),
+    pickLeadDataValue(leadDataMap, ['meeting_place', 'meeting_address', 'address', 'visiting_address']),
+    source.secondary_identifier,
+  ]);
+}
+
+function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new Map()) {
+  const businessName = sanitizeText(client.businessName || pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'name']));
+  const locationHint = sanitizeText(extractMyphonerLocationHint(lead, leadDataMap));
+  const cityToken = normalizeSearchText(locationHint).split(' ').filter(Boolean)[0] || '';
+  const organizationNumber = sanitizeText(extractOrganizationNumberFromLead(lead, leadDataMap));
+  const businessTokens = buildBusinessSearchTokens([businessName]);
+  return {
+    businessName,
+    locationHint,
+    cityToken,
+    organizationNumber,
+    businessTokens,
+  };
+}
+
+async function lookupBrregEntityByOrganizationNumber(orgNumber = '') {
+  const digits = sanitizeText(orgNumber).replace(/\D+/g, '');
+  if (digits.length !== 9) return null;
+  const candidates = await searchBrregBusinesses(digits).catch(() => []);
+  const list = Array.isArray(candidates) ? candidates : [];
+  return (
+    list.find((entry) => sanitizeText(entry.organizationNumber).replace(/\D+/g, '') === digits) ||
+    list[0] ||
+    null
+  );
+}
+
+async function resolveBestSearchCandidate({
+  queries = [],
+  context = {},
+  normalizeUrl = () => '',
+  minScore = 2,
+  minConfidenceMargin = 0,
+  minBusinessTokenMatches = 1,
+  strictConfidence = false,
+} = {}) {
+  const list = Array.isArray(queries) ? queries : [queries];
+  for (const candidateQuery of list) {
+    const query = sanitizeText(candidateQuery);
+    if (!query) continue;
+    const results = await searchSerpApi(query);
+    const resolved = selectBestSearchUrl(results, {
+      context,
+      normalizeUrl,
+      minScore,
+      minConfidenceMargin,
+      minBusinessTokenMatches,
+      strictConfidence,
+    });
+    if (resolved) return resolved;
+  }
+  return '';
+}
+
+async function enrichSalesClientLinksFromMyphoner({
+  clientId = '',
+  lead = {},
+  leadDataMap = new Map(),
+} = {}) {
+  const targetClientId = sanitizeText(clientId);
+  if (!targetClientId) return { updated: false, changedFields: [] };
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
+  const currentClient = sales.getSalesClientById(targetClientId);
+  if (!currentClient) return { updated: false, changedFields: [] };
+
+  const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
+  const nextDetails = { ...currentDetails };
+  const leadDetails = buildSalesDetailsFromMyphonerLead(source, map);
+
+  if (!nextDetails.instagramUrl && leadDetails.instagramUrl) nextDetails.instagramUrl = leadDetails.instagramUrl;
+  if (!nextDetails.facebookUrl && leadDetails.facebookUrl) nextDetails.facebookUrl = leadDetails.facebookUrl;
+  if (!nextDetails.proffUrl && leadDetails.proffUrl) nextDetails.proffUrl = leadDetails.proffUrl;
+  if (!nextDetails.googleBusinessProfile && leadDetails.googleBusinessProfile) {
+    nextDetails.googleBusinessProfile = leadDetails.googleBusinessProfile;
+  }
+
+  let searchContext = buildSalesLinkSearchContext(currentClient, source, map);
+  const orgNumber = sanitizeText(searchContext.organizationNumber);
+  const brregEntity = orgNumber ? await lookupBrregEntityByOrganizationNumber(orgNumber) : null;
+  const enrichedBusinessName = sanitizeText(brregEntity?.name);
+  const enrichedLocationHint = sanitizeText(searchContext.locationHint || brregEntity?.address);
+  if (enrichedBusinessName || enrichedLocationHint) {
+    searchContext = {
+      ...searchContext,
+      locationHint: enrichedLocationHint || searchContext.locationHint,
+      cityToken:
+        searchContext.cityToken ||
+        normalizeSearchText(enrichedLocationHint).split(' ').filter(Boolean)[0] ||
+        '',
+      businessTokens: buildBusinessSearchTokens([
+        searchContext.businessName,
+        enrichedBusinessName,
+      ]),
+    };
+  }
+  const baseBusinessName = sanitizeText(searchContext.businessName || enrichedBusinessName);
+  const baseQuery = [baseBusinessName, searchContext.locationHint].filter(Boolean).join(' ');
+
+  if (!nextDetails.proffUrl && orgNumber) {
+    nextDetails.proffUrl = `https://www.proff.no/bransjesok?q=${encodeURIComponent(orgNumber)}`;
+  }
+
+  if (!nextDetails.instagramUrl && baseQuery) {
+    nextDetails.instagramUrl = await resolveBestSearchCandidate({
+      queries: [`${baseQuery} site:instagram.com`],
+      context: searchContext,
+      normalizeUrl: canonicalizeInstagramProfileUrl,
+      minScore: Math.max(2, MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE),
+      minConfidenceMargin: Math.max(0, MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN),
+      minBusinessTokenMatches: Math.max(1, MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES),
+      strictConfidence: true,
+    });
+  }
+
+  if (!nextDetails.facebookUrl && baseQuery) {
+    nextDetails.facebookUrl = await resolveBestSearchCandidate({
+      queries: [`${baseQuery} site:facebook.com`],
+      context: searchContext,
+      normalizeUrl: canonicalizeFacebookProfileUrl,
+      minScore: Math.max(2, MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE),
+      minConfidenceMargin: Math.max(0, MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN),
+      minBusinessTokenMatches: Math.max(1, MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES),
+      strictConfidence: true,
+    });
+  }
+
+  const normalizedNext = normalizeSalesDetailLinks(nextDetails, currentDetails);
+  const changedFields = ['instagramUrl', 'facebookUrl', 'proffUrl', 'googleBusinessProfile'].filter((field) => {
+    const previous = sanitizeText(currentDetails[field]);
+    const nextValue = sanitizeText(normalizedNext[field]);
+    return Boolean(nextValue) && nextValue !== previous;
+  });
+  if (!changedFields.length) return { updated: false, changedFields: [] };
+
+  const updated = sales.updateSalesClient(targetClientId, {
+    details: normalizedNext,
+  });
+  return {
+    updated: Boolean(updated),
+    changedFields,
+    clientId: targetClientId,
+  };
+}
+
+function scheduleSalesClientLinkEnrichment({
+  clientId = '',
+  lead = {},
+  leadDataMap = new Map(),
+} = {}) {
+  if (!MYPHONER_AUTO_LINK_ENRICH_ENABLED) return;
+  const targetClientId = sanitizeText(clientId);
+  if (!targetClientId || pendingSalesLinkEnrichment.has(targetClientId)) return;
+  pendingSalesLinkEnrichment.add(targetClientId);
+  setTimeout(async () => {
+    try {
+      const result = await enrichSalesClientLinksFromMyphoner({
+        clientId: targetClientId,
+        lead,
+        leadDataMap,
+      });
+      if (result?.updated && Array.isArray(result.changedFields) && result.changedFields.length) {
+        console.log(
+          `[sales] auto-enriched links for ${targetClientId}: ${result.changedFields.join(', ')}`
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[sales] auto-enrich links failed for ${targetClientId}:`,
+        sanitizeText(error?.message) || error
+      );
+    } finally {
+      pendingSalesLinkEnrichment.delete(targetClientId);
+    }
+  }, 0);
+}
+
 function extractDomainFromMyphonerValue(value = '') {
   const raw = sanitizeMyphonerFieldValue(value);
   if (!raw) return '';
   const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
   try {
     const host = new URL(withProtocol).host.toLowerCase().replace(/^www\./, '');
+    if (isBlockedSalesWebsiteDomain(host)) return '';
     return sanitizeMyphonerFieldValue(host);
   } catch {
     return '';
@@ -2501,8 +3069,14 @@ async function upsertSalesClientFromMyphonerLead({
   }
   if (!client) throw makeHttpError(500, 'Failed creating/updating sales client from Myphoner.');
   const syncResult = await maybeSyncCalendar(client, existing || null);
+  const finalClient = syncResult.client || client;
+  scheduleSalesClientLinkEnrichment({
+    clientId: sanitizeText(finalClient?.id),
+    lead: source,
+    leadDataMap,
+  });
   return {
-    client: syncResult.client || client,
+    client: finalClient,
     created: !existing,
     warnings: syncResult.warnings || [],
   };
@@ -6033,6 +6607,12 @@ async function ensureData() {
   employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
   await fs.mkdir(SALES_IMPORTS_ROOT, { recursive: true }).catch(() => {});
+  const domainCleanupSummary = cleanupBlockedSalesWebsiteDomains();
+  if (domainCleanupSummary.cleaned) {
+    console.log(
+      `[sales] cleaned blocked website domains: cleaned=${domainCleanupSummary.cleaned}, scanned=${domainCleanupSummary.scanned}`
+    );
+  }
   const correctionSummary = applyConfiguredSalesContactCorrections({ createMissing: true });
   if (correctionSummary.updated || correctionSummary.created) {
     console.log(
