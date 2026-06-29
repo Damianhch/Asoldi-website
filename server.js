@@ -163,12 +163,16 @@ const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 6);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 2);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 2);
+const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
+const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v1');
+const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 let myphonerWebhookReconcileInterval = null;
 let myphonerWebhookReconcileRunning = false;
 const pendingSalesLinkEnrichment = new Set();
 const salesSearchCache = new Map();
 let serpApiMissingKeyWarned = false;
+let salesLinkBackfillRunning = false;
 
 const CLIENT_WEBSITE_PLANS = [
   {
@@ -2549,13 +2553,14 @@ async function enrichSalesClientLinksFromMyphoner({
   clientId = '',
   lead = {},
   leadDataMap = new Map(),
+  persist = true,
 } = {}) {
   const targetClientId = sanitizeText(clientId);
-  if (!targetClientId) return { updated: false, changedFields: [] };
+  if (!targetClientId) return { updated: false, wouldUpdate: false, changedFields: [] };
   const source = lead && typeof lead === 'object' ? lead : {};
   const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
   const currentClient = sales.getSalesClientById(targetClientId);
-  if (!currentClient) return { updated: false, changedFields: [] };
+  if (!currentClient) return { updated: false, wouldUpdate: false, changedFields: [] };
 
   const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
   const nextDetails = { ...currentDetails };
@@ -2624,13 +2629,23 @@ async function enrichSalesClientLinksFromMyphoner({
     const nextValue = sanitizeText(normalizedNext[field]);
     return Boolean(nextValue) && nextValue !== previous;
   });
-  if (!changedFields.length) return { updated: false, changedFields: [] };
+  if (!changedFields.length) return { updated: false, wouldUpdate: false, changedFields: [] };
+
+  if (!persist) {
+    return {
+      updated: false,
+      wouldUpdate: true,
+      changedFields,
+      clientId: targetClientId,
+    };
+  }
 
   const updated = sales.updateSalesClient(targetClientId, {
     details: normalizedNext,
   });
   return {
     updated: Boolean(updated),
+    wouldUpdate: Boolean(updated),
     changedFields,
     clientId: targetClientId,
   };
@@ -2666,6 +2681,134 @@ function scheduleSalesClientLinkEnrichment({
       pendingSalesLinkEnrichment.delete(targetClientId);
     }
   }, 0);
+}
+
+function collectMissingSalesLinkFields(details = {}) {
+  const normalized = normalizeSalesDetailLinks(details || {});
+  const missing = [];
+  if (!sanitizeText(normalized.googleBusinessProfile)) missing.push('googleBusinessProfile');
+  if (!sanitizeText(normalized.proffUrl)) missing.push('proffUrl');
+  if (!sanitizeText(normalized.instagramUrl)) missing.push('instagramUrl');
+  if (!sanitizeText(normalized.facebookUrl)) missing.push('facebookUrl');
+  return missing;
+}
+
+function collectMyphonerLeadIdsFromClient(client = {}) {
+  const source = client && typeof client === 'object' ? client : {};
+  const leadIds = [
+    sanitizeText(source?.myphoner?.leadId),
+    ...(Array.isArray(source?.myphoner?.leadIds) ? source.myphoner.leadIds : []),
+  ]
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+  return [...new Set(leadIds)];
+}
+
+async function fetchMyphonerLeadForSalesClient(client = {}) {
+  if (!myphonerApi.isMyPhonerConfigured()) {
+    return { lead: null, source: '', error: 'myphoner-not-configured' };
+  }
+  const source = client && typeof client === 'object' ? client : {};
+  const leadIds = collectMyphonerLeadIdsFromClient(source);
+  let lastError = '';
+  for (const leadId of leadIds) {
+    const response = await myphonerApi.fetchMyPhonerLeadById(leadId);
+    if (response?.success && response?.data && typeof response.data === 'object') {
+      return { lead: response.data, source: `lead-id:${leadId}`, error: '' };
+    }
+    lastError = sanitizeText(response?.error || '') || lastError;
+  }
+  const leadResourceUrl = sanitizeText(source?.myphoner?.leadResourceUrl);
+  if (leadResourceUrl) {
+    const response = await myphonerApi.fetchMyPhonerLeadByResource(leadResourceUrl);
+    if (response?.success && response?.data && typeof response.data === 'object') {
+      return { lead: response.data, source: 'lead-resource', error: '' };
+    }
+    lastError = sanitizeText(response?.error || '') || lastError;
+  }
+  return { lead: null, source: '', error: lastError || 'lead-not-found' };
+}
+
+async function backfillExistingSalesClientLinks({
+  clients = [],
+  onlyMissing = true,
+  dryRun = false,
+  limit = 0,
+} = {}) {
+  const allClients = Array.isArray(clients) ? clients : [];
+  const parsedLimit = Number(limit);
+  const maxClients = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.max(1, Math.trunc(parsedLimit)) : 0;
+  const selectedClients = maxClients ? allClients.slice(0, maxClients) : allClients;
+  const summary = {
+    totalClients: allClients.length,
+    selectedClients: selectedClients.length,
+    onlyMissing: Boolean(onlyMissing),
+    dryRun: Boolean(dryRun),
+    eligibleClients: 0,
+    processedClients: 0,
+    skippedNoMissing: 0,
+    updatedClients: 0,
+    wouldUpdateClients: 0,
+    unchangedClients: 0,
+    leadFetched: 0,
+    leadFetchFailed: 0,
+    errors: 0,
+  };
+  const changed = [];
+  const failures = [];
+
+  for (const client of selectedClients) {
+    const targetClientId = sanitizeText(client?.id);
+    if (!targetClientId) continue;
+    const missingFields = collectMissingSalesLinkFields(client?.details || {});
+    if (onlyMissing && !missingFields.length) {
+      summary.skippedNoMissing += 1;
+      continue;
+    }
+
+    summary.eligibleClients += 1;
+    const leadResult = await fetchMyphonerLeadForSalesClient(client);
+    if (leadResult?.lead) summary.leadFetched += 1;
+    else if (leadResult?.error && leadResult.error !== 'myphoner-not-configured') summary.leadFetchFailed += 1;
+
+    const leadPayload = leadResult?.lead && typeof leadResult.lead === 'object' ? leadResult.lead : {};
+    const map = getLeadDataMap(leadPayload);
+    try {
+      const result = await enrichSalesClientLinksFromMyphoner({
+        clientId: targetClientId,
+        lead: leadPayload,
+        leadDataMap: map,
+        persist: !dryRun,
+      });
+      summary.processedClients += 1;
+      if (result?.updated) summary.updatedClients += 1;
+      else if (result?.wouldUpdate) summary.wouldUpdateClients += 1;
+      else summary.unchangedClients += 1;
+      if ((result?.updated || result?.wouldUpdate) && Array.isArray(result?.changedFields) && result.changedFields.length) {
+        changed.push({
+          clientId: targetClientId,
+          businessName: sanitizeText(client?.businessName),
+          changedFields: result.changedFields,
+          missingBefore: missingFields,
+          leadSource: sanitizeText(leadResult?.source || ''),
+          dryRun: Boolean(dryRun),
+        });
+      }
+    } catch (error) {
+      summary.errors += 1;
+      failures.push({
+        clientId: targetClientId,
+        businessName: sanitizeText(client?.businessName),
+        message: sanitizeText(error?.message) || 'Unknown backfill error',
+      });
+    }
+  }
+
+  return {
+    summary,
+    changed,
+    failures,
+  };
 }
 
 function extractDomainFromMyphonerValue(value = '') {
@@ -5681,6 +5824,48 @@ app.post('/api/admin/sales/apply-contact-corrections', salesAuth, (req, res) => 
   });
 });
 
+app.post('/api/admin/sales/backfill-links', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can run sales link backfill.' });
+  }
+  try {
+    const dryRun = parseBoolean(req.body?.dryRun, false);
+    const onlyMissing = parseBoolean(req.body?.onlyMissing, true);
+    const requestedLimit = Number(req.body?.limit ?? SALES_LINK_BACKFILL_LIMIT);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.max(1, Math.min(2000, Math.trunc(requestedLimit)))
+      : 0;
+    const requestedIds = Array.isArray(req.body?.clientIds)
+      ? req.body.clientIds.map((entry) => sanitizeText(entry)).filter(Boolean)
+      : [];
+
+    const allClients = sales.getSalesClients();
+    const selectedClients = requestedIds.length
+      ? allClients.filter((client) => requestedIds.includes(sanitizeText(client.id)))
+      : allClients;
+    const result = await backfillExistingSalesClientLinks({
+      clients: selectedClients,
+      onlyMissing,
+      dryRun,
+      limit,
+    });
+
+    return res.json({
+      ok: true,
+      dryRun,
+      onlyMissing,
+      limit,
+      requestedClientIds: requestedIds.length,
+      ...result,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed backfilling sales links.',
+    });
+  }
+});
+
 app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
@@ -6602,6 +6787,44 @@ async function runStartupSalesRecordingBackfill() {
   }
 }
 
+async function runStartupSalesLinkBackfill() {
+  if (!SALES_LINK_BACKFILL_ENABLED) return;
+  if (salesLinkBackfillRunning) return;
+  const version = sanitizeText(SALES_LINK_BACKFILL_VERSION);
+  if (!version) return;
+
+  const existingBackfillState = myphonerIntegration.getSalesLinksBackfillState();
+  if (sanitizeText(existingBackfillState?.version) === version) {
+    console.log(`[sales] startup links backfill skipped: already completed version=${version}`);
+    return;
+  }
+
+  salesLinkBackfillRunning = true;
+  try {
+    const allClients = sales.getSalesClients();
+    const result = await backfillExistingSalesClientLinks({
+      clients: allClients,
+      onlyMissing: true,
+      dryRun: false,
+      limit: Number.isFinite(SALES_LINK_BACKFILL_LIMIT) && SALES_LINK_BACKFILL_LIMIT > 0
+        ? SALES_LINK_BACKFILL_LIMIT
+        : 0,
+    });
+    myphonerIntegration.setSalesLinksBackfillState({
+      version,
+      completedAt: nowIso(),
+    });
+    const summary = result?.summary || {};
+    console.log(
+      `[sales] startup links backfill completed: version=${version}, selected=${Number(summary.selectedClients || 0)}, eligible=${Number(summary.eligibleClients || 0)}, processed=${Number(summary.processedClients || 0)}, updated=${Number(summary.updatedClients || 0)}, unchanged=${Number(summary.unchangedClients || 0)}, leadFetchFailed=${Number(summary.leadFetchFailed || 0)}, errors=${Number(summary.errors || 0)}`
+    );
+  } catch (error) {
+    console.error('[sales] startup links backfill failed:', sanitizeText(error?.message) || error);
+  } finally {
+    salesLinkBackfillRunning = false;
+  }
+}
+
 async function ensureData() {
   await ensureAdminExists();
   employees.ensureWorkersForUsers(await store.getAllUsers());
@@ -6626,7 +6849,12 @@ ensureData().then(() => {
   startSalesReminderLoop();
   startMyphonerWebhookReconcileLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
-  app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+    runStartupSalesLinkBackfill().catch((error) => {
+      console.error('[sales] startup links backfill crashed:', sanitizeText(error?.message) || error);
+    });
+  });
 }).catch((err) => {
   console.error('Failed to init admin:', err);
   process.exit(1);

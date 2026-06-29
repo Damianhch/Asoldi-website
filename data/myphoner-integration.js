@@ -74,6 +74,14 @@ function normalizeRecordingMap(value = {}) {
   return Object.fromEntries(sorted.slice(0, MAX_RECORDINGS));
 }
 
+function normalizeSalesLinksBackfillState(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    version: sanitizeText(input.version),
+    completedAt: sanitizeText(input.completedAt),
+  };
+}
+
 function defaultState() {
   return {
     webhooks: {
@@ -85,6 +93,9 @@ function defaultState() {
       recording: {},
     },
     recordingsByLeadId: {},
+    maintenance: {
+      salesLinksBackfill: normalizeSalesLinksBackfillState(),
+    },
     updatedAt: nowIso(),
   };
 }
@@ -113,6 +124,9 @@ function normalizeState(value = {}) {
     recording: normalizeProcessedBucket(input?.processedEvents?.recording),
   };
   state.recordingsByLeadId = normalizeRecordingMap(input?.recordingsByLeadId);
+  state.maintenance = {
+    salesLinksBackfill: normalizeSalesLinksBackfillState(input?.maintenance?.salesLinksBackfill),
+  };
   state.updatedAt = nowIso();
   return state;
 }
@@ -240,4 +254,24 @@ export function setRecordingForLead(leadId = '', payload = {}) {
   state.updatedAt = nowIso();
   writeStore(state);
   return state.recordingsByLeadId[key];
+}
+
+export function getSalesLinksBackfillState() {
+  const state = readStore();
+  return normalizeSalesLinksBackfillState(state?.maintenance?.salesLinksBackfill);
+}
+
+export function setSalesLinksBackfillState(payload = {}) {
+  const input = payload && typeof payload === 'object' ? payload : {};
+  const state = readStore();
+  if (!state.maintenance || typeof state.maintenance !== 'object') {
+    state.maintenance = {};
+  }
+  state.maintenance.salesLinksBackfill = normalizeSalesLinksBackfillState({
+    version: input.version,
+    completedAt: sanitizeText(input.completedAt) || nowIso(),
+  });
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return state.maintenance.salesLinksBackfill;
 }
