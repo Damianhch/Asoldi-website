@@ -164,7 +164,7 @@ const SERPAPI_MIN_INTERVAL_MS = Number(process.env.SERPAPI_MIN_INTERVAL_MS || 90
 const SERPAPI_RETRY_LIMIT = Number(process.env.SERPAPI_RETRY_LIMIT || 3);
 const SERPAPI_RETRY_BACKOFF_MS = Number(process.env.SERPAPI_RETRY_BACKOFF_MS || 1200);
 const SOCIAL_BRAVE_FALLBACK_ENABLED = String(process.env.SOCIAL_BRAVE_FALLBACK_ENABLED || '1') !== '0';
-const SOCIAL_BRAVE_TIMEOUT_MS = Number(process.env.SOCIAL_BRAVE_TIMEOUT_MS || 8000);
+const SOCIAL_BRAVE_TIMEOUT_MS = Number(process.env.SOCIAL_BRAVE_TIMEOUT_MS || 3500);
 const SOCIAL_BRAVE_MIN_INTERVAL_MS = Number(process.env.SOCIAL_BRAVE_MIN_INTERVAL_MS || 250);
 const SOCIAL_BRAVE_MAX_LINKS = Number(process.env.SOCIAL_BRAVE_MAX_LINKS || 80);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 2);
@@ -2742,12 +2742,10 @@ function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {})
   const locationHint = sanitizeText(context?.locationHint || '');
   const cityToken = sanitizeText(context?.cityToken || '');
   const fragments = [
-    [businessName, locationHint, `site:${siteDomain}`],
-    [`"${businessName}"`, `site:${siteDomain}`],
     [businessName, socialProvider, locationHint],
-    [businessName, socialProvider],
-    [simplifiedBusinessName, socialProvider, cityToken],
+    [`"${businessName}"`, `site:${siteDomain}`],
     [simplifiedBusinessName, `site:${siteDomain}`],
+    [simplifiedBusinessName, socialProvider, cityToken],
   ];
   const querySet = new Set();
   for (const parts of fragments) {
@@ -2760,7 +2758,7 @@ function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {})
     if (!query || query.length < 4) continue;
     querySet.add(query);
   }
-  return [...querySet];
+  return [...querySet].slice(0, 3);
 }
 
 async function lookupBrregEntityByOrganizationNumber(orgNumber = '') {
