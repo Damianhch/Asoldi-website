@@ -160,6 +160,9 @@ const SERPAPI_ENGINE = sanitizeText(process.env.SERPAPI_ENGINE || 'google') || '
 const SERPAPI_TIMEOUT_MS = Number(process.env.SERPAPI_TIMEOUT_MS || MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS || 6000);
 const SERPAPI_HL = sanitizeText(process.env.SERPAPI_HL || '');
 const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
+const SERPAPI_MIN_INTERVAL_MS = Number(process.env.SERPAPI_MIN_INTERVAL_MS || 900);
+const SERPAPI_RETRY_LIMIT = Number(process.env.SERPAPI_RETRY_LIMIT || 3);
+const SERPAPI_RETRY_BACKOFF_MS = Number(process.env.SERPAPI_RETRY_BACKOFF_MS || 1200);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 2);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 0);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
@@ -172,6 +175,8 @@ let myphonerWebhookReconcileRunning = false;
 const pendingSalesLinkEnrichment = new Set();
 const salesSearchCache = new Map();
 let serpApiMissingKeyWarned = false;
+let serpApiLastRequestAt = 0;
+let serpApiRateLimitWarningAt = 0;
 let salesLinkBackfillRunning = false;
 
 const CLIENT_WEBSITE_PLANS = [
@@ -2204,6 +2209,14 @@ function pruneSalesSearchCache(nowMs = Date.now()) {
   }
 }
 
+function waitForMs(ms = 0) {
+  const delay = Math.max(0, Math.trunc(Number(ms) || 0));
+  if (!delay) return Promise.resolve();
+  return new Promise((resolve) => {
+    setTimeout(resolve, delay);
+  });
+}
+
 async function searchSerpApi(queryText = '') {
   const query = sanitizeText(queryText);
   if (!query) return [];
@@ -2223,9 +2236,16 @@ async function searchSerpApi(queryText = '') {
     return cached.results;
   }
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), Math.max(1000, SERPAPI_TIMEOUT_MS));
-  try {
+  const maxAttempts = Math.max(1, Math.trunc(Number(SERPAPI_RETRY_LIMIT) || 0));
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const now = Date.now();
+    const minInterval = Math.max(0, Math.trunc(Number(SERPAPI_MIN_INTERVAL_MS) || 0));
+    const waitMs = Math.max(0, minInterval - Math.max(0, now - serpApiLastRequestAt));
+    if (waitMs > 0) await waitForMs(waitMs);
+    serpApiLastRequestAt = Date.now();
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(1000, SERPAPI_TIMEOUT_MS));
     const params = new URLSearchParams({
       engine: SERPAPI_ENGINE,
       q: query,
@@ -2235,34 +2255,56 @@ async function searchSerpApi(queryText = '') {
     if (SERPAPI_HL) params.set('hl', SERPAPI_HL);
     if (SERPAPI_GL) params.set('gl', SERPAPI_GL);
 
-    const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-      },
-      signal: controller.signal,
-    });
-    if (!response.ok) return [];
-    const payload = await response.json().catch(() => ({}));
-    const rawResults = Array.isArray(payload?.organic_results) ? payload.organic_results : [];
-    const results = rawResults
-      .map((entry) => ({
-        url: coerceHttpUrl(entry?.link || entry?.redirect_link || ''),
-        title: sanitizeText(entry?.title || ''),
-        snippet: sanitizeText(entry?.snippet || entry?.snippet_highlighted_words?.join(' ') || ''),
-      }))
-      .filter((entry) => entry.url)
-      .slice(0, 20);
-    salesSearchCache.set(cacheKey, {
-      expiresAt: nowMs + Math.max(60_000, MYPHONER_AUTO_LINK_SEARCH_CACHE_MS),
-      results,
-    });
-    return results;
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timeout);
+    try {
+      const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        if (response.status === 429 || response.status === 503 || response.status === 502 || response.status === 504) {
+          const nowWarn = Date.now();
+          if (nowWarn - serpApiRateLimitWarningAt > 60_000) {
+            serpApiRateLimitWarningAt = nowWarn;
+            console.warn(`[sales] SerpAPI throttled (${response.status}); retrying with backoff.`);
+          }
+          if (attempt < maxAttempts) {
+            const baseBackoff = Math.max(200, Math.trunc(Number(SERPAPI_RETRY_BACKOFF_MS) || 0));
+            await waitForMs(baseBackoff * attempt);
+            continue;
+          }
+        }
+        return [];
+      }
+      const payload = await response.json().catch(() => ({}));
+      const rawResults = Array.isArray(payload?.organic_results) ? payload.organic_results : [];
+      const results = rawResults
+        .map((entry) => ({
+          url: coerceHttpUrl(entry?.link || entry?.redirect_link || ''),
+          title: sanitizeText(entry?.title || ''),
+          snippet: sanitizeText(entry?.snippet || entry?.snippet_highlighted_words?.join(' ') || ''),
+        }))
+        .filter((entry) => entry.url)
+        .slice(0, 20);
+      salesSearchCache.set(cacheKey, {
+        expiresAt: nowMs + Math.max(60_000, MYPHONER_AUTO_LINK_SEARCH_CACHE_MS),
+        results,
+      });
+      return results;
+    } catch {
+      if (attempt < maxAttempts) {
+        const baseBackoff = Math.max(200, Math.trunc(Number(SERPAPI_RETRY_BACKOFF_MS) || 0));
+        await waitForMs(baseBackoff * attempt);
+        continue;
+      }
+      return [];
+    } finally {
+      clearTimeout(timeout);
+    }
   }
+  return [];
 }
 
 function buildBusinessSearchTokens(values = []) {
@@ -2595,15 +2637,12 @@ function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {})
   const locationHint = sanitizeText(context?.locationHint || '');
   const cityToken = sanitizeText(context?.cityToken || '');
   const fragments = [
-    [`"${businessName}"`, locationHint, `site:${siteDomain}`],
     [businessName, locationHint, `site:${siteDomain}`],
-    [`"${businessName}"`, socialProvider, locationHint],
+    [`"${businessName}"`, `site:${siteDomain}`],
     [businessName, socialProvider, locationHint],
-    [`"${businessName}"`, socialProvider],
     [businessName, socialProvider],
-    [`"${simplifiedBusinessName}"`, socialProvider, cityToken],
     [simplifiedBusinessName, socialProvider, cityToken],
-    [simplifiedBusinessName, locationHint, `site:${siteDomain}`],
+    [simplifiedBusinessName, `site:${siteDomain}`],
   ];
   const querySet = new Set();
   for (const parts of fragments) {
@@ -2653,60 +2692,85 @@ async function resolveBestSearchCandidate({
     };
   }
 
-  const aggregatedResults = [];
+  let queryCount = 0;
   let rawResultCount = 0;
+  let bestFailure = null;
+
+  const shouldReplaceBestFailure = (current = null, next = null) => {
+    if (!next) return false;
+    if (!current) return true;
+    const currentTop = current?.top || null;
+    const nextTop = next?.top || null;
+    const currentPoints = Number(currentTop?.confidencePoints || currentTop?.score || 0);
+    const nextPoints = Number(nextTop?.confidencePoints || nextTop?.score || 0);
+    if (nextPoints !== currentPoints) return nextPoints > currentPoints;
+    const currentCandidates = Number(current?.uniqueCandidateCount || 0);
+    const nextCandidates = Number(next?.uniqueCandidateCount || 0);
+    return nextCandidates > currentCandidates;
+  };
+
   for (const query of list) {
+    queryCount += 1;
     const results = await searchSerpApi(query);
     const normalizedResults = Array.isArray(results) ? results : [];
     rawResultCount += normalizedResults.length;
+
+    if (!normalizedResults.length) {
+      const failure = {
+        url: '',
+        reason: 'no-search-results',
+        queryCount,
+        rawResultCount,
+        uniqueCandidateCount: 0,
+        top: null,
+        runnerUp: null,
+      };
+      if (shouldReplaceBestFailure(bestFailure, failure)) bestFailure = failure;
+      continue;
+    }
+
+    const dedupedResults = [];
+    const seenUrls = new Set();
     for (const entry of normalizedResults) {
-      aggregatedResults.push({
+      const key = coerceHttpUrl(entry?.url || '');
+      if (!key || seenUrls.has(key)) continue;
+      seenUrls.add(key);
+      dedupedResults.push({
         ...entry,
         query,
+        url: key,
       });
     }
-  }
-  if (!rawResultCount) {
-    return {
-      url: '',
-      reason: 'no-search-results',
-      queryCount: list.length,
-      rawResultCount: 0,
-      uniqueCandidateCount: 0,
-      top: null,
-      runnerUp: null,
-    };
-  }
 
-  const dedupedResults = [];
-  const seenUrls = new Set();
-  for (const entry of aggregatedResults) {
-    const key = coerceHttpUrl(entry?.url || '');
-    if (!key || seenUrls.has(key)) continue;
-    seenUrls.add(key);
-    dedupedResults.push({
-      ...entry,
-      url: key,
+    const selected = selectBestSearchCandidate(dedupedResults, {
+      context,
+      normalizeUrl,
+      minScore,
+      minConfidenceMargin,
+      minBusinessTokenMatches,
+      strictConfidence,
     });
+    const candidateResolution = {
+      url: sanitizeText(selected?.url || ''),
+      reason: sanitizeText(selected?.reason || 'unknown'),
+      queryCount,
+      rawResultCount,
+      uniqueCandidateCount: dedupedResults.length,
+      top: selected?.top || null,
+      runnerUp: selected?.runnerUp || null,
+    };
+    if (candidateResolution.url) return candidateResolution;
+    if (shouldReplaceBestFailure(bestFailure, candidateResolution)) bestFailure = candidateResolution;
   }
-
-  const selected = selectBestSearchCandidate(dedupedResults, {
-    context,
-    normalizeUrl,
-    minScore,
-    minConfidenceMargin,
-    minBusinessTokenMatches,
-    strictConfidence,
-  });
-
+  if (bestFailure) return bestFailure;
   return {
-    url: sanitizeText(selected?.url || ''),
-    reason: sanitizeText(selected?.reason || 'unknown'),
-    queryCount: list.length,
+    url: '',
+    reason: rawResultCount ? 'no-canonical-candidates' : 'no-search-results',
+    queryCount,
     rawResultCount,
-    uniqueCandidateCount: dedupedResults.length,
-    top: selected?.top || null,
-    runnerUp: selected?.runnerUp || null,
+    uniqueCandidateCount: 0,
+    top: null,
+    runnerUp: null,
   };
 }
 
