@@ -1860,10 +1860,12 @@ function classifySalesLink(url = '') {
   if (!normalized) return { kind: 'other', url: '' };
   let host = '';
   let pathName = '';
+  let searchParams = new URLSearchParams();
   try {
     const parsed = new URL(normalized);
     host = parsed.host.toLowerCase();
     pathName = parsed.pathname.toLowerCase();
+    searchParams = parsed.searchParams;
   } catch {
     return { kind: 'other', url: normalized };
   }
@@ -1872,8 +1874,16 @@ function classifySalesLink(url = '') {
     return { kind: 'facebook', url: normalized };
   }
   if (host.includes('proff.no')) return { kind: 'proff', url: normalized };
+  const hasGoogleMapsQuerySignal =
+    searchParams.has('cid') ||
+    searchParams.has('g_mp') ||
+    searchParams.has('gmp') ||
+    searchParams.has('place_id') ||
+    searchParams.has('placeid') ||
+    searchParams.has('query_place_id');
   if (
-    host.includes('google') && (pathName.includes('/maps') || pathName.includes('/business')) ||
+    host.includes('maps.google.') ||
+    host.includes('google') && (pathName.includes('/maps') || pathName.includes('/business') || hasGoogleMapsQuerySignal) ||
     host.includes('maps.app.goo.gl') ||
     host.includes('g.page')
   ) {
@@ -2556,11 +2566,11 @@ async function enrichSalesClientLinksFromMyphoner({
   persist = true,
 } = {}) {
   const targetClientId = sanitizeText(clientId);
-  if (!targetClientId) return { updated: false, wouldUpdate: false, changedFields: [] };
+  if (!targetClientId) return { updated: false, wouldUpdate: false, changedFields: [], resolvedDetails: {} };
   const source = lead && typeof lead === 'object' ? lead : {};
   const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
   const currentClient = sales.getSalesClientById(targetClientId);
-  if (!currentClient) return { updated: false, wouldUpdate: false, changedFields: [] };
+  if (!currentClient) return { updated: false, wouldUpdate: false, changedFields: [], resolvedDetails: {} };
 
   const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
   const nextDetails = { ...currentDetails };
@@ -2575,7 +2585,15 @@ async function enrichSalesClientLinksFromMyphoner({
 
   let searchContext = buildSalesLinkSearchContext(currentClient, source, map);
   const orgNumber = sanitizeText(searchContext.organizationNumber);
-  const brregEntity = orgNumber ? await lookupBrregEntityByOrganizationNumber(orgNumber) : null;
+  const fallbackClientOrgnr = extractOrganizationNumberFromClientRecord(currentClient);
+  const resolvedOrgnr = sanitizeText(orgNumber || fallbackClientOrgnr);
+  if (resolvedOrgnr && !sanitizeText(searchContext.organizationNumber)) {
+    searchContext = {
+      ...searchContext,
+      organizationNumber: resolvedOrgnr,
+    };
+  }
+  const brregEntity = resolvedOrgnr ? await lookupBrregEntityByOrganizationNumber(resolvedOrgnr) : null;
   const enrichedBusinessName = sanitizeText(brregEntity?.name);
   const enrichedLocationHint = sanitizeText(searchContext.locationHint || brregEntity?.address);
   if (enrichedBusinessName || enrichedLocationHint) {
@@ -2595,8 +2613,8 @@ async function enrichSalesClientLinksFromMyphoner({
   const baseBusinessName = sanitizeText(searchContext.businessName || enrichedBusinessName);
   const baseQuery = [baseBusinessName, searchContext.locationHint].filter(Boolean).join(' ');
 
-  if (!nextDetails.proffUrl && orgNumber) {
-    nextDetails.proffUrl = `https://www.proff.no/bransjesok?q=${encodeURIComponent(orgNumber)}`;
+  if (!nextDetails.proffUrl && resolvedOrgnr) {
+    nextDetails.proffUrl = `https://www.proff.no/bransjesok?q=${encodeURIComponent(resolvedOrgnr)}`;
   }
 
   if (!nextDetails.instagramUrl && baseQuery) {
@@ -2629,7 +2647,14 @@ async function enrichSalesClientLinksFromMyphoner({
     const nextValue = sanitizeText(normalizedNext[field]);
     return Boolean(nextValue) && nextValue !== previous;
   });
-  if (!changedFields.length) return { updated: false, wouldUpdate: false, changedFields: [] };
+  if (!changedFields.length) {
+    return {
+      updated: false,
+      wouldUpdate: false,
+      changedFields: [],
+      resolvedDetails: currentDetails,
+    };
+  }
 
   if (!persist) {
     return {
@@ -2637,6 +2662,7 @@ async function enrichSalesClientLinksFromMyphoner({
       wouldUpdate: true,
       changedFields,
       clientId: targetClientId,
+      resolvedDetails: normalizedNext,
     };
   }
 
@@ -2648,6 +2674,7 @@ async function enrichSalesClientLinksFromMyphoner({
     wouldUpdate: Boolean(updated),
     changedFields,
     clientId: targetClientId,
+    resolvedDetails: normalizedNext,
   };
 }
 
@@ -2704,6 +2731,282 @@ function collectMyphonerLeadIdsFromClient(client = {}) {
   return [...new Set(leadIds)];
 }
 
+function extractOrganizationNumberFromText(value = '') {
+  const raw = String(value || '');
+  if (!raw) return '';
+  const match = raw.match(/\b(\d{3}\s?\d{3}\s?\d{3})\b/);
+  if (!match?.[1]) return '';
+  const digits = match[1].replace(/\D+/g, '');
+  return digits.length === 9 ? digits : '';
+}
+
+function extractOrganizationNumberFromClientRecord(client = {}) {
+  const source = client && typeof client === 'object' ? client : {};
+  const proffUrl = coerceHttpUrl(source?.details?.proffUrl || '');
+  if (proffUrl) {
+    try {
+      const parsed = new URL(proffUrl);
+      const qDigits = extractOrganizationNumberFromText(parsed.searchParams.get('q') || '');
+      if (qDigits) return qDigits;
+      const pathDigits = extractOrganizationNumberFromText(parsed.pathname);
+      if (pathDigits) return pathDigits;
+    } catch {
+      // Ignore malformed proff URLs and continue with other candidates.
+    }
+  }
+  const candidates = [
+    source?.myphoner?.winnerComment,
+    source?.businessName,
+    source?.contactPerson,
+  ];
+  for (const candidate of candidates) {
+    const digits = extractOrganizationNumberFromText(candidate);
+    if (digits) return digits;
+  }
+  return '';
+}
+
+function extractGoogleBusinessRawValueFromLeadData(leadDataMap = new Map()) {
+  return pickLeadDataValue(leadDataMap, [
+    'google_business_profile',
+    'google_business_url',
+    'google_maps',
+    'google_maps_url',
+    'google_maps_link',
+    'google_map_url',
+    'maps_url',
+    'gbp',
+  ]);
+}
+
+function extractMyphonerLeadBusinessName(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  return pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
+    source.primary_identifier,
+    pickLeadDataValue(leadDataMap, ['organization_name', 'org_name']),
+  ]);
+}
+
+function addLeadCatalogEntry(map, key, entry) {
+  const normalizedKey = sanitizeText(key);
+  if (!normalizedKey) return;
+  const target = map.get(normalizedKey) || [];
+  const existing = target.find((candidate) => sanitizeText(candidate?.leadId) === sanitizeText(entry?.leadId));
+  if (!existing) target.push(entry);
+  map.set(normalizedKey, target);
+}
+
+async function buildMyphonerLeadCatalog() {
+  const emptyCatalog = {
+    byOrgnr: new Map(),
+    byBusinessPhone: new Map(),
+    byBusiness: new Map(),
+    leadById: new Map(),
+    listCount: 0,
+    leadCount: 0,
+    errors: [],
+  };
+  if (!myphonerApi.isMyPhonerConfigured()) {
+    return {
+      ...emptyCatalog,
+      errors: ['myphoner-not-configured'],
+    };
+  }
+
+  const listsResponse = await myphonerApi.listMyPhonerLists();
+  if (!listsResponse?.success) {
+    return {
+      ...emptyCatalog,
+      errors: [sanitizeText(listsResponse?.error) || 'list-fetch-failed'],
+    };
+  }
+
+  const lists = Array.isArray(listsResponse?.data) ? listsResponse.data : [];
+  const byOrgnr = new Map();
+  const byBusinessPhone = new Map();
+  const byBusiness = new Map();
+  const leadById = new Map();
+  const errors = [];
+
+  for (const list of lists) {
+    const listId = sanitizeText(list?.id);
+    if (!listId) continue;
+    const listName = sanitizeText(list?.name);
+    let previousPageLeadSignature = '';
+    for (let page = 1; page <= 3; page += 1) {
+      const pageSize = 100;
+      const leadsResponse = await myphonerApi.listMyPhonerLeadsInList(listId, {
+        page,
+        per_page: pageSize,
+      });
+      if (!leadsResponse?.success) {
+        errors.push(`list:${listId}:page:${page}:${sanitizeText(leadsResponse?.error) || 'lead-list-fetch-failed'}`);
+        break;
+      }
+      const leads = Array.isArray(leadsResponse?.data) ? leadsResponse.data : [];
+      if (!leads.length) break;
+      const pageLeadSignature = leads
+        .map((lead) => sanitizeText(lead?.id || lead?.lead_id || lead?.leadId))
+        .filter(Boolean)
+        .join(',');
+      if (pageLeadSignature && pageLeadSignature === previousPageLeadSignature) break;
+      previousPageLeadSignature = pageLeadSignature;
+      for (const lead of leads) {
+        const leadId = sanitizeText(lead?.id || lead?.lead_id || lead?.leadId);
+        if (!leadId || leadById.has(leadId)) continue;
+        const leadDataMap = getLeadDataMap(lead);
+        const businessName = extractMyphonerLeadBusinessName(lead, leadDataMap);
+        const businessKey = normalizeBusinessNameForMatch(businessName);
+        const commentText = resolveLeadCommentText(lead, leadDataMap);
+        const phone = pickMyphonerLeadPhone(lead, leadDataMap, commentText);
+        const phoneDigits = normalizePhoneDigits(phone);
+        const organizationNumber = extractOrganizationNumberFromLead(lead, leadDataMap);
+        const leadResourceUrl = sanitizeText(
+          lead?.location || lead?.resource_url || `/api/v2/leads/${encodeURIComponent(leadId)}`
+        );
+        const entry = {
+          leadId,
+          leadResourceUrl,
+          listId,
+          listName,
+          businessName: sanitizeText(businessName),
+          businessKey,
+          phoneDigits,
+          organizationNumber,
+        };
+        leadById.set(leadId, entry);
+        if (organizationNumber) addLeadCatalogEntry(byOrgnr, organizationNumber, entry);
+        if (businessKey) addLeadCatalogEntry(byBusiness, businessKey, entry);
+        if (businessKey && phoneDigits) addLeadCatalogEntry(byBusinessPhone, `${businessKey}:${phoneDigits}`, entry);
+      }
+      if (leads.length < pageSize) break;
+    }
+  }
+
+  return {
+    byOrgnr,
+    byBusinessPhone,
+    byBusiness,
+    leadById,
+    listCount: lists.length,
+    leadCount: leadById.size,
+    errors,
+  };
+}
+
+async function attemptRelinkSalesClientLead({
+  client = {},
+  dryRun = false,
+  leadCatalog = null,
+} = {}) {
+  const source = client && typeof client === 'object' ? client : {};
+  if (!source?.id) return { relinked: false, wouldRelink: false, reason: 'invalid-client' };
+  const existingLeadIds = collectMyphonerLeadIdsFromClient(source);
+  if (existingLeadIds.length || sanitizeText(source?.myphoner?.leadResourceUrl)) {
+    return { relinked: false, wouldRelink: false, reason: 'already-linked' };
+  }
+  const catalog = leadCatalog && typeof leadCatalog === 'object' ? leadCatalog : null;
+  if (!catalog) return { relinked: false, wouldRelink: false, reason: 'catalog-missing' };
+  if (!Number(catalog.leadCount || 0)) {
+    return { relinked: false, wouldRelink: false, reason: 'lead-catalog-empty' };
+  }
+
+  const orgnr = extractOrganizationNumberFromClientRecord(source);
+  let candidate = null;
+  let method = '';
+  if (orgnr) {
+    const orgMatches = catalog.byOrgnr.get(orgnr) || [];
+    if (orgMatches.length === 1) {
+      candidate = orgMatches[0];
+      method = 'orgnr';
+    }
+  }
+
+  if (!candidate) {
+    const businessKey = normalizeBusinessNameForMatch(source?.businessName);
+    const phoneDigits = normalizePhoneDigits(source?.contactPhone);
+    if (businessKey && phoneDigits) {
+      const key = `${businessKey}:${phoneDigits}`;
+      const matches = catalog.byBusinessPhone.get(key) || [];
+      if (matches.length === 1) {
+        candidate = matches[0];
+        method = 'business-phone';
+      }
+    }
+  }
+
+  if (!candidate) {
+    return {
+      relinked: false,
+      wouldRelink: false,
+      reason: orgnr ? 'lead-link-ambiguous' : 'missing-lead-link',
+    };
+  }
+
+  if (dryRun) {
+    return {
+      relinked: false,
+      wouldRelink: true,
+      reason: 'would-relink',
+      method,
+      candidate,
+      client: source,
+    };
+  }
+
+  const nextLeadIds = [...new Set([candidate.leadId, ...existingLeadIds].filter(Boolean))];
+  const updated = sales.updateSalesClient(source.id, {
+    myphoner: {
+      ...(source.myphoner || {}),
+      leadId: candidate.leadId,
+      leadIds: nextLeadIds,
+      listId: sanitizeText(source?.myphoner?.listId) || sanitizeText(candidate.listId),
+      listName: sanitizeText(source?.myphoner?.listName) || sanitizeText(candidate.listName),
+      leadResourceUrl: sanitizeText(source?.myphoner?.leadResourceUrl) || sanitizeText(candidate.leadResourceUrl),
+      latestEventAt: nowIso(),
+    },
+  });
+
+  return {
+    relinked: Boolean(updated),
+    wouldRelink: Boolean(updated),
+    reason: updated ? 'relinked' : 'relink-failed',
+    method,
+    candidate,
+    client: updated || source,
+  };
+}
+
+function computeSalesLinksCoverage(clients = []) {
+  const list = Array.isArray(clients) ? clients : [];
+  const fields = ['googleBusinessProfile', 'proffUrl', 'instagramUrl', 'facebookUrl'];
+  const fieldPresence = Object.fromEntries(fields.map((field) => [field, 0]));
+  let withAll4 = 0;
+  let withAny = 0;
+  let withNone = 0;
+  for (const client of list) {
+    const details = normalizeSalesDetailLinks(client?.details || {});
+    let presentCount = 0;
+    for (const field of fields) {
+      if (sanitizeText(details[field])) {
+        fieldPresence[field] += 1;
+        presentCount += 1;
+      }
+    }
+    if (presentCount === fields.length) withAll4 += 1;
+    if (presentCount > 0) withAny += 1;
+    if (presentCount === 0) withNone += 1;
+  }
+  return {
+    totalClients: list.length,
+    withAll4,
+    withAny,
+    withNone,
+    fieldPresence,
+  };
+}
+
 async function fetchMyphonerLeadForSalesClient(client = {}) {
   if (!myphonerApi.isMyPhonerConfigured()) {
     return { lead: null, source: '', error: 'myphoner-not-configured' };
@@ -2734,11 +3037,14 @@ async function backfillExistingSalesClientLinks({
   onlyMissing = true,
   dryRun = false,
   limit = 0,
+  repairLeadLinks = true,
 } = {}) {
   const allClients = Array.isArray(clients) ? clients : [];
   const parsedLimit = Number(limit);
   const maxClients = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.max(1, Math.trunc(parsedLimit)) : 0;
   const selectedClients = maxClients ? allClients.slice(0, maxClients) : allClients;
+  const selectedClientIds = new Set(selectedClients.map((client) => sanitizeText(client?.id)).filter(Boolean));
+  const coverageBefore = computeSalesLinksCoverage(selectedClients);
   const summary = {
     totalClients: allClients.length,
     selectedClients: selectedClients.length,
@@ -2752,27 +3058,94 @@ async function backfillExistingSalesClientLinks({
     unchangedClients: 0,
     leadFetched: 0,
     leadFetchFailed: 0,
+    leadRelinked: 0,
+    leadWouldRelink: 0,
+    leadRelinkFailed: 0,
+    unresolvedClients: 0,
     errors: 0,
+    coverageBefore,
+    coverageAfter: coverageBefore,
+    reasonCounts: {},
   };
   const changed = [];
   const failures = [];
+  const unresolved = [];
+  let leadCatalog = null;
+
+  const registerReason = (reason = '') => {
+    const key = sanitizeText(reason);
+    if (!key) return;
+    summary.reasonCounts[key] = Number(summary.reasonCounts[key] || 0) + 1;
+  };
+
+  const ensureLeadCatalog = async () => {
+    if (leadCatalog) return leadCatalog;
+    leadCatalog = await buildMyphonerLeadCatalog();
+    return leadCatalog;
+  };
 
   for (const client of selectedClients) {
     const targetClientId = sanitizeText(client?.id);
     if (!targetClientId) continue;
+    let workingClient = client;
     const missingFields = collectMissingSalesLinkFields(client?.details || {});
     if (onlyMissing && !missingFields.length) {
       summary.skippedNoMissing += 1;
+      registerReason('no-missing-fields');
       continue;
     }
 
     summary.eligibleClients += 1;
-    const leadResult = await fetchMyphonerLeadForSalesClient(client);
+    const clientReasons = [];
+    let leadResult = await fetchMyphonerLeadForSalesClient(workingClient);
+    if (!leadResult?.lead && repairLeadLinks) {
+      const catalog = await ensureLeadCatalog();
+      const relinkResult = await attemptRelinkSalesClientLead({
+        client: workingClient,
+        dryRun: Boolean(dryRun),
+        leadCatalog: catalog,
+      });
+      if (relinkResult?.relinked) {
+        summary.leadRelinked += 1;
+        workingClient = relinkResult.client || workingClient;
+        clientReasons.push(`lead-relinked:${sanitizeText(relinkResult.method || 'unknown')}`);
+      } else if (relinkResult?.wouldRelink) {
+        summary.leadWouldRelink += 1;
+        clientReasons.push(`would-relink:${sanitizeText(relinkResult.method || 'unknown')}`);
+      } else if (sanitizeText(relinkResult?.reason) && relinkResult.reason !== 'already-linked') {
+        summary.leadRelinkFailed += 1;
+        clientReasons.push(sanitizeText(relinkResult.reason));
+      }
+      if (relinkResult?.candidate?.leadId) {
+        const leadFetchAfterRelink = await myphonerApi.fetchMyPhonerLeadById(relinkResult.candidate.leadId);
+        if (leadFetchAfterRelink?.success && leadFetchAfterRelink?.data && typeof leadFetchAfterRelink.data === 'object') {
+          leadResult = {
+            lead: leadFetchAfterRelink.data,
+            source: `lead-id:${sanitizeText(relinkResult.candidate.leadId)}`,
+            error: '',
+          };
+        }
+      }
+    }
+
     if (leadResult?.lead) summary.leadFetched += 1;
     else if (leadResult?.error && leadResult.error !== 'myphoner-not-configured') summary.leadFetchFailed += 1;
 
+    if (!leadResult?.lead && leadResult?.error) {
+      const normalizedLeadError = sanitizeText(leadResult.error);
+      if (normalizedLeadError === 'lead-not-found' || normalizedLeadError === 'missing-lead-link') {
+        clientReasons.push('missing-lead-link');
+      } else {
+        clientReasons.push('lead-fetch-failed');
+      }
+    }
+
     const leadPayload = leadResult?.lead && typeof leadResult.lead === 'object' ? leadResult.lead : {};
     const map = getLeadDataMap(leadPayload);
+    const googleRaw = extractGoogleBusinessRawValueFromLeadData(map);
+    const orgnrFromLead = extractOrganizationNumberFromLead(leadPayload, map);
+    const orgnrFromClient = extractOrganizationNumberFromClientRecord(workingClient);
+    const resolvedOrgnr = sanitizeText(orgnrFromLead || orgnrFromClient);
     try {
       const result = await enrichSalesClientLinksFromMyphoner({
         clientId: targetClientId,
@@ -2794,20 +3167,62 @@ async function backfillExistingSalesClientLinks({
           dryRun: Boolean(dryRun),
         });
       }
+
+      const resolvedDetails = normalizeSalesDetailLinks(result?.resolvedDetails || workingClient?.details || {});
+      const remainingMissing = collectMissingSalesLinkFields(resolvedDetails);
+      if (remainingMissing.includes('googleBusinessProfile')) {
+        if (googleRaw) clientReasons.push('google-url-unparseable');
+        else clientReasons.push('missing-google-metadata');
+      }
+      if (remainingMissing.includes('proffUrl')) {
+        if (!resolvedOrgnr) clientReasons.push('missing-orgnr');
+        else clientReasons.push('proff-unresolved');
+      }
+      if (remainingMissing.includes('instagramUrl') || remainingMissing.includes('facebookUrl')) {
+        clientReasons.push('social-low-confidence');
+      }
+
+      const uniqueReasons = [...new Set(clientReasons.filter(Boolean))];
+      if (remainingMissing.length) {
+        summary.unresolvedClients += 1;
+        unresolved.push({
+          clientId: targetClientId,
+          businessName: sanitizeText(workingClient?.businessName),
+          missingBefore: missingFields,
+          missingAfter: remainingMissing,
+          reasons: uniqueReasons,
+          leadSource: sanitizeText(leadResult?.source || ''),
+        });
+      }
+      for (const reason of uniqueReasons) registerReason(reason);
     } catch (error) {
       summary.errors += 1;
+      registerReason('backfill-error');
       failures.push({
         clientId: targetClientId,
-        businessName: sanitizeText(client?.businessName),
+        businessName: sanitizeText(workingClient?.businessName),
         message: sanitizeText(error?.message) || 'Unknown backfill error',
       });
     }
+  }
+
+  if (!dryRun) {
+    const refreshed = sales.getSalesClients().filter((client) => selectedClientIds.has(sanitizeText(client?.id)));
+    summary.coverageAfter = computeSalesLinksCoverage(refreshed);
+  }
+  if (leadCatalog && typeof leadCatalog === 'object') {
+    summary.leadCatalog = {
+      listCount: Number(leadCatalog.listCount || 0),
+      leadCount: Number(leadCatalog.leadCount || 0),
+      errors: Array.isArray(leadCatalog.errors) ? leadCatalog.errors : [],
+    };
   }
 
   return {
     summary,
     changed,
     failures,
+    unresolved,
   };
 }
 
@@ -5831,6 +6246,7 @@ app.post('/api/admin/sales/backfill-links', salesAuth, async (req, res) => {
   try {
     const dryRun = parseBoolean(req.body?.dryRun, false);
     const onlyMissing = parseBoolean(req.body?.onlyMissing, true);
+    const repairLeadLinks = parseBoolean(req.body?.repairLeadLinks, true);
     const requestedLimit = Number(req.body?.limit ?? SALES_LINK_BACKFILL_LIMIT);
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
       ? Math.max(1, Math.min(2000, Math.trunc(requestedLimit)))
@@ -5848,12 +6264,14 @@ app.post('/api/admin/sales/backfill-links', salesAuth, async (req, res) => {
       onlyMissing,
       dryRun,
       limit,
+      repairLeadLinks,
     });
 
     return res.json({
       ok: true,
       dryRun,
       onlyMissing,
+      repairLeadLinks,
       limit,
       requestedClientIds: requestedIds.length,
       ...result,
