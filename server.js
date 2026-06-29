@@ -160,9 +160,9 @@ const SERPAPI_ENGINE = sanitizeText(process.env.SERPAPI_ENGINE || 'google') || '
 const SERPAPI_TIMEOUT_MS = Number(process.env.SERPAPI_TIMEOUT_MS || MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS || 6000);
 const SERPAPI_HL = sanitizeText(process.env.SERPAPI_HL || '');
 const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 6);
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 2);
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 2);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 4);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 1);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
 const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v1');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
@@ -2230,7 +2230,7 @@ async function searchSerpApi(queryText = '') {
       engine: SERPAPI_ENGINE,
       q: query,
       api_key: SERPAPI_API_KEY,
-      num: '10',
+      num: '20',
     });
     if (SERPAPI_HL) params.set('hl', SERPAPI_HL);
     if (SERPAPI_GL) params.set('gl', SERPAPI_GL);
@@ -2252,7 +2252,7 @@ async function searchSerpApi(queryText = '') {
         snippet: sanitizeText(entry?.snippet || entry?.snippet_highlighted_words?.join(' ') || ''),
       }))
       .filter((entry) => entry.url)
-      .slice(0, 10);
+      .slice(0, 20);
     salesSearchCache.set(cacheKey, {
       expiresAt: nowMs + Math.max(60_000, MYPHONER_AUTO_LINK_SEARCH_CACHE_MS),
       results,
@@ -2267,7 +2267,7 @@ async function searchSerpApi(queryText = '') {
 
 function buildBusinessSearchTokens(values = []) {
   const stopWords = new Set([
-    'as', 'og', 'the', 'for', 'and', 'med', 'til', 'hos', 'butikk', 'restaurant', 'cafe', 'bar', 'norge',
+    'as', 'og', 'the', 'for', 'and', 'med', 'til', 'hos', 'butikk', 'norge',
   ]);
   const tokens = normalizeSearchText((Array.isArray(values) ? values : [values]).join(' '))
     .split(' ')
@@ -2393,7 +2393,7 @@ function hasStrongSocialIdentifierMatch({ url = '', matchedTokens = [], context 
   return false;
 }
 
-function selectBestSearchUrl(
+function selectBestSearchCandidate(
   results = [],
   {
     context = {},
@@ -2432,6 +2432,7 @@ function selectBestSearchUrl(
         tokenMatches,
         exactBusinessNameMatch,
         strongIdentifierMatch,
+        query: sanitizeText(entry?.query || ''),
       };
     })
     .filter(Boolean)
@@ -2440,23 +2441,78 @@ function selectBestSearchUrl(
       if (b.score !== a.score) return b.score - a.score;
       return b.tokenMatches - a.tokenMatches;
     });
-  if (!scored.length) return '';
+  if (!scored.length) {
+    return {
+      url: '',
+      reason: 'no-canonical-candidates',
+      top: null,
+      runnerUp: null,
+      scoredCount: 0,
+    };
+  }
   const top = scored[0];
   const runnerUp = scored[1] || null;
-  if (top.score < minScore) return '';
+  if (top.score < minScore) {
+    return {
+      url: '',
+      reason: 'score-below-min',
+      top,
+      runnerUp,
+      scoredCount: scored.length,
+    };
+  }
 
   if (strictConfidence) {
     const availableTokens = Math.max(1, businessTokens.length);
     const requiredTokenMatches = Math.max(1, Math.min(minBusinessTokenMatches, availableTokens));
-    if (top.tokenMatches < requiredTokenMatches) return '';
-    if (!top.strongIdentifierMatch && !top.exactBusinessNameMatch) return '';
+    if (top.tokenMatches < requiredTokenMatches) {
+      return {
+        url: '',
+        reason: 'insufficient-token-matches',
+        top,
+        runnerUp,
+        scoredCount: scored.length,
+      };
+    }
+    const hasHighTokenSignal = top.tokenMatches >= requiredTokenMatches + 1 && top.score >= minScore + 2;
+    if (!top.strongIdentifierMatch && !top.exactBusinessNameMatch && !hasHighTokenSignal) {
+      return {
+        url: '',
+        reason: 'missing-identifier-signal',
+        top,
+        runnerUp,
+        scoredCount: scored.length,
+      };
+    }
     if (runnerUp && top.confidencePoints - runnerUp.confidencePoints < Math.max(0, Number(minConfidenceMargin || 0))) {
-      return '';
+      return {
+        url: '',
+        reason: 'ambiguous-top-candidates',
+        top,
+        runnerUp,
+        scoredCount: scored.length,
+      };
     }
   } else if (runnerUp && top.score === runnerUp.score && top.score < minScore + 2) {
-    return '';
+    return {
+      url: '',
+      reason: 'ambiguous-low-confidence',
+      top,
+      runnerUp,
+      scoredCount: scored.length,
+    };
   }
-  return top.url;
+  return {
+    url: top.url,
+    reason: 'resolved',
+    top,
+    runnerUp,
+    scoredCount: scored.length,
+  };
+}
+
+function selectBestSearchUrl(results = [], options = {}) {
+  return selectBestSearchCandidate(results, options).url;
 }
 
 function extractOrganizationNumberFromLead(lead = {}, leadDataMap = new Map()) {
@@ -2508,7 +2564,10 @@ function extractMyphonerLocationHint(lead = {}, leadDataMap = new Map()) {
 function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new Map()) {
   const businessName = sanitizeText(client.businessName || pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'name']));
   const locationHint = sanitizeText(extractMyphonerLocationHint(lead, leadDataMap));
-  const cityToken = normalizeSearchText(locationHint).split(' ').filter(Boolean)[0] || '';
+  const cityToken = normalizeSearchText(locationHint)
+    .split(' ')
+    .map((entry) => sanitizeText(entry))
+    .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) || '';
   const organizationNumber = sanitizeText(extractOrganizationNumberFromLead(lead, leadDataMap));
   const businessTokens = buildBusinessSearchTokens([businessName]);
   return {
@@ -2518,6 +2577,46 @@ function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new M
     organizationNumber,
     businessTokens,
   };
+}
+
+function normalizeBusinessNameForSearchQuery(value = '') {
+  return sanitizeText(value)
+    .replace(/\b(as|ans|da|enk|holding)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {}) {
+  const socialProvider = sanitizeText(provider).toLowerCase().includes('face') ? 'facebook' : 'instagram';
+  const siteDomain = socialProvider === 'facebook' ? 'facebook.com' : 'instagram.com';
+  const businessName = sanitizeText(context?.businessName || '');
+  const simplifiedBusinessName = normalizeBusinessNameForSearchQuery(businessName);
+  if (!businessName && !simplifiedBusinessName) return [];
+  const locationHint = sanitizeText(context?.locationHint || '');
+  const cityToken = sanitizeText(context?.cityToken || '');
+  const fragments = [
+    [`"${businessName}"`, locationHint, `site:${siteDomain}`],
+    [businessName, locationHint, `site:${siteDomain}`],
+    [`"${businessName}"`, socialProvider, locationHint],
+    [businessName, socialProvider, locationHint],
+    [`"${businessName}"`, socialProvider],
+    [businessName, socialProvider],
+    [`"${simplifiedBusinessName}"`, socialProvider, cityToken],
+    [simplifiedBusinessName, socialProvider, cityToken],
+    [simplifiedBusinessName, locationHint, `site:${siteDomain}`],
+  ];
+  const querySet = new Set();
+  for (const parts of fragments) {
+    const query = parts
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean)
+      .join(' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!query || query.length < 4) continue;
+    querySet.add(query);
+  }
+  return [...querySet];
 }
 
 async function lookupBrregEntityByOrganizationNumber(orgNumber = '') {
@@ -2541,22 +2640,74 @@ async function resolveBestSearchCandidate({
   minBusinessTokenMatches = 1,
   strictConfidence = false,
 } = {}) {
-  const list = Array.isArray(queries) ? queries : [queries];
-  for (const candidateQuery of list) {
-    const query = sanitizeText(candidateQuery);
-    if (!query) continue;
-    const results = await searchSerpApi(query);
-    const resolved = selectBestSearchUrl(results, {
-      context,
-      normalizeUrl,
-      minScore,
-      minConfidenceMargin,
-      minBusinessTokenMatches,
-      strictConfidence,
-    });
-    if (resolved) return resolved;
+  const list = [...new Set((Array.isArray(queries) ? queries : [queries]).map((entry) => sanitizeText(entry)).filter(Boolean))];
+  if (!list.length) {
+    return {
+      url: '',
+      reason: 'no-query',
+      queryCount: 0,
+      rawResultCount: 0,
+      uniqueCandidateCount: 0,
+      top: null,
+      runnerUp: null,
+    };
   }
-  return '';
+
+  const aggregatedResults = [];
+  let rawResultCount = 0;
+  for (const query of list) {
+    const results = await searchSerpApi(query);
+    const normalizedResults = Array.isArray(results) ? results : [];
+    rawResultCount += normalizedResults.length;
+    for (const entry of normalizedResults) {
+      aggregatedResults.push({
+        ...entry,
+        query,
+      });
+    }
+  }
+  if (!rawResultCount) {
+    return {
+      url: '',
+      reason: 'no-search-results',
+      queryCount: list.length,
+      rawResultCount: 0,
+      uniqueCandidateCount: 0,
+      top: null,
+      runnerUp: null,
+    };
+  }
+
+  const dedupedResults = [];
+  const seenUrls = new Set();
+  for (const entry of aggregatedResults) {
+    const key = coerceHttpUrl(entry?.url || '');
+    if (!key || seenUrls.has(key)) continue;
+    seenUrls.add(key);
+    dedupedResults.push({
+      ...entry,
+      url: key,
+    });
+  }
+
+  const selected = selectBestSearchCandidate(dedupedResults, {
+    context,
+    normalizeUrl,
+    minScore,
+    minConfidenceMargin,
+    minBusinessTokenMatches,
+    strictConfidence,
+  });
+
+  return {
+    url: sanitizeText(selected?.url || ''),
+    reason: sanitizeText(selected?.reason || 'unknown'),
+    queryCount: list.length,
+    rawResultCount,
+    uniqueCandidateCount: dedupedResults.length,
+    top: selected?.top || null,
+    runnerUp: selected?.runnerUp || null,
+  };
 }
 
 async function enrichSalesClientLinksFromMyphoner({
@@ -2566,15 +2717,32 @@ async function enrichSalesClientLinksFromMyphoner({
   persist = true,
 } = {}) {
   const targetClientId = sanitizeText(clientId);
-  if (!targetClientId) return { updated: false, wouldUpdate: false, changedFields: [], resolvedDetails: {} };
+  if (!targetClientId) {
+    return {
+      updated: false,
+      wouldUpdate: false,
+      changedFields: [],
+      resolvedDetails: {},
+      socialDiagnostics: {},
+    };
+  }
   const source = lead && typeof lead === 'object' ? lead : {};
   const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
   const currentClient = sales.getSalesClientById(targetClientId);
-  if (!currentClient) return { updated: false, wouldUpdate: false, changedFields: [], resolvedDetails: {} };
+  if (!currentClient) {
+    return {
+      updated: false,
+      wouldUpdate: false,
+      changedFields: [],
+      resolvedDetails: {},
+      socialDiagnostics: {},
+    };
+  }
 
   const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
   const nextDetails = { ...currentDetails };
   const leadDetails = buildSalesDetailsFromMyphonerLead(source, map);
+  const socialDiagnostics = {};
 
   if (!nextDetails.instagramUrl && leadDetails.instagramUrl) nextDetails.instagramUrl = leadDetails.instagramUrl;
   if (!nextDetails.facebookUrl && leadDetails.facebookUrl) nextDetails.facebookUrl = leadDetails.facebookUrl;
@@ -2602,7 +2770,10 @@ async function enrichSalesClientLinksFromMyphoner({
       locationHint: enrichedLocationHint || searchContext.locationHint,
       cityToken:
         searchContext.cityToken ||
-        normalizeSearchText(enrichedLocationHint).split(' ').filter(Boolean)[0] ||
+        normalizeSearchText(enrichedLocationHint)
+          .split(' ')
+          .map((entry) => sanitizeText(entry))
+          .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) ||
         '',
       businessTokens: buildBusinessSearchTokens([
         searchContext.businessName,
@@ -2610,36 +2781,67 @@ async function enrichSalesClientLinksFromMyphoner({
       ]),
     };
   }
-  const baseBusinessName = sanitizeText(searchContext.businessName || enrichedBusinessName);
-  const baseQuery = [baseBusinessName, searchContext.locationHint].filter(Boolean).join(' ');
+  const baseBusinessName = sanitizeText(searchContext.businessName || enrichedBusinessName || currentClient.businessName);
+  const socialContext = {
+    ...searchContext,
+    businessName: baseBusinessName || searchContext.businessName,
+  };
 
   if (!nextDetails.proffUrl && resolvedOrgnr) {
     nextDetails.proffUrl = `https://www.proff.no/bransjesok?q=${encodeURIComponent(resolvedOrgnr)}`;
   }
 
-  if (!nextDetails.instagramUrl && baseQuery) {
-    nextDetails.instagramUrl = await resolveBestSearchCandidate({
-      queries: [`${baseQuery} site:instagram.com`],
-      context: searchContext,
+  let instagramResolution = {
+    url: sanitizeText(nextDetails.instagramUrl),
+    reason: sanitizeText(nextDetails.instagramUrl) ? 'already-present' : 'not-attempted',
+    queryCount: 0,
+    rawResultCount: 0,
+    uniqueCandidateCount: 0,
+    top: null,
+    runnerUp: null,
+  };
+  if (!nextDetails.instagramUrl) {
+    instagramResolution = await resolveBestSearchCandidate({
+      queries: buildSocialSearchQueries({
+        provider: 'instagram',
+        context: socialContext,
+      }),
+      context: socialContext,
       normalizeUrl: canonicalizeInstagramProfileUrl,
       minScore: Math.max(2, MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE),
       minConfidenceMargin: Math.max(0, MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN),
       minBusinessTokenMatches: Math.max(1, MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES),
       strictConfidence: true,
     });
+    if (instagramResolution.url) nextDetails.instagramUrl = instagramResolution.url;
   }
+  socialDiagnostics.instagram = instagramResolution;
 
-  if (!nextDetails.facebookUrl && baseQuery) {
-    nextDetails.facebookUrl = await resolveBestSearchCandidate({
-      queries: [`${baseQuery} site:facebook.com`],
-      context: searchContext,
+  let facebookResolution = {
+    url: sanitizeText(nextDetails.facebookUrl),
+    reason: sanitizeText(nextDetails.facebookUrl) ? 'already-present' : 'not-attempted',
+    queryCount: 0,
+    rawResultCount: 0,
+    uniqueCandidateCount: 0,
+    top: null,
+    runnerUp: null,
+  };
+  if (!nextDetails.facebookUrl) {
+    facebookResolution = await resolveBestSearchCandidate({
+      queries: buildSocialSearchQueries({
+        provider: 'facebook',
+        context: socialContext,
+      }),
+      context: socialContext,
       normalizeUrl: canonicalizeFacebookProfileUrl,
       minScore: Math.max(2, MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE),
       minConfidenceMargin: Math.max(0, MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN),
       minBusinessTokenMatches: Math.max(1, MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES),
       strictConfidence: true,
     });
+    if (facebookResolution.url) nextDetails.facebookUrl = facebookResolution.url;
   }
+  socialDiagnostics.facebook = facebookResolution;
 
   const normalizedNext = normalizeSalesDetailLinks(nextDetails, currentDetails);
   const changedFields = ['instagramUrl', 'facebookUrl', 'proffUrl', 'googleBusinessProfile'].filter((field) => {
@@ -2653,6 +2855,7 @@ async function enrichSalesClientLinksFromMyphoner({
       wouldUpdate: false,
       changedFields: [],
       resolvedDetails: currentDetails,
+      socialDiagnostics,
     };
   }
 
@@ -2663,6 +2866,7 @@ async function enrichSalesClientLinksFromMyphoner({
       changedFields,
       clientId: targetClientId,
       resolvedDetails: normalizedNext,
+      socialDiagnostics,
     };
   }
 
@@ -2675,6 +2879,7 @@ async function enrichSalesClientLinksFromMyphoner({
     changedFields,
     clientId: targetClientId,
     resolvedDetails: normalizedNext,
+    socialDiagnostics,
   };
 }
 
@@ -3153,6 +3358,20 @@ async function backfillExistingSalesClientLinks({
         leadDataMap: map,
         persist: !dryRun,
       });
+      const compactSocialDiagnostics = {
+        instagram: {
+          reason: sanitizeText(result?.socialDiagnostics?.instagram?.reason),
+          queryCount: Number(result?.socialDiagnostics?.instagram?.queryCount || 0),
+          rawResultCount: Number(result?.socialDiagnostics?.instagram?.rawResultCount || 0),
+          uniqueCandidateCount: Number(result?.socialDiagnostics?.instagram?.uniqueCandidateCount || 0),
+        },
+        facebook: {
+          reason: sanitizeText(result?.socialDiagnostics?.facebook?.reason),
+          queryCount: Number(result?.socialDiagnostics?.facebook?.queryCount || 0),
+          rawResultCount: Number(result?.socialDiagnostics?.facebook?.rawResultCount || 0),
+          uniqueCandidateCount: Number(result?.socialDiagnostics?.facebook?.uniqueCandidateCount || 0),
+        },
+      };
       summary.processedClients += 1;
       if (result?.updated) summary.updatedClients += 1;
       else if (result?.wouldUpdate) summary.wouldUpdateClients += 1;
@@ -3165,6 +3384,7 @@ async function backfillExistingSalesClientLinks({
           missingBefore: missingFields,
           leadSource: sanitizeText(leadResult?.source || ''),
           dryRun: Boolean(dryRun),
+          socialDiagnostics: compactSocialDiagnostics,
         });
       }
 
@@ -3177,6 +3397,14 @@ async function backfillExistingSalesClientLinks({
       if (remainingMissing.includes('proffUrl')) {
         if (!resolvedOrgnr) clientReasons.push('missing-orgnr');
         else clientReasons.push('proff-unresolved');
+      }
+      if (remainingMissing.includes('instagramUrl')) {
+        const instagramReason = sanitizeText(compactSocialDiagnostics.instagram.reason);
+        if (instagramReason) clientReasons.push(`social-instagram:${instagramReason}`);
+      }
+      if (remainingMissing.includes('facebookUrl')) {
+        const facebookReason = sanitizeText(compactSocialDiagnostics.facebook.reason);
+        if (facebookReason) clientReasons.push(`social-facebook:${facebookReason}`);
       }
       if (remainingMissing.includes('instagramUrl') || remainingMissing.includes('facebookUrl')) {
         clientReasons.push('social-low-confidence');
@@ -3192,6 +3420,7 @@ async function backfillExistingSalesClientLinks({
           missingAfter: remainingMissing,
           reasons: uniqueReasons,
           leadSource: sanitizeText(leadResult?.source || ''),
+          socialDiagnostics: compactSocialDiagnostics,
         });
       }
       for (const reason of uniqueReasons) registerReason(reason);
