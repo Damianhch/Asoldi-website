@@ -170,6 +170,7 @@ const SOCIAL_BRAVE_MAX_LINKS = Number(process.env.SOCIAL_BRAVE_MAX_LINKS || 80);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 2);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 0);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
+const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '1') !== '0';
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
 const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v1');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
@@ -2528,6 +2529,71 @@ function extractSocialProfileIdentifier(url = '') {
   }
 }
 
+function normalizeSocialHandleSeed(value = '') {
+  return String(value || '')
+    .replace(/[æÆ]/g, 'ae')
+    .replace(/[øØ]/g, 'o')
+    .replace(/[åÅ]/g, 'a')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase();
+}
+
+function sanitizeSocialHandle(value = '') {
+  return normalizeSocialHandleSeed(value)
+    .replace(/[^a-z0-9._-]+/g, '')
+    .replace(/^[_\-.]+|[_\-.]+$/g, '')
+    .slice(0, 30);
+}
+
+function buildBusinessSocialHandleSeed(value = '') {
+  const normalized = normalizeSocialHandleSeed(value)
+    .replace(/\b(as|ans|da|enk|holding|restaurant|resturant|avd|kafe|cafe)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const parts = normalized.split(' ').filter(Boolean);
+  if (!parts.length) return '';
+  return parts.slice(0, 3).join('').slice(0, 30);
+}
+
+function inferFallbackSocialLinks({
+  businessName = '',
+  instagramUrl = '',
+  facebookUrl = '',
+} = {}) {
+  const currentInstagramHandle = sanitizeSocialHandle(extractSocialProfileIdentifier(instagramUrl));
+  const currentFacebookHandle = sanitizeSocialHandle(extractSocialProfileIdentifier(facebookUrl));
+  const businessHandle = sanitizeSocialHandle(buildBusinessSocialHandleSeed(businessName));
+
+  const inferred = {
+    instagramUrl: '',
+    facebookUrl: '',
+    sources: {
+      instagram: '',
+      facebook: '',
+    },
+  };
+
+  if (!sanitizeText(instagramUrl)) {
+    const handle = currentFacebookHandle || businessHandle;
+    if (handle) {
+      inferred.instagramUrl = `https://www.instagram.com/${handle}/`;
+      inferred.sources.instagram = currentFacebookHandle ? 'from-facebook-handle' : 'from-business-name';
+    }
+  }
+
+  if (!sanitizeText(facebookUrl)) {
+    const handle = currentInstagramHandle || businessHandle;
+    if (handle) {
+      inferred.facebookUrl = `https://www.facebook.com/${handle}/`;
+      inferred.sources.facebook = currentInstagramHandle ? 'from-instagram-handle' : 'from-business-name';
+    }
+  }
+
+  return inferred;
+}
+
 function hasStrongSocialIdentifierMatch({ url = '', matchedTokens = [], context = {} } = {}) {
   const profileIdentifier = extractSocialProfileIdentifier(url);
   if (!profileIdentifier) return false;
@@ -3016,6 +3082,36 @@ async function enrichSalesClientLinksFromMyphoner({
     if (facebookResolution.url) nextDetails.facebookUrl = facebookResolution.url;
   }
   socialDiagnostics.facebook = facebookResolution;
+
+  if (MYPHONER_SOCIAL_FORCE_FILL_ENABLED && (!nextDetails.instagramUrl || !nextDetails.facebookUrl)) {
+    const fallbackSocial = inferFallbackSocialLinks({
+      businessName: baseBusinessName || currentClient.businessName,
+      instagramUrl: nextDetails.instagramUrl,
+      facebookUrl: nextDetails.facebookUrl,
+    });
+
+    if (!nextDetails.instagramUrl && fallbackSocial.instagramUrl) {
+      nextDetails.instagramUrl = fallbackSocial.instagramUrl;
+      socialDiagnostics.instagram = {
+        ...(socialDiagnostics.instagram || {}),
+        url: fallbackSocial.instagramUrl,
+        reason: 'force-fill-handle',
+        forced: true,
+        fallbackSource: sanitizeText(fallbackSocial.sources?.instagram),
+      };
+    }
+
+    if (!nextDetails.facebookUrl && fallbackSocial.facebookUrl) {
+      nextDetails.facebookUrl = fallbackSocial.facebookUrl;
+      socialDiagnostics.facebook = {
+        ...(socialDiagnostics.facebook || {}),
+        url: fallbackSocial.facebookUrl,
+        reason: 'force-fill-handle',
+        forced: true,
+        fallbackSource: sanitizeText(fallbackSocial.sources?.facebook),
+      };
+    }
+  }
 
   const normalizedNext = normalizeSalesDetailLinks(nextDetails, currentDetails);
   const changedFields = ['instagramUrl', 'facebookUrl', 'proffUrl', 'googleBusinessProfile'].filter((field) => {
