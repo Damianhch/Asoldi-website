@@ -181,6 +181,7 @@ const salesSearchCache = new Map();
 let serpApiMissingKeyWarned = false;
 let serpApiLastRequestAt = 0;
 let serpApiRateLimitWarningAt = 0;
+let serpApiBlockedUntilMs = 0;
 let braveSearchLastRequestAt = 0;
 let salesLinkBackfillRunning = false;
 
@@ -2233,8 +2234,12 @@ async function searchSerpApi(queryText = '') {
     return [];
   }
 
-  const cacheKey = `serpapi:${normalizeLooseKey(query)}`;
   const nowMs = Date.now();
+  if (nowMs < serpApiBlockedUntilMs) {
+    return [];
+  }
+
+  const cacheKey = `serpapi:${normalizeLooseKey(query)}`;
   pruneSalesSearchCache(nowMs);
   const cached = salesSearchCache.get(cacheKey);
   if (cached && Number(cached.expiresAt || 0) > nowMs && Array.isArray(cached.results)) {
@@ -2269,11 +2274,21 @@ async function searchSerpApi(queryText = '') {
         signal: controller.signal,
       });
       if (!response.ok) {
-        if (response.status === 429 || response.status === 503 || response.status === 502 || response.status === 504) {
+        if (response.status === 429) {
+          const nowWarn = Date.now();
+          const blockWindowMs = Math.max(30_000, Math.trunc(Number(SERPAPI_RETRY_BACKOFF_MS) || 0) * 10);
+          serpApiBlockedUntilMs = Math.max(serpApiBlockedUntilMs, nowWarn + blockWindowMs);
+          if (nowWarn - serpApiRateLimitWarningAt > 60_000) {
+            serpApiRateLimitWarningAt = nowWarn;
+            console.warn(`[sales] SerpAPI throttled (429); temporarily bypassing SerpAPI for ${Math.round(blockWindowMs / 1000)}s.`);
+          }
+          return [];
+        }
+        if (response.status === 503 || response.status === 502 || response.status === 504) {
           const nowWarn = Date.now();
           if (nowWarn - serpApiRateLimitWarningAt > 60_000) {
             serpApiRateLimitWarningAt = nowWarn;
-            console.warn(`[sales] SerpAPI throttled (${response.status}); retrying with backoff.`);
+            console.warn(`[sales] SerpAPI temporary error (${response.status}); retrying with backoff.`);
           }
           if (attempt < maxAttempts) {
             const baseBackoff = Math.max(200, Math.trunc(Number(SERPAPI_RETRY_BACKOFF_MS) || 0));
