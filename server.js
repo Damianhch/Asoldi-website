@@ -163,6 +163,10 @@ const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
 const SERPAPI_MIN_INTERVAL_MS = Number(process.env.SERPAPI_MIN_INTERVAL_MS || 900);
 const SERPAPI_RETRY_LIMIT = Number(process.env.SERPAPI_RETRY_LIMIT || 3);
 const SERPAPI_RETRY_BACKOFF_MS = Number(process.env.SERPAPI_RETRY_BACKOFF_MS || 1200);
+const SOCIAL_BRAVE_FALLBACK_ENABLED = String(process.env.SOCIAL_BRAVE_FALLBACK_ENABLED || '1') !== '0';
+const SOCIAL_BRAVE_TIMEOUT_MS = Number(process.env.SOCIAL_BRAVE_TIMEOUT_MS || 8000);
+const SOCIAL_BRAVE_MIN_INTERVAL_MS = Number(process.env.SOCIAL_BRAVE_MIN_INTERVAL_MS || 250);
+const SOCIAL_BRAVE_MAX_LINKS = Number(process.env.SOCIAL_BRAVE_MAX_LINKS || 80);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 2);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 0);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
@@ -177,6 +181,7 @@ const salesSearchCache = new Map();
 let serpApiMissingKeyWarned = false;
 let serpApiLastRequestAt = 0;
 let serpApiRateLimitWarningAt = 0;
+let braveSearchLastRequestAt = 0;
 let salesLinkBackfillRunning = false;
 
 const CLIENT_WEBSITE_PLANS = [
@@ -2307,6 +2312,91 @@ async function searchSerpApi(queryText = '') {
   return [];
 }
 
+function decodeHtmlEntities(value = '') {
+  return String(value || '')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+function normalizeExtractedSearchUrl(value = '') {
+  const decoded = decodeHtmlEntities(value);
+  const trimmed = sanitizeText(decoded).replace(/[)\],.;]+$/, '');
+  return coerceHttpUrl(trimmed);
+}
+
+function isBraveSearchHost(url = '') {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.host.toLowerCase();
+    return host.endsWith('search.brave.com') || host.endsWith('cdn.search.brave.com') || host.endsWith('imgs.search.brave.com');
+  } catch {
+    return false;
+  }
+}
+
+async function searchBraveHtml(queryText = '') {
+  const query = sanitizeText(queryText);
+  if (!query || !SOCIAL_BRAVE_FALLBACK_ENABLED) return [];
+
+  const cacheKey = `brave:${normalizeLooseKey(query)}`;
+  const nowMs = Date.now();
+  pruneSalesSearchCache(nowMs);
+  const cached = salesSearchCache.get(cacheKey);
+  if (cached && Number(cached.expiresAt || 0) > nowMs && Array.isArray(cached.results)) {
+    return cached.results;
+  }
+
+  const waitMs = Math.max(0, Math.trunc(Number(SOCIAL_BRAVE_MIN_INTERVAL_MS) || 0) - Math.max(0, nowMs - braveSearchLastRequestAt));
+  if (waitMs > 0) await waitForMs(waitMs);
+  braveSearchLastRequestAt = Date.now();
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1000, SOCIAL_BRAVE_TIMEOUT_MS));
+  try {
+    const targetUrl = `https://search.brave.com/search?q=${encodeURIComponent(query)}&source=web`;
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html',
+        'User-Agent': 'Mozilla/5.0 (compatible; AsoldiBot/1.0; +https://asoldi.com)',
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    const html = await response.text().catch(() => '');
+    if (!html) return [];
+
+    const rawUrls = [
+      ...html.matchAll(/https?:\/\/[^\s"'<>]+/g),
+    ].map((match) => normalizeExtractedSearchUrl(match?.[0] || ''));
+
+    const seen = new Set();
+    const results = [];
+    for (const url of rawUrls) {
+      if (!url || seen.has(url) || isBraveSearchHost(url)) continue;
+      seen.add(url);
+      results.push({
+        url,
+        title: '',
+        snippet: '',
+      });
+      if (results.length >= Math.max(20, Math.trunc(Number(SOCIAL_BRAVE_MAX_LINKS) || 0))) break;
+    }
+    salesSearchCache.set(cacheKey, {
+      expiresAt: nowMs + Math.max(60_000, MYPHONER_AUTO_LINK_SEARCH_CACHE_MS),
+      results,
+    });
+    return results;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function buildBusinessSearchTokens(values = []) {
   const stopWords = new Set([
     'as', 'og', 'the', 'for', 'and', 'med', 'til', 'hos', 'butikk', 'norge',
@@ -2711,8 +2801,14 @@ async function resolveBestSearchCandidate({
 
   for (const query of list) {
     queryCount += 1;
-    const results = await searchSerpApi(query);
-    const normalizedResults = Array.isArray(results) ? results : [];
+    const serpResults = await searchSerpApi(query);
+    let normalizedResults = Array.isArray(serpResults) ? serpResults : [];
+    let provider = 'serpapi';
+    if (!normalizedResults.length && SOCIAL_BRAVE_FALLBACK_ENABLED) {
+      const braveResults = await searchBraveHtml(query);
+      normalizedResults = Array.isArray(braveResults) ? braveResults : [];
+      if (normalizedResults.length) provider = 'brave';
+    }
     rawResultCount += normalizedResults.length;
 
     if (!normalizedResults.length) {
@@ -2738,6 +2834,7 @@ async function resolveBestSearchCandidate({
       dedupedResults.push({
         ...entry,
         query,
+        provider,
         url: key,
       });
     }
