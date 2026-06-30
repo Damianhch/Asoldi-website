@@ -171,6 +171,7 @@ const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 0);
 const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
 const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '1') !== '0';
+const MYPHONER_LEAD_CATALOG_MAX_PAGES = Math.max(1, Number(process.env.MYPHONER_LEAD_CATALOG_MAX_PAGES || 25));
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
 const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v1');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
@@ -2963,6 +2964,7 @@ async function enrichSalesClientLinksFromMyphoner({
       wouldUpdate: false,
       changedFields: [],
       resolvedDetails: {},
+      resolvedMeetingPlace: '',
       socialDiagnostics: {},
     };
   }
@@ -2975,13 +2977,17 @@ async function enrichSalesClientLinksFromMyphoner({
       wouldUpdate: false,
       changedFields: [],
       resolvedDetails: {},
+      resolvedMeetingPlace: '',
       socialDiagnostics: {},
     };
   }
 
   const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
   const nextDetails = { ...currentDetails };
+  const currentMeetingPlace = sanitizeText(currentClient.meetingPlace);
   const leadDetails = buildSalesDetailsFromMyphonerLead(source, map);
+  const leadMeetingPlace = sanitizeText(extractMyphonerLeadMeetingPlace(source, map));
+  const resolvedMeetingPlace = currentMeetingPlace || leadMeetingPlace;
   const socialDiagnostics = {};
 
   if (!nextDetails.instagramUrl && leadDetails.instagramUrl) nextDetails.instagramUrl = leadDetails.instagramUrl;
@@ -3119,12 +3125,14 @@ async function enrichSalesClientLinksFromMyphoner({
     const nextValue = sanitizeText(normalizedNext[field]);
     return Boolean(nextValue) && nextValue !== previous;
   });
+  if (!currentMeetingPlace && leadMeetingPlace) changedFields.push('meetingPlace');
   if (!changedFields.length) {
     return {
       updated: false,
       wouldUpdate: false,
       changedFields: [],
       resolvedDetails: currentDetails,
+      resolvedMeetingPlace: currentMeetingPlace,
       socialDiagnostics,
     };
   }
@@ -3136,19 +3144,25 @@ async function enrichSalesClientLinksFromMyphoner({
       changedFields,
       clientId: targetClientId,
       resolvedDetails: normalizedNext,
+      resolvedMeetingPlace,
       socialDiagnostics,
     };
   }
 
-  const updated = sales.updateSalesClient(targetClientId, {
+  const updatePayload = {
     details: normalizedNext,
-  });
+  };
+  if (!currentMeetingPlace && leadMeetingPlace) {
+    updatePayload.meetingPlace = leadMeetingPlace;
+  }
+  const updated = sales.updateSalesClient(targetClientId, updatePayload);
   return {
     updated: Boolean(updated),
     wouldUpdate: Boolean(updated),
     changedFields,
     clientId: targetClientId,
     resolvedDetails: normalizedNext,
+    resolvedMeetingPlace: sanitizeText(updated?.meetingPlace || resolvedMeetingPlace),
     socialDiagnostics,
   };
 }
@@ -3195,14 +3209,59 @@ function collectMissingSalesLinkFields(details = {}) {
   return missing;
 }
 
+function collectMissingSalesBackfillFields(client = {}) {
+  const source = client && typeof client === 'object' ? client : {};
+  const missing = collectMissingSalesLinkFields(source?.details || {});
+  if (!sanitizeText(source?.meetingPlace)) missing.push('meetingPlace');
+  return missing;
+}
+
+function normalizeMyphonerLeadId(value = '') {
+  return sanitizeText(value).replace(/[^\d]/g, '');
+}
+
+function extractMyphonerLeadIdsFromText(value = '') {
+  const raw = String(value || '');
+  if (!raw) return [];
+  const ids = [];
+  for (const match of raw.matchAll(/\/(?:api\/v2\/)?leads\/(\d+)/gi)) {
+    if (match?.[1]) ids.push(normalizeMyphonerLeadId(match[1]));
+  }
+  for (const match of raw.matchAll(/\blead(?:\s*id)?\s*[:#-]?\s*(\d{6,})\b/gi)) {
+    if (match?.[1]) ids.push(normalizeMyphonerLeadId(match[1]));
+  }
+  return [...new Set(ids.filter(Boolean))];
+}
+
 function collectMyphonerLeadIdsFromClient(client = {}) {
   const source = client && typeof client === 'object' ? client : {};
   const leadIds = [
-    sanitizeText(source?.myphoner?.leadId),
-    ...(Array.isArray(source?.myphoner?.leadIds) ? source.myphoner.leadIds : []),
+    normalizeMyphonerLeadId(source?.myphoner?.leadId),
+    ...(Array.isArray(source?.myphoner?.leadIds) ? source.myphoner.leadIds.map((entry) => normalizeMyphonerLeadId(entry)) : []),
   ]
-    .map((entry) => sanitizeText(entry))
     .filter(Boolean);
+
+  const leadResourcePath = myphonerApi.parseMyPhonerResourcePath(
+    sanitizeText(source?.myphoner?.leadResourceUrl),
+    myphonerApi.getMyPhonerConfig()
+  );
+  if (leadResourcePath) {
+    leadIds.push(
+      normalizeMyphonerLeadId(myphonerApi.extractMyPhonerIdFromResource(leadResourcePath, 'leads'))
+    );
+  }
+
+  const freeTextCandidates = [
+    source?.details?.otherLinks,
+    source?.businessName,
+    source?.contactPerson,
+    source?.myphoner?.winnerComment,
+  ];
+  for (const candidate of freeTextCandidates) {
+    for (const extracted of extractMyphonerLeadIdsFromText(candidate)) {
+      leadIds.push(extracted);
+    }
+  }
   return [...new Set(leadIds)];
 }
 
@@ -3263,6 +3322,33 @@ function extractMyphonerLeadBusinessName(lead = {}, leadDataMap = new Map()) {
   ]);
 }
 
+function extractMyphonerLeadContactName(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  return pickFirstNonEmpty([
+    pickLeadDataValue(leadDataMap, ['contact_person', 'kontaktperson', 'full_name', 'fullname', 'contact_name', 'name']),
+    source.secondary_identifier,
+  ]);
+}
+
+function extractMyphonerLeadMeetingPlace(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
+  return pickFirstNonEmpty([
+    pickLeadDataValue(map, [
+      'meeting_place',
+      'meeting_address',
+      'address',
+      'visiting_address',
+      'besoksadresse',
+      'moteadresse',
+      'forretningsadresse',
+      'street_address',
+      'street',
+    ]),
+    pickLeadDataValue(map, ['city', 'town', 'post_place', 'poststed', 'municipality', 'kommune']),
+  ]);
+}
+
 function addLeadCatalogEntry(map, key, entry) {
   const normalizedKey = sanitizeText(key);
   if (!normalizedKey) return;
@@ -3309,7 +3395,7 @@ async function buildMyphonerLeadCatalog() {
     if (!listId) continue;
     const listName = sanitizeText(list?.name);
     let previousPageLeadSignature = '';
-    for (let page = 1; page <= 3; page += 1) {
+    for (let page = 1; page <= MYPHONER_LEAD_CATALOG_MAX_PAGES; page += 1) {
       const pageSize = 100;
       const leadsResponse = await myphonerApi.listMyPhonerLeadsInList(listId, {
         page,
@@ -3333,10 +3419,13 @@ async function buildMyphonerLeadCatalog() {
         const leadDataMap = getLeadDataMap(lead);
         const businessName = extractMyphonerLeadBusinessName(lead, leadDataMap);
         const businessKey = normalizeBusinessNameForMatch(businessName);
+        const contactPerson = extractMyphonerLeadContactName(lead, leadDataMap);
+        const contactKey = normalizeBusinessNameForMatch(contactPerson);
         const commentText = resolveLeadCommentText(lead, leadDataMap);
         const phone = pickMyphonerLeadPhone(lead, leadDataMap, commentText);
         const phoneDigits = normalizePhoneDigits(phone);
         const organizationNumber = extractOrganizationNumberFromLead(lead, leadDataMap);
+        const meetingPlace = sanitizeText(extractMyphonerLeadMeetingPlace(lead, leadDataMap));
         const leadResourceUrl = sanitizeText(
           lead?.location || lead?.resource_url || `/api/v2/leads/${encodeURIComponent(leadId)}`
         );
@@ -3347,8 +3436,11 @@ async function buildMyphonerLeadCatalog() {
           listName,
           businessName: sanitizeText(businessName),
           businessKey,
+          contactPerson: sanitizeText(contactPerson),
+          contactKey,
           phoneDigits,
           organizationNumber,
+          meetingPlace,
         };
         leadById.set(leadId, entry);
         if (organizationNumber) addLeadCatalogEntry(byOrgnr, organizationNumber, entry);
@@ -3388,6 +3480,46 @@ async function attemptRelinkSalesClientLead({
   }
 
   const orgnr = extractOrganizationNumberFromClientRecord(source);
+  const businessKey = normalizeBusinessNameForMatch(source?.businessName);
+  const phoneDigits = normalizePhoneDigits(source?.contactPhone);
+  const contactKey = normalizeBusinessNameForMatch(source?.contactPerson);
+  const sortCandidatesByLeadId = (list = []) =>
+    [...list].sort((a, b) => Number(sanitizeText(b?.leadId || 0)) - Number(sanitizeText(a?.leadId || 0)));
+  const filterCandidatesByContact = (list = []) => {
+    if (!contactKey) return [];
+    return list.filter((entry) => {
+      const candidateContactKey = normalizeBusinessNameForMatch(entry?.contactKey || entry?.contactPerson || '');
+      if (!candidateContactKey) return false;
+      return (
+        candidateContactKey === contactKey ||
+        candidateContactKey.includes(contactKey) ||
+        contactKey.includes(candidateContactKey)
+      );
+    });
+  };
+  const filterCandidatesByPhone = (list = []) => {
+    if (!phoneDigits) return [];
+    return list.filter((entry) => {
+      const candidateDigits = normalizePhoneDigits(entry?.phoneDigits);
+      if (!candidateDigits) return false;
+      return (
+        candidateDigits === phoneDigits ||
+        candidateDigits.endsWith(phoneDigits) ||
+        phoneDigits.endsWith(candidateDigits)
+      );
+    });
+  };
+  const pickDeterministicCandidate = (list = []) => {
+    const candidates = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (!candidates.length || candidates.length > 5) return null;
+    const businessValues = new Set(candidates.map((entry) => sanitizeText(entry?.businessKey)).filter(Boolean));
+    const orgValues = new Set(candidates.map((entry) => sanitizeText(entry?.organizationNumber)).filter(Boolean));
+    const phoneValues = new Set(candidates.map((entry) => sanitizeText(entry?.phoneDigits)).filter(Boolean));
+    if (businessValues.size > 1) return null;
+    if (orgValues.size > 1) return null;
+    if (phoneValues.size > 1 && !phoneDigits) return null;
+    return sortCandidatesByLeadId(candidates)[0] || null;
+  };
   let candidate = null;
   let method = '';
   if (orgnr) {
@@ -3395,18 +3527,66 @@ async function attemptRelinkSalesClientLead({
     if (orgMatches.length === 1) {
       candidate = orgMatches[0];
       method = 'orgnr';
+    } else if (orgMatches.length > 1) {
+      const contactMatches = filterCandidatesByContact(orgMatches);
+      if (contactMatches.length === 1) {
+        candidate = contactMatches[0];
+        method = 'orgnr-contact';
+      } else {
+        const deterministic = pickDeterministicCandidate(contactMatches.length ? contactMatches : orgMatches);
+        if (deterministic) {
+          candidate = deterministic;
+          method = 'orgnr-duplicate';
+        }
+      }
     }
   }
 
-  if (!candidate) {
-    const businessKey = normalizeBusinessNameForMatch(source?.businessName);
-    const phoneDigits = normalizePhoneDigits(source?.contactPhone);
-    if (businessKey && phoneDigits) {
-      const key = `${businessKey}:${phoneDigits}`;
-      const matches = catalog.byBusinessPhone.get(key) || [];
-      if (matches.length === 1) {
-        candidate = matches[0];
-        method = 'business-phone';
+  if (!candidate && businessKey && phoneDigits) {
+    const key = `${businessKey}:${phoneDigits}`;
+    const matches = catalog.byBusinessPhone.get(key) || [];
+    if (matches.length === 1) {
+      candidate = matches[0];
+      method = 'business-phone';
+    } else if (matches.length > 1) {
+      const contactMatches = filterCandidatesByContact(matches);
+      if (contactMatches.length === 1) {
+        candidate = contactMatches[0];
+        method = 'business-phone-contact';
+      } else {
+        const deterministic = pickDeterministicCandidate(contactMatches.length ? contactMatches : matches);
+        if (deterministic) {
+          candidate = deterministic;
+          method = 'business-phone-duplicate';
+        }
+      }
+    }
+  }
+
+  if (!candidate && businessKey) {
+    const businessMatches = catalog.byBusiness.get(businessKey) || [];
+    if (businessMatches.length === 1) {
+      candidate = businessMatches[0];
+      method = 'business';
+    } else if (businessMatches.length > 1) {
+      const contactMatches = filterCandidatesByContact(businessMatches);
+      if (contactMatches.length === 1) {
+        candidate = contactMatches[0];
+        method = 'business-contact';
+      } else {
+        const phoneMatches = filterCandidatesByPhone(contactMatches.length ? contactMatches : businessMatches);
+        if (phoneMatches.length === 1) {
+          candidate = phoneMatches[0];
+          method = 'business-phone-fallback';
+        } else {
+          const deterministic = pickDeterministicCandidate(
+            phoneMatches.length ? phoneMatches : contactMatches.length ? contactMatches : businessMatches
+          );
+          if (deterministic) {
+            candidate = deterministic;
+            method = 'business-duplicate';
+          }
+        }
       }
     }
   }
@@ -3563,7 +3743,7 @@ async function backfillExistingSalesClientLinks({
     const targetClientId = sanitizeText(client?.id);
     if (!targetClientId) continue;
     let workingClient = client;
-    const missingFields = collectMissingSalesLinkFields(client?.details || {});
+    const missingFields = collectMissingSalesBackfillFields(client);
     if (onlyMissing && !missingFields.length) {
       summary.skippedNoMissing += 1;
       registerReason('no-missing-fields');
@@ -3659,7 +3839,11 @@ async function backfillExistingSalesClientLinks({
       }
 
       const resolvedDetails = normalizeSalesDetailLinks(result?.resolvedDetails || workingClient?.details || {});
-      const remainingMissing = collectMissingSalesLinkFields(resolvedDetails);
+      const resolvedMeetingPlace = sanitizeText(result?.resolvedMeetingPlace || workingClient?.meetingPlace);
+      const remainingMissing = collectMissingSalesBackfillFields({
+        details: resolvedDetails,
+        meetingPlace: resolvedMeetingPlace,
+      });
       if (remainingMissing.includes('googleBusinessProfile')) {
         if (googleRaw) clientReasons.push('google-url-unparseable');
         else clientReasons.push('missing-google-metadata');
@@ -3678,6 +3862,9 @@ async function backfillExistingSalesClientLinks({
       }
       if (remainingMissing.includes('instagramUrl') || remainingMissing.includes('facebookUrl')) {
         clientReasons.push('social-low-confidence');
+      }
+      if (remainingMissing.includes('meetingPlace')) {
+        clientReasons.push('missing-meeting-address');
       }
 
       const uniqueReasons = [...new Set(clientReasons.filter(Boolean))];

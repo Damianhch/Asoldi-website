@@ -184,7 +184,69 @@ function buildRecordingProxyUrl(clientId = '') {
 }
 
 function normalizeClientSearchText(value = '') {
-  return String(value || '').trim().toLowerCase();
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const SEARCH_QUERY_NOISE_WORDS = new Set([
+  'area',
+  'omrade',
+  'omradet',
+  'region',
+  'city',
+  'by',
+  'location',
+  'sted',
+  'near',
+  'naer',
+  'i',
+  'in',
+]);
+
+const SEARCH_LOCATION_GROUPS = [
+  ['oslo', 'akershus', 'baerum', 'asker', 'lorenskog', 'ski', 'kolbotn', 'sandvika', 'fetsund', 'drammen'],
+  ['trondheim', 'malvik', 'melhus', 'stjordal', 'levanger', 'skaun', 'orkanger', 'selbu', 'skogn', 'spongdal', 'sjetnmarka', 'svorkmo', 'lian'],
+  ['bergen', 'fana', 'arna', 'askoy', 'os'],
+  ['stavanger', 'sandnes', 'sola', 'randaberg', 'bryne', 'klepp'],
+] as const;
+
+function buildClientSearchTokens(value = '') {
+  return normalizeClientSearchText(value)
+    .split(' ')
+    .map((token) => token.trim())
+    .filter((token) => token && !SEARCH_QUERY_NOISE_WORDS.has(token));
+}
+
+function extractActiveLocationSearchGroups(queryTokens: string[]) {
+  if (!queryTokens.length) return [] as string[][];
+  return SEARCH_LOCATION_GROUPS.filter((group) => group.some((token) => queryTokens.includes(token))).map((group) => [...group]);
+}
+
+function matchesClientSearchQuery(haystack = '', rawQuery = '') {
+  const normalizedHaystack = normalizeClientSearchText(haystack);
+  const normalizedQuery = normalizeClientSearchText(rawQuery);
+  if (!normalizedQuery) return true;
+  if (normalizedHaystack.includes(normalizedQuery)) return true;
+
+  const queryTokens = buildClientSearchTokens(normalizedQuery);
+  if (!queryTokens.length) return false;
+
+  const activeLocationGroups = extractActiveLocationSearchGroups(queryTokens);
+  for (const groupTokens of activeLocationGroups) {
+    if (!groupTokens.some((token) => normalizedHaystack.includes(token))) return false;
+  }
+
+  const locationTokenSet = new Set(activeLocationGroups.flat());
+  for (const token of queryTokens) {
+    if (locationTokenSet.has(token)) continue;
+    if (!normalizedHaystack.includes(token)) return false;
+  }
+  return true;
 }
 
 function parseMeetingTimestamp(value = '') {
@@ -316,11 +378,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       client.contactPerson,
       client.contactEmail,
       client.contactPhone,
+      client.meetingPlace,
+      client.industry,
     ]
       .map((entry) => normalizeClientSearchText(entry))
       .filter(Boolean)
       .join(' ');
-    return haystack.includes(normalizedClientSearchQuery);
+    return matchesClientSearchQuery(haystack, normalizedClientSearchQuery);
   };
   const timelineClients = useMemo(
     () => clients.filter((client) => client.status !== 'not-sold' && clientMatchesNameSearch(client)),
@@ -1086,14 +1150,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         </div>
 
         <form onSubmit={applyClientNameSearch} className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
-          <label className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Search clients by name</label>
+          <label className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Search clients by name or area</label>
           <div className="mt-2 flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
                 value={clientSearchInput}
                 onChange={(e) => setClientSearchInput(e.target.value)}
-                placeholder="Business or contact person"
+                placeholder="Business, contact, or area (e.g. oslo area)"
                 className="w-full pl-9 pr-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm"
               />
             </div>
