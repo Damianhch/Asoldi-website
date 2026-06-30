@@ -1905,6 +1905,36 @@ function classifySalesLink(url = '') {
   return { kind: 'other', url: normalized };
 }
 
+function isProffSearchUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return false;
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.host.toLowerCase();
+    if (!host.includes('proff.no')) return false;
+    const pathName = parsed.pathname.toLowerCase();
+    return pathName === '/bransjesok' || pathName.startsWith('/bransjesok/');
+  } catch {
+    return false;
+  }
+}
+
+function canonicalizeProffCompanyUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.host.toLowerCase();
+    if (!host.includes('proff.no')) return '';
+    const pathName = parsed.pathname.replace(/\/+$/, '');
+    const lowerPath = pathName.toLowerCase();
+    if (!(lowerPath.startsWith('/organisasjon/') || lowerPath.startsWith('/selskap/'))) return '';
+    return `https://www.proff.no${pathName}`;
+  } catch {
+    return '';
+  }
+}
+
 function isLikelyMissingMyphonerValue(value = '') {
   const raw = sanitizeText(value).toLowerCase();
   if (!raw) return true;
@@ -2412,6 +2442,138 @@ async function searchBraveHtml(queryText = '') {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function buildProffSearchQueries({
+  organizationNumber = '',
+  businessName = '',
+  locationHint = '',
+} = {}) {
+  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
+  if (orgnr.length !== 9) return [];
+  const business = sanitizeText(businessName);
+  const location = sanitizeText(locationHint);
+  const querySet = new Set();
+  const candidates = [
+    `${orgnr} site:proff.no`,
+    `${orgnr} ${business} site:proff.no`,
+    `${orgnr} ${business} ${location} site:proff.no`,
+    `${orgnr} proff`,
+  ];
+  for (const raw of candidates) {
+    const query = sanitizeText(raw).replace(/\s+/g, ' ').trim();
+    if (!query || query.length < 4) continue;
+    querySet.add(query);
+  }
+  return [...querySet];
+}
+
+function extractProffProfileCandidatesFromHtml(html = '') {
+  const rawHtml = String(html || '');
+  if (!rawHtml) return [];
+  const matches = [
+    ...rawHtml.matchAll(/href\s*=\s*["']([^"']+)["']/gi),
+  ];
+  const seen = new Set();
+  const candidates = [];
+  for (const match of matches) {
+    const href = sanitizeText(match?.[1] || '');
+    if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) continue;
+    const absolute = href.startsWith('http') ? href : `https://www.proff.no${href.startsWith('/') ? href : `/${href}`}`;
+    const canonical = canonicalizeProffCompanyUrl(absolute);
+    if (!canonical || seen.has(canonical)) continue;
+    seen.add(canonical);
+    candidates.push(canonical);
+  }
+  return candidates;
+}
+
+async function searchProffInternalByOrganizationNumber(organizationNumber = '') {
+  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
+  if (orgnr.length !== 9) return [];
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1200, Math.min(8000, Number(MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS) || 6000));
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`https://www.proff.no/bransjesok?q=${encodeURIComponent(orgnr)}`, {
+      method: 'GET',
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'Mozilla/5.0 (compatible; AsoldiBot/1.0; +https://asoldi.com)',
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) return [];
+    const wafAction = sanitizeText(response.headers.get('x-amzn-waf-action'));
+    if (wafAction) return [];
+    const html = await response.text().catch(() => '');
+    return extractProffProfileCandidatesFromHtml(html);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function resolveProffCompanyUrlByOrganizationNumber({
+  organizationNumber = '',
+  businessName = '',
+  locationHint = '',
+} = {}) {
+  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
+  if (orgnr.length !== 9) {
+    return {
+      url: '',
+      reason: 'missing-orgnr',
+    };
+  }
+
+  const directCandidates = await searchProffInternalByOrganizationNumber(orgnr);
+  if (directCandidates.length) {
+    return {
+      url: directCandidates[0],
+      reason: 'proff-internal-search',
+    };
+  }
+
+  const context = {
+    businessName: sanitizeText(businessName),
+    locationHint: sanitizeText(locationHint),
+    cityToken:
+      normalizeSearchText(locationHint)
+        .split(' ')
+        .map((entry) => sanitizeText(entry))
+        .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) ||
+      '',
+    organizationNumber: orgnr,
+    businessTokens: buildBusinessSearchTokens([businessName, orgnr]),
+  };
+
+  const resolution = await resolveBestSearchCandidate({
+    queries: buildProffSearchQueries({
+      organizationNumber: orgnr,
+      businessName,
+      locationHint,
+    }),
+    context,
+    normalizeUrl: canonicalizeProffCompanyUrl,
+    minScore: 1,
+    minConfidenceMargin: 0,
+    minBusinessTokenMatches: 0,
+    strictConfidence: false,
+  });
+
+  if (sanitizeText(resolution?.url)) {
+    return {
+      url: sanitizeText(resolution.url),
+      reason: sanitizeText(resolution.reason || 'search-resolved'),
+    };
+  }
+
+  return {
+    url: '',
+    reason: sanitizeText(resolution?.reason || 'proff-unresolved'),
+  };
 }
 
 function buildBusinessSearchTokens(values = []) {
@@ -3033,9 +3195,27 @@ async function enrichSalesClientLinksFromMyphoner({
     businessName: baseBusinessName || searchContext.businessName,
   };
 
-  if (!nextDetails.proffUrl && resolvedOrgnr) {
-    nextDetails.proffUrl = `https://www.proff.no/bransjesok?q=${encodeURIComponent(resolvedOrgnr)}`;
+  let proffResolution = {
+    url: sanitizeText(nextDetails.proffUrl),
+    reason: sanitizeText(nextDetails.proffUrl) ? 'already-present' : 'not-attempted',
+  };
+  const proffNeedsResolution = !sanitizeText(nextDetails.proffUrl) || isProffSearchUrl(nextDetails.proffUrl);
+  if (proffNeedsResolution && resolvedOrgnr) {
+    proffResolution = await resolveProffCompanyUrlByOrganizationNumber({
+      organizationNumber: resolvedOrgnr,
+      businessName: baseBusinessName || currentClient.businessName,
+      locationHint: socialContext.locationHint || resolvedMeetingPlace,
+    });
+    if (sanitizeText(proffResolution.url)) {
+      nextDetails.proffUrl = sanitizeText(proffResolution.url);
+    }
+  } else if (proffNeedsResolution && !resolvedOrgnr) {
+    proffResolution = {
+      url: '',
+      reason: 'missing-orgnr',
+    };
   }
+  socialDiagnostics.proff = proffResolution;
 
   let instagramResolution = {
     url: sanitizeText(nextDetails.instagramUrl),
@@ -3203,7 +3383,7 @@ function collectMissingSalesLinkFields(details = {}) {
   const normalized = normalizeSalesDetailLinks(details || {});
   const missing = [];
   if (!sanitizeText(normalized.googleBusinessProfile)) missing.push('googleBusinessProfile');
-  if (!sanitizeText(normalized.proffUrl)) missing.push('proffUrl');
+  if (!sanitizeText(normalized.proffUrl) || isProffSearchUrl(normalized.proffUrl)) missing.push('proffUrl');
   if (!sanitizeText(normalized.instagramUrl)) missing.push('instagramUrl');
   if (!sanitizeText(normalized.facebookUrl)) missing.push('facebookUrl');
   return missing;
