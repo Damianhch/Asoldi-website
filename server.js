@@ -1928,8 +1928,12 @@ function canonicalizeProffCompanyUrl(value = '') {
     if (!host.includes('proff.no')) return '';
     const pathName = parsed.pathname.replace(/\/+$/, '');
     const lowerPath = pathName.toLowerCase();
-    if (!(lowerPath.startsWith('/organisasjon/') || lowerPath.startsWith('/selskap/'))) return '';
-    return `https://www.proff.no${pathName}`;
+    if (lowerPath.startsWith('/bransjesok/') || lowerPath === '/bransjesok') return '';
+    const profilePrefixes = ['/selskap/', '/organisasjon/', '/nokkeltall/', '/regnskap/', '/roller/'];
+    const matchedPrefix = profilePrefixes.find((prefix) => lowerPath.startsWith(prefix));
+    if (!matchedPrefix) return '';
+    const normalizedPath = pathName.replace(/^\/(organisasjon|nokkeltall|regnskap|roller)\//i, '/selskap/');
+    return `https://www.proff.no${normalizedPath}`;
   } catch {
     return '';
   }
