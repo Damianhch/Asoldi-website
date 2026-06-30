@@ -54,6 +54,7 @@ function normalizeMeetingMode(value) {
 }
 
 function durationForMode(mode) {
+  // Keep both online and in-person meetings at the same baseline duration.
   return 30;
 }
 
