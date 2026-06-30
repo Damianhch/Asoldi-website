@@ -4813,9 +4813,11 @@ async function finalizeClientGoogleSignIn(googleProfile) {
   return { token, redirectPath, profile };
 }
 
-async function maybeSyncCalendar(client, previousClient = null) {
+async function maybeSyncCalendar(client, previousClient = null, options = {}) {
+  const notifyAttendees = Boolean(options?.notifyAttendees);
   const warnings = [];
   let nextClient = client;
+  let calendarInviteSent = false;
   const accountKey = client.ownerId || '';
 
   if (!nextClient.agreedTime || !nextClient.meetingAt) {
@@ -4827,7 +4829,7 @@ async function maybeSyncCalendar(client, previousClient = null) {
       }
     }
     const cleared = sales.clearSalesMeetingScheduling(nextClient.id);
-    return { client: cleared || nextClient, warnings };
+    return { client: cleared || nextClient, warnings, calendarInviteSent };
   }
 
   const rescheduled = sales.rescheduleSalesReminders(nextClient.id);
@@ -4836,9 +4838,15 @@ async function maybeSyncCalendar(client, previousClient = null) {
   const calendarStatus = getGoogleCalendarStatus(accountKey);
   if (calendarStatus.configured && calendarStatus.connected) {
     try {
-      const calendarMeta = await upsertMeetingEvent(nextClient, previousClient?.calendar?.eventId || nextClient?.calendar?.eventId, accountKey);
+      const calendarMeta = await upsertMeetingEvent(
+        nextClient,
+        previousClient?.calendar?.eventId || nextClient?.calendar?.eventId,
+        accountKey,
+        { sendUpdates: notifyAttendees ? 'all' : 'none' }
+      );
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
+      calendarInviteSent = notifyAttendees;
     } catch (error) {
       warnings.push(`Calendar sync failed: ${error.message}`);
     }
@@ -4846,26 +4854,27 @@ async function maybeSyncCalendar(client, previousClient = null) {
     warnings.push('Google Calendar is not connected for this salesperson yet. Connect it from the Sales page.');
   }
 
-  return { client: nextClient, warnings };
+  return { client: nextClient, warnings, calendarInviteSent };
 }
 
-async function sendSalesThankYou(client, { force = false } = {}) {
+async function sendSalesThankYou(client, { force = false, onlineViaCalendar = false } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
-  if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
+  if (onlineViaCalendar && normalizeMeetingMode(client?.meetingMode) === 'online') {
+    const updated = sales.markSalesReminderSent(client.id, 'thankYou');
+    return { sent: true, client: updated || client, channel: 'calendar' };
+  }
+  if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   const message = buildSalesThankYouEmail(client, client.calendar || {});
   await emailLib.sendEmail({
     to: client.contactEmail,
     subject: message.subject,
     text: message.text,
     html: message.html,
-    icalEvent: message.icalEvent,
-    attachments: message.attachments,
-    headers: message.headers,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
-  return { sent: true, client: updated || client };
+  return { sent: true, client: updated || client, channel: 'email' };
 }
 
 async function sendSalesReminderNow(client, kind = '24h') {
@@ -7005,7 +7014,7 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     const payload = buildSalesInput(req.body || {}, { requireCore: true });
     payload.ownerId = req.salesUser.accountKey;
     let client = sales.createSalesClient(payload);
-    const syncResult = await maybeSyncCalendar(client, null);
+    const syncResult = await maybeSyncCalendar(client, null, { notifyAttendees: false });
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
@@ -7040,7 +7049,7 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
       existing.meetingMode !== client.meetingMode ||
       existing.contactEmail !== client.contactEmail;
 
-    const syncResult = await maybeSyncCalendar(client, existing);
+    const syncResult = await maybeSyncCalendar(client, existing, { notifyAttendees: false });
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
@@ -7134,9 +7143,13 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     if (!client) return res.status(404).json({ message: 'Sales client not found.' });
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
-    const syncResult = await maybeSyncCalendar(client, client);
+    const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+    const syncResult = await maybeSyncCalendar(client, client, { notifyAttendees: isOnline });
     client = syncResult.client || client;
-    const sentResult = await sendSalesThankYou(client, { force: true });
+    const sentResult = await sendSalesThankYou(client, {
+      force: true,
+      onlineViaCalendar: isOnline && syncResult.calendarInviteSent,
+    });
     client = sentResult.client || client;
     if (!sentResult.sent) {
       return res.status(400).json({
@@ -7165,8 +7178,7 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
 
     const requestedKind = sanitizeText(req.body?.kind || '24h');
     const reminderKind = requestedKind === '1h' ? '1h' : '24h';
-    const syncResult = await maybeSyncCalendar(client, client);
-    client = syncResult.client || client;
+    const syncWarnings = [];
     const sentResult = await sendSalesReminderNow(client, reminderKind);
     client = sentResult.client || client;
     if (!sentResult.sent) {
@@ -7174,7 +7186,7 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
         message: salesEmailFailureMessage(sentResult.reason),
         reason: sentResult.reason || '',
         client,
-        warnings: syncResult.warnings || [],
+        warnings: syncWarnings,
       });
     }
     return res.json({
@@ -7182,7 +7194,7 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
       sent: true,
       kind: reminderKind,
       client,
-      warnings: syncResult.warnings || [],
+      warnings: syncWarnings,
     });
   } catch (error) {
     return res.status(500).json({ message: error.message || 'Failed sending reminder email.' });
