@@ -173,7 +173,7 @@ const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER
 const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '1') !== '0';
 const MYPHONER_LEAD_CATALOG_MAX_PAGES = Math.max(1, Number(process.env.MYPHONER_LEAD_CATALOG_MAX_PAGES || 25));
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
-const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v2-address');
+const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v3-proff-orgnr');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 let myphonerWebhookReconcileInterval = null;
@@ -1259,10 +1259,12 @@ function clientTokenFromRequest(req) {
 function normalizeSalesDetailLinks(value = {}, fallback = {}) {
   const base = fallback && typeof fallback === 'object' ? fallback : {};
   const input = value && typeof value === 'object' ? value : {};
+  const rawProffUrl = sanitizeText(input.proffUrl ?? base.proffUrl);
+  const canonicalProffUrl = canonicalizeProffCompanyUrl(rawProffUrl);
   return {
     instagramUrl: sanitizeText(input.instagramUrl ?? base.instagramUrl),
     facebookUrl: sanitizeText(input.facebookUrl ?? base.facebookUrl),
-    proffUrl: sanitizeText(input.proffUrl ?? base.proffUrl),
+    proffUrl: canonicalProffUrl || rawProffUrl,
     otherLinks: sanitizeText(input.otherLinks ?? base.otherLinks),
     googleBusinessProfile: sanitizeText(input.googleBusinessProfile ?? base.googleBusinessProfile),
   };
@@ -1961,8 +1963,23 @@ function isProffSearchUrl(value = '') {
     const parsed = new URL(normalized);
     const host = parsed.host.toLowerCase();
     if (!host.includes('proff.no')) return false;
-    const pathName = parsed.pathname.toLowerCase();
-    return pathName === '/bransjesok' || pathName.startsWith('/bransjesok/');
+    const rawPath = String(parsed.pathname || '').replace(/\/+$/, '').toLowerCase();
+    let decodedPath = rawPath;
+    try {
+      decodedPath = decodeURIComponent(rawPath).replace(/\/+$/, '').toLowerCase();
+    } catch {
+      decodedPath = rawPath;
+    }
+    return (
+      rawPath === '/bransjesok' ||
+      rawPath.startsWith('/bransjesok/') ||
+      rawPath === '/sok' ||
+      rawPath.startsWith('/sok/') ||
+      rawPath === '/s%c3%b8k' ||
+      rawPath.startsWith('/s%c3%b8k/') ||
+      decodedPath === '/søk' ||
+      decodedPath.startsWith('/søk/')
+    );
   } catch {
     return false;
   }
@@ -1986,6 +2003,35 @@ function canonicalizeProffCompanyUrl(value = '') {
   } catch {
     return '';
   }
+}
+
+function isProffOrganizationLookupUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return false;
+  try {
+    const parsed = new URL(normalized);
+    const host = parsed.host.toLowerCase();
+    if (!host.includes('proff.no')) return false;
+    const segments = String(parsed.pathname || '')
+      .split('/')
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean);
+    if (segments.length !== 2) return false;
+    const section = sanitizeText(segments[0]).toLowerCase();
+    if (section !== 'organisasjon' && section !== 'selskap') return false;
+    const identifier = sanitizeText(segments[1]).replace(/\D+/g, '');
+    return identifier.length === 9;
+  } catch {
+    return false;
+  }
+}
+
+function shouldResolveProffUrl(value = '') {
+  const normalized = coerceHttpUrl(value);
+  if (!normalized) return true;
+  const canonical = canonicalizeProffCompanyUrl(normalized);
+  if (!canonical) return true;
+  return isProffSearchUrl(canonical) || isProffOrganizationLookupUrl(canonical);
 }
 
 function isLikelyMissingMyphonerValue(value = '') {
@@ -2564,8 +2610,8 @@ async function resolveProffCompanyUrlByOrganizationNumber({
   }
 
   return {
-    url: `https://www.proff.no/organisasjon/${encodeURIComponent(orgnr)}`,
-    reason: 'orgnr-direct-fallback',
+    url: '',
+    reason: 'orgnr-proff-search-empty',
   };
 }
 
@@ -3208,13 +3254,16 @@ async function enrichSalesClientLinksFromMyphoner({
     url: sanitizeText(nextDetails.proffUrl),
     reason: sanitizeText(nextDetails.proffUrl) ? 'already-present' : 'not-attempted',
   };
-  const proffNeedsResolution = !sanitizeText(nextDetails.proffUrl) || isProffSearchUrl(nextDetails.proffUrl);
+  const proffNeedsResolution = shouldResolveProffUrl(nextDetails.proffUrl);
   if (proffNeedsResolution && resolvedOrgnr) {
     proffResolution = await resolveProffCompanyUrlByOrganizationNumber({
       organizationNumber: resolvedOrgnr,
     });
     if (sanitizeText(proffResolution.url)) {
       nextDetails.proffUrl = sanitizeText(proffResolution.url);
+    } else if (sanitizeText(nextDetails.proffUrl)) {
+      // Drop stale search/org-only placeholders so they remain eligible for repair.
+      nextDetails.proffUrl = '';
     }
   } else if (proffNeedsResolution && !resolvedOrgnr) {
     proffResolution = {
@@ -3310,7 +3359,9 @@ async function enrichSalesClientLinksFromMyphoner({
   const changedFields = ['instagramUrl', 'facebookUrl', 'proffUrl', 'googleBusinessProfile'].filter((field) => {
     const previous = sanitizeText(currentDetails[field]);
     const nextValue = sanitizeText(normalizedNext[field]);
-    return Boolean(nextValue) && nextValue !== previous;
+    if (nextValue && nextValue !== previous) return true;
+    if (field === 'proffUrl' && previous && !nextValue && shouldResolveProffUrl(previous)) return true;
+    return false;
   });
   if (!currentMeetingPlace && leadMeetingPlace) changedFields.push('meetingPlace');
   if (!changedFields.length) {
@@ -3390,7 +3441,7 @@ function collectMissingSalesLinkFields(details = {}) {
   const normalized = normalizeSalesDetailLinks(details || {});
   const missing = [];
   if (!sanitizeText(normalized.googleBusinessProfile)) missing.push('googleBusinessProfile');
-  if (!sanitizeText(normalized.proffUrl) || isProffSearchUrl(normalized.proffUrl)) missing.push('proffUrl');
+  if (shouldResolveProffUrl(normalized.proffUrl)) missing.push('proffUrl');
   if (!sanitizeText(normalized.instagramUrl)) missing.push('instagramUrl');
   if (!sanitizeText(normalized.facebookUrl)) missing.push('facebookUrl');
   return missing;
