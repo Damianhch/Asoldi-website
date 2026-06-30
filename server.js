@@ -7527,15 +7527,18 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   const forceNewRun = parseBoolean(req.body?.forceNewRun, false);
 
-  // Prefer the URL the operator typed in the Sales UI; fall back to env. This lets
-  // local testing target a maker on http://localhost:3000 without redeploying.
-  const baseRaw = sanitizeText(req.body?.websiteMakerBaseUrl || process.env.WEBSITE_MAKER_BASE_URL);
-  if (!baseRaw) {
+  // Prefer the URL the operator typed in the Sales UI (typically a tunnel URL).
+  // Only fall back to localhost when no non-local URL is configured.
+  const requestedBase = normalizeHttpBaseUrl(req.body?.websiteMakerBaseUrl || '');
+  const envBase = normalizeHttpBaseUrl(process.env.WEBSITE_MAKER_BASE_URL || '');
+  const localBase = normalizeHttpBaseUrl(DEFAULT_MAKER_LOCAL_URL);
+  const isLocalBase = (value = '') => /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(String(value || ''));
+  const shouldAllowLocalFallback =
+    (!requestedBase || isLocalBase(requestedBase)) && (!envBase || isLocalBase(envBase));
+  const baseCandidates = [requestedBase, envBase, shouldAllowLocalFallback ? localBase : '']
+    .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+  if (!baseCandidates.length) {
     return res.status(503).json({ message: 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).' });
-  }
-  const base = normalizeHttpBaseUrl(baseRaw);
-  if (!base) {
-    return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
   }
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
@@ -7543,6 +7546,9 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     const salesDetails = normalizeSalesDetailLinks(client.details || {});
     const relevantLinks = buildSalesRelevantLinks(salesDetails);
     const quickFillLinks = buildSalesQuickFillLinks(salesDetails);
+    const clientMeetingPlace = sanitizeText(client.meetingPlace);
+    const clientContactPerson = sanitizeText(client.contactPerson);
+    const clientPhone = sanitizeText(client.contactPhone);
     const salesOwnerContact = sanitizeText(
       req.body?.salesContact ||
       process.env.SALES_CONTACT_EMAIL ||
@@ -7550,12 +7556,21 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       'kontakt@asoldi.com'
     );
     const clientContactEmail = sanitizeText(client.contactEmail);
+    const extraContext = [
+      clientContactPerson ? `Primary contact person: ${clientContactPerson}` : '',
+      clientPhone ? `Primary contact phone: ${clientPhone}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n');
     const answersPatch = {
       businessName: client.businessName || '',
       industry: client.industry || '',
       email: clientContactEmail || salesOwnerContact,
+      phone: clientPhone,
+      address: clientMeetingPlace,
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
       relevantLinks,
+      extraContext,
     };
     const previousRunId = sanitizeText(client.makerRun?.runId);
     const existingRunId = forceNewRun ? '' : previousRunId;
@@ -7569,31 +7584,55 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       industry: client.industry || '',
       source: 'sales',
       salesContact: salesOwnerContact,
+      salesAddress: clientMeetingPlace,
       salesClientId: client.id,
       salesOwnerId: req.salesUser?.accountKey || '',
       salesOrderId: sanitizeText(req.body?.salesOrderId || ''),
       salesCallbackUrl,
       salesCallbackToken,
+      // Keep Sales "create run" responsive and deterministic; avoid browser-driven
+      // enrichment during this click flow.
+      skipSalesAddressEnrichment: true,
       answers: answersPatch,
       quickFillLinks,
     };
-    const response = await fetch(`${base}/api/runs/v2`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { 'x-api-key': apiKey } : {}),
-      },
-      body: JSON.stringify(requestBody),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) {
-      return res.status(502).json({ message: data.error || data.message || `Website Maker error (${response.status}).` });
+    let base = '';
+    let runId = '';
+    let makerPayload = {};
+    let lastMakerError = '';
+    for (const candidateBase of baseCandidates) {
+      try {
+        const response = await fetch(`${candidateBase}/api/runs/v2`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(apiKey ? { 'x-api-key': apiKey } : {}),
+          },
+          body: JSON.stringify(requestBody),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          lastMakerError = data.error || data.message || `Website Maker error (${response.status}).`;
+          continue;
+        }
+        const candidateRunId = sanitizeText(data.runId || existingRunId);
+        if (!candidateRunId) {
+          lastMakerError = 'Website Maker did not return a runId.';
+          continue;
+        }
+        base = candidateBase;
+        runId = candidateRunId;
+        makerPayload = data && typeof data === 'object' ? data : {};
+        break;
+      } catch (error) {
+        lastMakerError = error?.message || 'Failed reaching the Website Maker.';
+      }
     }
-    const runId = sanitizeText(data.runId || existingRunId);
-    if (!runId) {
-      return res.status(502).json({ message: 'Website Maker did not return a runId.' });
+    if (!base || !runId) {
+      return res.status(502).json({ message: lastMakerError || 'Failed reaching the Website Maker.' });
     }
-    let runHandoff = data?.handoff && typeof data.handoff === 'object' ? data.handoff : {};
+
+    let runHandoff = makerPayload?.handoff && typeof makerPayload.handoff === 'object' ? makerPayload.handoff : {};
     try {
       const freshRun = await fetchMakerRunRecord({ websiteMakerBaseUrl: base, runId });
       if (freshRun?.salesHandoff && typeof freshRun.salesHandoff === 'object') {
