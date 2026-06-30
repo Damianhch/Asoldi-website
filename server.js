@@ -1607,6 +1607,42 @@ function mapBrregEntity(entity = {}) {
   };
 }
 
+function selectBrregCandidateByBusinessName(candidates = [], businessName = '', locationHint = '') {
+  const list = Array.isArray(candidates)
+    ? candidates.filter((entry) => sanitizeText(entry?.organizationNumber) && sanitizeText(entry?.name))
+    : [];
+  if (!list.length) return null;
+  const normalizedBusinessName = normalizeSearchText(businessName);
+  if (!normalizedBusinessName) return null;
+
+  const exact = list.filter((entry) => normalizeSearchText(entry.name) === normalizedBusinessName);
+  if (exact.length === 1) return exact[0];
+
+  const loose = list.filter((entry) => {
+    const normalizedCandidate = normalizeSearchText(entry.name);
+    if (!normalizedCandidate) return false;
+    return (
+      normalizedCandidate.includes(normalizedBusinessName) ||
+      normalizedBusinessName.includes(normalizedCandidate)
+    );
+  });
+  if (loose.length === 1) return loose[0];
+
+  const cityToken =
+    normalizeSearchText(locationHint)
+      .split(' ')
+      .map((entry) => sanitizeText(entry))
+      .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) ||
+    '';
+  if (cityToken) {
+    const pool = loose.length ? loose : list;
+    const cityMatches = pool.filter((entry) => normalizeSearchText(entry.address).includes(cityToken));
+    if (cityMatches.length === 1) return cityMatches[0];
+  }
+
+  return null;
+}
+
 async function fetchBrregEntities(url, signal) {
   const response = await fetch(url, {
     method: 'GET',
@@ -3106,14 +3142,30 @@ async function enrichSalesClientLinksFromMyphoner({
   let searchContext = buildSalesLinkSearchContext(currentClient, source, map);
   const orgNumber = sanitizeText(searchContext.organizationNumber);
   const fallbackClientOrgnr = extractOrganizationNumberFromClientRecord(currentClient);
-  const resolvedOrgnr = sanitizeText(orgNumber || fallbackClientOrgnr);
+  let resolvedOrgnr = sanitizeText(orgNumber || fallbackClientOrgnr);
+  const candidateBusinessName = sanitizeText(searchContext.businessName || currentClient.businessName);
+  let brregEntity = null;
+  if (!resolvedOrgnr && candidateBusinessName) {
+    const brregCandidatesByName = await searchBrregBusinesses(candidateBusinessName).catch(() => []);
+    const selectedByName = selectBrregCandidateByBusinessName(
+      brregCandidatesByName,
+      candidateBusinessName,
+      searchContext.locationHint || resolvedMeetingPlace
+    );
+    if (sanitizeText(selectedByName?.organizationNumber)) {
+      resolvedOrgnr = sanitizeText(selectedByName.organizationNumber);
+      brregEntity = selectedByName;
+    }
+  }
   if (resolvedOrgnr && !sanitizeText(searchContext.organizationNumber)) {
     searchContext = {
       ...searchContext,
       organizationNumber: resolvedOrgnr,
     };
   }
-  const brregEntity = resolvedOrgnr ? await lookupBrregEntityByOrganizationNumber(resolvedOrgnr) : null;
+  if (!brregEntity && resolvedOrgnr) {
+    brregEntity = await lookupBrregEntityByOrganizationNumber(resolvedOrgnr);
+  }
   const enrichedBusinessName = sanitizeText(brregEntity?.name);
   const enrichedLocationHint = sanitizeText(searchContext.locationHint || brregEntity?.address);
   if (enrichedBusinessName || enrichedLocationHint) {
