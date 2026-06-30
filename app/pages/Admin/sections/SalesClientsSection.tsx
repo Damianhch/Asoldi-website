@@ -1305,8 +1305,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             );
             const storedDashboardUrl = String(client.makerRun?.dashboardUrl || '').trim();
             const storedPreviewUrl = String(client.makerRun?.previewUrl || '').trim();
-            const makerDashboardUrl = storedDashboardUrl || dynamicDashboardUrl;
-            const makerPreviewUrl = storedPreviewUrl || dynamicPreviewUrl;
+            // Prefer links built from the current Website Maker base URL (including
+            // freshly regenerated tunnel hosts). Stored URLs remain fallback only.
+            const makerDashboardUrl = dynamicDashboardUrl || storedDashboardUrl;
+            const makerPreviewUrl = dynamicPreviewUrl || storedPreviewUrl;
             const expanded = expandedId === client.id;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;

@@ -7934,6 +7934,8 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
   let previewUrl = sanitizeText(body.previewUrl);
   let businessName = sanitizeText(body.businessName);
   const salesClientId = sanitizeText(body.salesClientId);
+  let resolvedTargetUserId = sanitizeText(body.targetUserId);
+  let resolvedTargetEmail = sanitizeText(body.targetEmail).toLowerCase();
   if (salesClientId) {
     let salesClient = sales.getSalesClientById(salesClientId);
     if (salesClient && !canAccessSalesClient(req, salesClient)) {
@@ -7941,14 +7943,14 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
     }
     if (salesClient) {
       if (!businessName) businessName = sanitizeText(salesClient.businessName);
-      if (!previewUrl) {
-        previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
-      }
-      if (!previewUrl) {
+      const existingImportedPreviewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+      const linkedRunId = sanitizeText(body.runId || salesClient.makerRun?.runId);
+      const shouldTryRefreshFromMaker = !previewUrl && Boolean(linkedRunId);
+      if (shouldTryRefreshFromMaker) {
         try {
           const syncResult = await syncSalesClientFromMakerRun({
             client: salesClient,
-            runId: body.runId,
+            runId: linkedRunId,
             websiteMakerBaseUrl: body.websiteMakerBaseUrl,
             siteFolder: body.siteFolder || salesClient.businessName || 'site',
             step: body.step || 'latest',
@@ -7957,12 +7959,18 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
           salesClient = syncResult.client;
           previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
         } catch (error) {
-          return res.status(httpStatusFromError(error, 400)).json({
-            message:
-              error.message ||
-              'Kunne ikke synkronisere nettside-forhåndsvisning fra Website Maker.',
-          });
+          if (!existingImportedPreviewUrl) {
+            return res.status(httpStatusFromError(error, 400)).json({
+              message:
+                error.message ||
+                'Kunne ikke synkronisere nettside-forhåndsvisning fra Website Maker.',
+            });
+          }
+          previewUrl = existingImportedPreviewUrl;
         }
+      }
+      if (!previewUrl) {
+        previewUrl = existingImportedPreviewUrl;
       }
       if (!previewUrl) {
         return res.status(400).json({
@@ -7970,6 +7978,24 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
             'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først.',
         });
       }
+
+      // If sales doesn't explicitly pick a client user, default to the sales
+      // contact email so the offer appears automatically when that account logs in.
+      if (!resolvedTargetUserId && !resolvedTargetEmail) {
+        resolvedTargetEmail = sanitizeText(salesClient.contactEmail).toLowerCase();
+      }
+    }
+  }
+
+  if (!resolvedTargetUserId && resolvedTargetEmail) {
+    const allUsers = await store.getAllUsers();
+    const matchedClientUser = allUsers.find(
+      (entry) =>
+        entry.role === 'client' &&
+        sanitizeText(entry.username).toLowerCase() === resolvedTargetEmail
+    );
+    if (matchedClientUser) {
+      resolvedTargetUserId = sanitizeText(matchedClientUser.id);
     }
   }
 
@@ -7982,8 +8008,8 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
     note: sanitizeText(body.note),
     businessName,
     previewUrl,
-    targetUserId: sanitizeText(body.targetUserId),
-    targetEmail: sanitizeText(body.targetEmail),
+    targetUserId: resolvedTargetUserId,
+    targetEmail: resolvedTargetEmail,
   });
   res.status(201).json({ offer });
 });

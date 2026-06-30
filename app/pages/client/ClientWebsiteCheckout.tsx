@@ -441,7 +441,7 @@ export const ClientWebsiteCheckout = () => {
                 ))}
               </ul>
 
-              {offer?.previewUrl && offer.planId === profile?.websiteBuilder?.selectedPlanId ? (
+              {offer?.previewUrl ? (
                 <a
                   href={offer.previewUrl}
                   target="_blank"
