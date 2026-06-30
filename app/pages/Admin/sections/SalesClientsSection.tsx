@@ -285,8 +285,9 @@ function normalizeHttpBaseUrl(value = '') {
   try {
     const parsed = new URL(withProtocol);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
-    const cleanPath = String(parsed.pathname || '').replace(/\/+$/, '');
-    return `${parsed.protocol}//${parsed.host}${cleanPath}`;
+    // Sales stores a base host for Website Maker. If users paste a deep route
+    // (e.g. /run/<id>), normalize to origin so links don't become /run/<id>/run/<id>.
+    return `${parsed.protocol}//${parsed.host}`;
   } catch {
     return '';
   }

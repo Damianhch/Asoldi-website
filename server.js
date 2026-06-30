@@ -723,6 +723,17 @@ function normalizeHttpBaseUrl(value = '') {
   }
 }
 
+function normalizeHttpOrigin(value = '') {
+  const normalized = normalizeHttpBaseUrl(value);
+  if (!normalized) return '';
+  try {
+    const parsed = new URL(normalized);
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return '';
+  }
+}
+
 function resolveCloudflaredBinary() {
   const envPath = sanitizeText(process.env.CLOUDFLARED_BIN);
   if (envPath && existsSync(envPath)) return envPath;
@@ -1737,7 +1748,9 @@ function resolveWebsiteMakerBaseUrl(value = '', client = null) {
     'http://localhost:3000',
   ];
   for (const candidate of candidates) {
-    const normalized = normalizeHttpBaseUrl(candidate);
+    // Accept pasted deep links (e.g. .../run/<id>) but always resolve the
+    // Website Maker base to origin to keep downstream API/link building valid.
+    const normalized = normalizeHttpOrigin(candidate);
     if (normalized) return normalized;
   }
   return '';
@@ -7703,9 +7716,9 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
 
   // Prefer the URL the operator typed in the Sales UI (typically a tunnel URL).
   // Only fall back to localhost when no non-local URL is configured.
-  const requestedBase = normalizeHttpBaseUrl(req.body?.websiteMakerBaseUrl || '');
-  const envBase = normalizeHttpBaseUrl(process.env.WEBSITE_MAKER_BASE_URL || '');
-  const localBase = normalizeHttpBaseUrl(DEFAULT_MAKER_LOCAL_URL);
+  const requestedBase = normalizeHttpOrigin(req.body?.websiteMakerBaseUrl || '');
+  const envBase = normalizeHttpOrigin(process.env.WEBSITE_MAKER_BASE_URL || '');
+  const localBase = normalizeHttpOrigin(DEFAULT_MAKER_LOCAL_URL);
   const isLocalBase = (value = '') => /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(String(value || ''));
   const shouldAllowLocalFallback =
     (!requestedBase || isLocalBase(requestedBase)) && (!envBase || isLocalBase(envBase));
