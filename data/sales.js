@@ -54,7 +54,7 @@ function normalizeMeetingMode(value) {
 }
 
 function durationForMode(mode) {
-  return mode === 'in-person' ? 60 : 30;
+  return 30;
 }
 
 function readSalesFile() {

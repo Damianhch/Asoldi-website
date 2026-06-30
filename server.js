@@ -4860,6 +4860,9 @@ async function sendSalesThankYou(client, { force = false } = {}) {
     subject: message.subject,
     text: message.text,
     html: message.html,
+    icalEvent: message.icalEvent,
+    attachments: message.attachments,
+    headers: message.headers,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
   return { sent: true, client: updated || client };
