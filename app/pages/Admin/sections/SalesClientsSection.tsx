@@ -1248,6 +1248,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
             const showNoMeetingDateHeading = Boolean(firstNoMeetingDateClientId) && client.id === firstNoMeetingDateClientId;
             const showPastDueHeading = Boolean(firstPastDueClientId) && client.id === firstPastDueClientId;
+            const contactAndAddress = [client.contactPerson, client.meetingPlace].filter(Boolean).join(' · ');
             return (
               <React.Fragment key={client.id}>
                 {showNoMeetingDateHeading && (
@@ -1283,10 +1284,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       <CalendarClock size={12} className="shrink-0" />
                       <span className="truncate">{client.agreedTime ? formatWhen(client.meetingAt) : 'Step 0 pending'}</span>
                     </div>
-                    {client.contactPerson && (
+                    {contactAndAddress && (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                         <UserRound size={12} className="shrink-0" />
-                        <span className="truncate">{client.contactPerson}</span>
+                        <span className="truncate">{contactAndAddress}</span>
                       </div>
                     )}
                   </div>
@@ -1844,7 +1845,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-white truncate">{client.businessName || 'Unnamed business'}</div>
-                    <div className="text-xs text-gray-400 truncate">{client.contactPerson || 'No contact person'}</div>
+                    <div className="text-xs text-gray-400 truncate">
+                      {[client.contactPerson || 'No contact person', client.meetingPlace || 'No address']
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </div>
                   </div>
                   <span className="text-[11px] px-2 py-0.5 rounded bg-red-900/30 text-red-300 border border-red-700/30">
                     Not sold
