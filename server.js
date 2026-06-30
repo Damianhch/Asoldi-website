@@ -2448,30 +2448,6 @@ async function searchBraveHtml(queryText = '') {
   }
 }
 
-function buildProffSearchQueries({
-  organizationNumber = '',
-  businessName = '',
-  locationHint = '',
-} = {}) {
-  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
-  if (orgnr.length !== 9) return [];
-  const business = sanitizeText(businessName);
-  const location = sanitizeText(locationHint);
-  const querySet = new Set();
-  const candidates = [
-    `${orgnr} site:proff.no`,
-    `${orgnr} ${business} site:proff.no`,
-    `${orgnr} ${business} ${location} site:proff.no`,
-    `${orgnr} proff`,
-  ];
-  for (const raw of candidates) {
-    const query = sanitizeText(raw).replace(/\s+/g, ' ').trim();
-    if (!query || query.length < 4) continue;
-    querySet.add(query);
-  }
-  return [...querySet];
-}
-
 function extractProffProfileCandidatesFromHtml(html = '') {
   const rawHtml = String(html || '');
   if (!rawHtml) return [];
@@ -2521,8 +2497,6 @@ async function searchProffInternalByOrganizationNumber(organizationNumber = '') 
 
 async function resolveProffCompanyUrlByOrganizationNumber({
   organizationNumber = '',
-  businessName = '',
-  locationHint = '',
 } = {}) {
   const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
   if (orgnr.length !== 9) {
@@ -2540,43 +2514,9 @@ async function resolveProffCompanyUrlByOrganizationNumber({
     };
   }
 
-  const context = {
-    businessName: sanitizeText(businessName),
-    locationHint: sanitizeText(locationHint),
-    cityToken:
-      normalizeSearchText(locationHint)
-        .split(' ')
-        .map((entry) => sanitizeText(entry))
-        .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) ||
-      '',
-    organizationNumber: orgnr,
-    businessTokens: buildBusinessSearchTokens([businessName, orgnr]),
-  };
-
-  const resolution = await resolveBestSearchCandidate({
-    queries: buildProffSearchQueries({
-      organizationNumber: orgnr,
-      businessName,
-      locationHint,
-    }),
-    context,
-    normalizeUrl: canonicalizeProffCompanyUrl,
-    minScore: 1,
-    minConfidenceMargin: 0,
-    minBusinessTokenMatches: 0,
-    strictConfidence: false,
-  });
-
-  if (sanitizeText(resolution?.url)) {
-    return {
-      url: sanitizeText(resolution.url),
-      reason: sanitizeText(resolution.reason || 'search-resolved'),
-    };
-  }
-
   return {
-    url: '',
-    reason: sanitizeText(resolution?.reason || 'proff-unresolved'),
+    url: `https://www.proff.no/organisasjon/${encodeURIComponent(orgnr)}`,
+    reason: 'orgnr-direct-fallback',
   };
 }
 
@@ -3207,8 +3147,6 @@ async function enrichSalesClientLinksFromMyphoner({
   if (proffNeedsResolution && resolvedOrgnr) {
     proffResolution = await resolveProffCompanyUrlByOrganizationNumber({
       organizationNumber: resolvedOrgnr,
-      businessName: baseBusinessName || currentClient.businessName,
-      locationHint: socialContext.locationHint || resolvedMeetingPlace,
     });
     if (sanitizeText(proffResolution.url)) {
       nextDetails.proffUrl = sanitizeText(proffResolution.url);
