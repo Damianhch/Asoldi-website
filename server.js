@@ -4838,9 +4838,21 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   const calendarStatus = getGoogleCalendarStatus(accountKey);
   if (calendarStatus.configured && calendarStatus.connected) {
     try {
+      const currentEventId = sanitizeText(previousClient?.calendar?.eventId || nextClient?.calendar?.eventId);
+      let eventIdForUpsert = currentEventId;
+      // For manual online welcome sends, force a fresh event so Google emits a
+      // new invitation email instead of occasionally treating it as a silent update.
+      if (notifyAttendees && normalizeMeetingMode(nextClient?.meetingMode) === 'online' && currentEventId) {
+        try {
+          await deleteMeetingEvent(currentEventId, accountKey);
+          eventIdForUpsert = '';
+        } catch (deleteError) {
+          warnings.push(`Calendar pre-invite cleanup failed: ${deleteError.message}`);
+        }
+      }
       const calendarMeta = await upsertMeetingEvent(
         nextClient,
-        previousClient?.calendar?.eventId || nextClient?.calendar?.eventId,
+        eventIdForUpsert,
         accountKey,
         { sendUpdates: notifyAttendees ? 'all' : 'none' }
       );
