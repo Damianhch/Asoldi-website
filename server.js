@@ -173,7 +173,7 @@ const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER
 const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '1') !== '0';
 const MYPHONER_LEAD_CATALOG_MAX_PAGES = Math.max(1, Number(process.env.MYPHONER_LEAD_CATALOG_MAX_PAGES || 25));
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
-const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v3-proff-orgnr');
+const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v4-proff-first-result');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 let myphonerWebhookReconcileInterval = null;
@@ -1166,6 +1166,7 @@ async function syncLocalMyphonerRecordings({
           latestRecordingUrl: recordingUrl,
           latestCallId: sanitizeText(candidate.fileName.replace(/\.[^.]+$/, '')),
           latestCallDestinationNumber: candidate.destinationPhone,
+          latestRecordingSyncReason: 'local-recording-backfill',
           lastRecordingWebhookAt: nowIso(),
           latestEventAt: nowIso(),
         },
@@ -1888,14 +1889,12 @@ function extractHostFromDomainLikeValue(value = '') {
 function isBlockedSalesWebsiteDomain(value = '') {
   const host = extractHostFromDomainLikeValue(value);
   if (!host) return false;
-  return host === 'myphoner.com' || host.endsWith('.myphoner.com');
+  // Deprecated: websiteDomain now mirrors the dedicated Myphoner website-domain field directly.
+  return false;
 }
 
 function sanitizeSalesWebsiteDomain(value = '') {
-  const raw = sanitizeText(value);
-  if (!raw) return '';
-  if (isBlockedSalesWebsiteDomain(raw)) return '';
-  return raw;
+  return sanitizeText(value);
 }
 
 function splitMultilineValues(value = '') {
@@ -2032,6 +2031,23 @@ function shouldResolveProffUrl(value = '') {
   const canonical = canonicalizeProffCompanyUrl(normalized);
   if (!canonical) return true;
   return isProffSearchUrl(canonical) || isProffOrganizationLookupUrl(canonical);
+}
+
+function extractProffOrganizationNumberFromUrl(value = '') {
+  const canonical = canonicalizeProffCompanyUrl(value);
+  if (!canonical) return '';
+  try {
+    const parsed = new URL(canonical);
+    const segments = String(parsed.pathname || '')
+      .split('/')
+      .map((entry) => sanitizeText(entry))
+      .filter(Boolean);
+    if (!segments.length) return '';
+    const digits = sanitizeText(segments[segments.length - 1]).replace(/\D+/g, '');
+    return digits.length === 9 ? digits : '';
+  } catch {
+    return '';
+  }
 }
 
 function isLikelyMissingMyphonerValue(value = '') {
@@ -2193,12 +2209,40 @@ function pickLeadDataValue(leadDataMap, keys = []) {
   return '';
 }
 
+function pickLeadDataValueStrict(leadDataMap, keys = []) {
+  if (!(leadDataMap instanceof Map) || !Array.isArray(keys)) return '';
+  const normalizedKeys = keys.map((key) => normalizeLooseKey(key)).filter(Boolean);
+  for (const key of normalizedKeys) {
+    const direct = sanitizeMyphonerFieldValue(leadDataMap.get(key));
+    if (direct) return direct;
+  }
+  return '';
+}
+
 function pickFirstNonEmpty(values = []) {
   for (const value of values) {
     const next = sanitizeMyphonerFieldValue(value);
     if (next) return next;
   }
   return '';
+}
+
+function pickMyphonerWebsiteDomainValue(lead = {}, leadDataMap = new Map()) {
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
+  return pickFirstNonEmpty([
+    source.website_domain,
+    source.websiteDomain,
+    source.website,
+    pickLeadDataValueStrict(map, [
+      'website_domain',
+      'website domain',
+      'website',
+      'nettside',
+      'hjemmeside',
+      'webside',
+    ]),
+  ]);
 }
 
 function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map()) {
@@ -2224,6 +2268,9 @@ function parseMyphonerMeetingAt(lead = {}, leadDataMap = new Map()) {
     const iso = myphonerApi.parseMyPhonerDateToIso(candidate);
     if (iso) return iso;
   }
+  const commentText = resolveLeadCommentText(source, leadDataMap, candidates);
+  const freeTextIso = parseMyphonerMeetingAtFromFreeText(commentText, new Date().getUTCFullYear());
+  if (freeTextIso) return freeTextIso;
   return '';
 }
 
@@ -2543,51 +2590,16 @@ async function searchBraveHtml(queryText = '') {
   }
 }
 
-function extractProffProfileCandidatesFromHtml(html = '') {
-  const rawHtml = String(html || '');
-  if (!rawHtml) return [];
-  const matches = [
-    ...rawHtml.matchAll(/href\s*=\s*["']([^"']+)["']/gi),
-  ];
-  const seen = new Set();
-  const candidates = [];
-  for (const match of matches) {
-    const href = sanitizeText(match?.[1] || '');
-    if (!href || href.startsWith('#') || href.toLowerCase().startsWith('javascript:')) continue;
-    const absolute = href.startsWith('http') ? href : `https://www.proff.no${href.startsWith('/') ? href : `/${href}`}`;
-    const canonical = canonicalizeProffCompanyUrl(absolute);
-    if (!canonical || seen.has(canonical)) continue;
-    seen.add(canonical);
-    candidates.push(canonical);
-  }
-  return candidates;
+function buildDirectProffLookupUrlFromOrganizationNumber(organizationNumber = '') {
+  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
+  if (orgnr.length !== 9) return '';
+  // Proff resolves the company from the orgnr segment even when slug segments are placeholders.
+  return canonicalizeProffCompanyUrl(`https://www.proff.no/selskap/x/x/x/${encodeURIComponent(orgnr)}`);
 }
 
 async function searchProffInternalByOrganizationNumber(organizationNumber = '') {
-  const orgnr = sanitizeText(organizationNumber).replace(/\D+/g, '');
-  if (orgnr.length !== 9) return [];
-  const controller = new AbortController();
-  const timeoutMs = Math.max(1200, Math.min(8000, Number(MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS) || 6000));
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`https://www.proff.no/bransjesok?q=${encodeURIComponent(orgnr)}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'text/html,application/xhtml+xml',
-        'User-Agent': 'Mozilla/5.0 (compatible; AsoldiBot/1.0; +https://asoldi.com)',
-      },
-      signal: controller.signal,
-    });
-    if (!response.ok) return [];
-    const wafAction = sanitizeText(response.headers.get('x-amzn-waf-action'));
-    if (wafAction) return [];
-    const html = await response.text().catch(() => '');
-    return extractProffProfileCandidatesFromHtml(html);
-  } catch {
-    return [];
-  } finally {
-    clearTimeout(timeout);
-  }
+  const directUrl = buildDirectProffLookupUrlFromOrganizationNumber(organizationNumber);
+  return directUrl ? [directUrl] : [];
 }
 
 async function resolveProffCompanyUrlByOrganizationNumber({
@@ -2605,13 +2617,17 @@ async function resolveProffCompanyUrlByOrganizationNumber({
   if (directCandidates.length) {
     return {
       url: directCandidates[0],
-      reason: 'proff-internal-search',
+      reason: 'proff-orgnr-direct',
     };
   }
-
   return {
     url: '',
     reason: 'orgnr-proff-search-empty',
+    queryCount: 0,
+    rawResultCount: 0,
+    uniqueCandidateCount: 0,
+    top: null,
+    runnerUp: null,
   };
 }
 
@@ -2977,7 +2993,13 @@ function extractMyphonerLocationHint(lead = {}, leadDataMap = new Map()) {
 }
 
 function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new Map()) {
-  const businessName = sanitizeText(client.businessName || pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'name']));
+  const source = lead && typeof lead === 'object' ? lead : {};
+  const businessName = sanitizeText(
+    client.businessName ||
+      source.primary_identifier ||
+      pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'name']) ||
+      pickLeadDataValue(leadDataMap, ['organization_name', 'org_name'])
+  );
   const locationHint = sanitizeText(extractMyphonerLocationHint(lead, leadDataMap));
   const cityToken = normalizeSearchText(locationHint)
     .split(' ')
@@ -3170,6 +3192,7 @@ async function enrichSalesClientLinksFromMyphoner({
     };
   }
   const source = lead && typeof lead === 'object' ? lead : {};
+  const hasLeadPayload = Object.keys(source).length > 0;
   const map = leadDataMap instanceof Map ? leadDataMap : getLeadDataMap(source);
   const currentClient = sales.getSalesClientById(targetClientId);
   if (!currentClient) {
@@ -3186,8 +3209,18 @@ async function enrichSalesClientLinksFromMyphoner({
   const currentDetails = normalizeSalesDetailLinks(currentClient.details || {});
   const nextDetails = { ...currentDetails };
   const currentMeetingPlace = sanitizeText(currentClient.meetingPlace);
+  const currentBusinessName = sanitizeText(currentClient.businessName);
+  const currentWebsiteDomain = sanitizeSalesWebsiteDomain(currentClient.websiteDomain);
   const leadDetails = buildSalesDetailsFromMyphonerLead(source, map);
   const leadMeetingPlace = sanitizeText(extractMyphonerLeadMeetingPlace(source, map));
+  const leadBusinessName = sanitizeText(extractMyphonerLeadBusinessName(source, map));
+  const leadWebsiteDomain = extractDomainFromMyphonerValue(
+    pickMyphonerWebsiteDomainValue(source, map)
+  );
+  const resolvedBusinessName = sanitizeText(leadBusinessName || currentBusinessName);
+  const resolvedWebsiteDomain = hasLeadPayload
+    ? sanitizeSalesWebsiteDomain(leadWebsiteDomain)
+    : currentWebsiteDomain;
   const resolvedMeetingPlace = currentMeetingPlace || leadMeetingPlace;
   const socialDiagnostics = {};
 
@@ -3199,9 +3232,10 @@ async function enrichSalesClientLinksFromMyphoner({
   }
 
   let searchContext = buildSalesLinkSearchContext(currentClient, source, map);
-  const orgNumber = sanitizeText(searchContext.organizationNumber);
+  const orgNumber = sanitizeText(searchContext.organizationNumber).replace(/\D+/g, '');
   const fallbackClientOrgnr = extractOrganizationNumberFromClientRecord(currentClient);
-  let resolvedOrgnr = sanitizeText(orgNumber || fallbackClientOrgnr);
+  const strictProffOrgnr = sanitizeText(orgNumber || fallbackClientOrgnr).replace(/\D+/g, '');
+  let resolvedOrgnr = strictProffOrgnr;
   const candidateBusinessName = sanitizeText(searchContext.businessName || currentClient.businessName);
   let brregEntity = null;
   if (!resolvedOrgnr && candidateBusinessName) {
@@ -3254,10 +3288,16 @@ async function enrichSalesClientLinksFromMyphoner({
     url: sanitizeText(nextDetails.proffUrl),
     reason: sanitizeText(nextDetails.proffUrl) ? 'already-present' : 'not-attempted',
   };
-  const proffNeedsResolution = shouldResolveProffUrl(nextDetails.proffUrl);
-  if (proffNeedsResolution && resolvedOrgnr) {
+  const existingProffOrgnr = extractProffOrganizationNumberFromUrl(nextDetails.proffUrl);
+  const proffNeedsResolution = shouldResolveProffUrl(nextDetails.proffUrl) || Boolean(
+    strictProffOrgnr &&
+    sanitizeText(nextDetails.proffUrl) &&
+    (!existingProffOrgnr || existingProffOrgnr !== strictProffOrgnr)
+  );
+  if (proffNeedsResolution && strictProffOrgnr) {
     proffResolution = await resolveProffCompanyUrlByOrganizationNumber({
-      organizationNumber: resolvedOrgnr,
+      organizationNumber: strictProffOrgnr,
+      context: socialContext,
     });
     if (sanitizeText(proffResolution.url)) {
       nextDetails.proffUrl = sanitizeText(proffResolution.url);
@@ -3265,7 +3305,7 @@ async function enrichSalesClientLinksFromMyphoner({
       // Drop stale search/org-only placeholders so they remain eligible for repair.
       nextDetails.proffUrl = '';
     }
-  } else if (proffNeedsResolution && !resolvedOrgnr) {
+  } else if (proffNeedsResolution && !strictProffOrgnr) {
     proffResolution = {
       url: '',
       reason: 'missing-orgnr',
@@ -3364,6 +3404,10 @@ async function enrichSalesClientLinksFromMyphoner({
     return false;
   });
   if (!currentMeetingPlace && leadMeetingPlace) changedFields.push('meetingPlace');
+  if (resolvedBusinessName && normalizeLooseKey(resolvedBusinessName) !== normalizeLooseKey(currentBusinessName)) {
+    changedFields.push('businessName');
+  }
+  if (resolvedWebsiteDomain !== currentWebsiteDomain) changedFields.push('websiteDomain');
   if (!changedFields.length) {
     return {
       updated: false,
@@ -3371,6 +3415,8 @@ async function enrichSalesClientLinksFromMyphoner({
       changedFields: [],
       resolvedDetails: currentDetails,
       resolvedMeetingPlace: currentMeetingPlace,
+      resolvedBusinessName: currentBusinessName,
+      resolvedWebsiteDomain: currentWebsiteDomain,
       socialDiagnostics,
     };
   }
@@ -3383,6 +3429,8 @@ async function enrichSalesClientLinksFromMyphoner({
       clientId: targetClientId,
       resolvedDetails: normalizedNext,
       resolvedMeetingPlace,
+      resolvedBusinessName,
+      resolvedWebsiteDomain,
       socialDiagnostics,
     };
   }
@@ -3393,6 +3441,12 @@ async function enrichSalesClientLinksFromMyphoner({
   if (!currentMeetingPlace && leadMeetingPlace) {
     updatePayload.meetingPlace = leadMeetingPlace;
   }
+  if (resolvedBusinessName && normalizeLooseKey(resolvedBusinessName) !== normalizeLooseKey(currentBusinessName)) {
+    updatePayload.businessName = resolvedBusinessName;
+  }
+  if (resolvedWebsiteDomain !== currentWebsiteDomain) {
+    updatePayload.websiteDomain = resolvedWebsiteDomain;
+  }
   const updated = sales.updateSalesClient(targetClientId, updatePayload);
   return {
     updated: Boolean(updated),
@@ -3401,6 +3455,8 @@ async function enrichSalesClientLinksFromMyphoner({
     clientId: targetClientId,
     resolvedDetails: normalizedNext,
     resolvedMeetingPlace: sanitizeText(updated?.meetingPlace || resolvedMeetingPlace),
+    resolvedBusinessName: sanitizeText(updated?.businessName || resolvedBusinessName),
+    resolvedWebsiteDomain: sanitizeText(updated?.websiteDomain || resolvedWebsiteDomain),
     socialDiagnostics,
   };
 }
@@ -3554,8 +3610,8 @@ function extractGoogleBusinessRawValueFromLeadData(leadDataMap = new Map()) {
 function extractMyphonerLeadBusinessName(lead = {}, leadDataMap = new Map()) {
   const source = lead && typeof lead === 'object' ? lead : {};
   return pickFirstNonEmpty([
-    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
     source.primary_identifier,
+    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
     pickLeadDataValue(leadDataMap, ['organization_name', 'org_name']),
   ]);
 }
@@ -3907,12 +3963,23 @@ async function fetchMyphonerLeadForSalesClient(client = {}) {
   const source = client && typeof client === 'object' ? client : {};
   const leadIds = collectMyphonerLeadIdsFromClient(source);
   let lastError = '';
+  const normalizeLeadFetchError = (response = {}) => {
+    const status = Number(response?.status || 0);
+    const raw = sanitizeText(response?.error || '');
+    if (status === 429) return 'myphoner-rate-limited';
+    if (/throttl|too many requests|429/i.test(raw)) return 'myphoner-rate-limited';
+    return raw || '';
+  };
   for (const leadId of leadIds) {
     const response = await myphonerApi.fetchMyPhonerLeadById(leadId);
     if (response?.success && response?.data && typeof response.data === 'object') {
       return { lead: response.data, source: `lead-id:${leadId}`, error: '' };
     }
-    lastError = sanitizeText(response?.error || '') || lastError;
+    const nextError = normalizeLeadFetchError(response);
+    if (nextError) lastError = nextError;
+    if (nextError === 'myphoner-rate-limited') {
+      return { lead: null, source: '', error: 'myphoner-rate-limited' };
+    }
   }
   const leadResourceUrl = sanitizeText(source?.myphoner?.leadResourceUrl);
   if (leadResourceUrl) {
@@ -3920,9 +3987,186 @@ async function fetchMyphonerLeadForSalesClient(client = {}) {
     if (response?.success && response?.data && typeof response.data === 'object') {
       return { lead: response.data, source: 'lead-resource', error: '' };
     }
-    lastError = sanitizeText(response?.error || '') || lastError;
+    const nextError = normalizeLeadFetchError(response);
+    if (nextError) lastError = nextError;
+    if (nextError === 'myphoner-rate-limited') {
+      return { lead: null, source: '', error: 'myphoner-rate-limited' };
+    }
   }
   return { lead: null, source: '', error: lastError || 'lead-not-found' };
+}
+
+async function backfillSalesWebsiteAndBusinessFields({
+  clients = [],
+  dryRun = false,
+  limit = 0,
+} = {}) {
+  const sourceClients = Array.isArray(clients) ? clients : [];
+  const parsedLimit = Number(limit);
+  const maxClients = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.max(1, Math.trunc(parsedLimit)) : 0;
+  const selectedClients = maxClients ? sourceClients.slice(0, maxClients) : sourceClients;
+  const summary = {
+    selectedClients: selectedClients.length,
+    processedClients: 0,
+    updatedClients: 0,
+    wouldUpdateClients: 0,
+    unchangedClients: 0,
+    unresolvedClients: 0,
+    reasonCounts: {},
+  };
+  const changed = [];
+  const unresolved = [];
+
+  const registerReason = (reason = '') => {
+    const key = sanitizeText(reason);
+    if (!key) return;
+    summary.reasonCounts[key] = Number(summary.reasonCounts[key] || 0) + 1;
+  };
+
+  for (const client of selectedClients) {
+    const clientId = sanitizeText(client?.id);
+    if (!clientId) continue;
+    summary.processedClients += 1;
+    const currentWebsiteDomain = sanitizeText(client?.websiteDomain);
+    const sanitizedWebsiteDomain = sanitizeSalesWebsiteDomain(currentWebsiteDomain);
+    const patch = {};
+    const reasons = [];
+
+    if (currentWebsiteDomain !== sanitizedWebsiteDomain) {
+      patch.websiteDomain = sanitizedWebsiteDomain;
+      reasons.push(sanitizedWebsiteDomain ? 'website-domain-normalized' : 'website-domain-cleared');
+    }
+
+    const hasPatch = Object.keys(patch).length > 0;
+    if (hasPatch) {
+      if (dryRun) {
+        summary.wouldUpdateClients += 1;
+      } else {
+        sales.updateSalesClient(clientId, patch);
+        summary.updatedClients += 1;
+      }
+      changed.push({
+        clientId,
+        businessName: sanitizeText(client?.businessName),
+        changedFields: Object.keys(patch),
+        values: patch,
+        reasons,
+      });
+    } else {
+      summary.unchangedClients += 1;
+    }
+    for (const reason of reasons) registerReason(reason);
+  }
+
+  return {
+    summary,
+    changed,
+    unresolved,
+  };
+}
+
+function collectSalesRecordingDiagnostics(clients = []) {
+  const sourceClients = Array.isArray(clients) ? clients : [];
+  const summary = {
+    scannedClients: sourceClients.length,
+    missingRecordingClients: 0,
+    reasonCounts: {},
+  };
+  const unresolved = [];
+  const registerReason = (reason = '') => {
+    const key = sanitizeText(reason);
+    if (!key) return;
+    summary.reasonCounts[key] = Number(summary.reasonCounts[key] || 0) + 1;
+  };
+
+  for (const client of sourceClients) {
+    const recordingUrl = sanitizeText(client?.myphoner?.latestRecordingUrl);
+    if (recordingUrl) continue;
+    summary.missingRecordingClients += 1;
+    const leadId = sanitizeText(client?.myphoner?.leadId);
+    const syncReason = sanitizeText(client?.myphoner?.latestRecordingSyncReason);
+    const lastRecordingWebhookAt = sanitizeText(client?.myphoner?.lastRecordingWebhookAt);
+    const reason = syncReason || (leadId ? (lastRecordingWebhookAt ? 'recording-url-missing' : 'recording-webhook-missing') : 'missing-lead-link');
+    registerReason(reason);
+    unresolved.push({
+      clientId: sanitizeText(client?.id),
+      businessName: sanitizeText(client?.businessName),
+      leadId,
+      lastRecordingWebhookAt,
+      reason,
+    });
+  }
+
+  return {
+    summary,
+    unresolved,
+  };
+}
+
+async function runSalesDataIntegrityBackfill({
+  dryRun = true,
+  limit = 0,
+  baseUrl = '',
+  onlyMissingLinks = true,
+} = {}) {
+  const allClients = sales.getSalesClients();
+  const parsedLimit = Number(limit);
+  const maxClients = Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.max(1, Math.trunc(parsedLimit)) : 0;
+  const selectedClients = maxClients ? allClients.slice(0, maxClients) : allClients;
+  const selectedClientIds = new Set(selectedClients.map((client) => sanitizeText(client?.id)).filter(Boolean));
+
+  const websiteAndBusiness = await backfillSalesWebsiteAndBusinessFields({
+    clients: selectedClients,
+    dryRun,
+  });
+  const links = await backfillExistingSalesClientLinks({
+    clients: selectedClients,
+    onlyMissing: Boolean(onlyMissingLinks),
+    dryRun,
+    repairLeadLinks: true,
+  });
+  const calendar = await backfillMissingSalesCalendarEvents({
+    dryRun,
+    limit: maxClients,
+  });
+
+  const normalizedBaseUrl = normalizeHttpBaseUrl(baseUrl);
+  let recordings = {
+    summary: {
+      skipped: 'missing-base-url',
+    },
+    applied: [],
+    filesWithoutPhone: [],
+    unmatchedByPhone: [],
+  };
+  if (normalizedBaseUrl) {
+    recordings = await syncLocalMyphonerRecordings({
+      baseUrl: normalizedBaseUrl,
+      persist: !dryRun,
+      fillMissingOnly: true,
+    });
+  }
+
+  const refreshedSelectedClients = sales
+    .getSalesClients()
+    .filter((client) => selectedClientIds.has(sanitizeText(client?.id)));
+  const recordingDiagnostics = collectSalesRecordingDiagnostics(
+    dryRun ? selectedClients : refreshedSelectedClients
+  );
+
+  return {
+    summary: {
+      selectedClients: selectedClients.length,
+      dryRun: Boolean(dryRun),
+      onlyMissingLinks: Boolean(onlyMissingLinks),
+      normalizedBaseUrl,
+    },
+    websiteAndBusiness,
+    links,
+    calendar,
+    recordings,
+    recordingDiagnostics,
+  };
 }
 
 async function backfillExistingSalesClientLinks({
@@ -3964,6 +4208,7 @@ async function backfillExistingSalesClientLinks({
   const failures = [];
   const unresolved = [];
   let leadCatalog = null;
+  let skipLeadFetchDueToRateLimit = false;
 
   const registerReason = (reason = '') => {
     const key = sanitizeText(reason);
@@ -3990,8 +4235,14 @@ async function backfillExistingSalesClientLinks({
 
     summary.eligibleClients += 1;
     const clientReasons = [];
-    let leadResult = await fetchMyphonerLeadForSalesClient(workingClient);
-    if (!leadResult?.lead && repairLeadLinks) {
+    let leadResult = skipLeadFetchDueToRateLimit
+      ? { lead: null, source: '', error: 'myphoner-rate-limited' }
+      : await fetchMyphonerLeadForSalesClient(workingClient);
+    if (sanitizeText(leadResult?.error) === 'myphoner-rate-limited') {
+      skipLeadFetchDueToRateLimit = true;
+      clientReasons.push('myphoner-rate-limited');
+    }
+    if (!leadResult?.lead && repairLeadLinks && sanitizeText(leadResult?.error) !== 'myphoner-rate-limited') {
       const catalog = await ensureLeadCatalog();
       const relinkResult = await attemptRelinkSalesClientLead({
         client: workingClient,
@@ -4028,6 +4279,8 @@ async function backfillExistingSalesClientLinks({
       const normalizedLeadError = sanitizeText(leadResult.error);
       if (normalizedLeadError === 'lead-not-found' || normalizedLeadError === 'missing-lead-link') {
         clientReasons.push('missing-lead-link');
+      } else if (normalizedLeadError === 'myphoner-rate-limited') {
+        clientReasons.push('myphoner-rate-limited');
       } else {
         clientReasons.push('lead-fetch-failed');
       }
@@ -4151,16 +4404,7 @@ async function backfillExistingSalesClientLinks({
 }
 
 function extractDomainFromMyphonerValue(value = '') {
-  const raw = sanitizeMyphonerFieldValue(value);
-  if (!raw) return '';
-  const withProtocol = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-  try {
-    const host = new URL(withProtocol).host.toLowerCase().replace(/^www\./, '');
-    if (isBlockedSalesWebsiteDomain(host)) return '';
-    return sanitizeMyphonerFieldValue(host);
-  } catch {
-    return '';
-  }
+  return sanitizeMyphonerFieldValue(value);
 }
 
 function getMyphonerLeadId(lead = {}, resourcePath = '') {
@@ -4188,8 +4432,8 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
     source.primary_identifier,
   ]);
   const businessName = pickFirstNonEmpty([
-    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
     source.primary_identifier,
+    pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
     pickLeadDataValue(leadDataMap, ['organization_name', 'org_name']),
     contactPerson,
     `Myphoner lead ${getMyphonerLeadId(source, resourcePath) || 'unknown'}`,
@@ -4214,7 +4458,7 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
   const contactEmail = pickMyphonerLeadEmail(source, leadDataMap, commentText);
   const contactPhone = pickMyphonerLeadPhone(source, leadDataMap, commentText);
   const websiteDomain = extractDomainFromMyphonerValue(
-    pickLeadDataValue(leadDataMap, ['website', 'url', 'homepage', 'nettside'])
+    pickMyphonerWebsiteDomainValue(source, leadDataMap)
   );
   return buildSalesInput(
     {
@@ -4253,7 +4497,7 @@ function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
       contactEmail: mergedEmail,
       contactPhone: next.contactPhone || current.contactPhone,
       industry: next.industry || current.industry,
-      websiteDomain: next.websiteDomain || current.websiteDomain,
+      websiteDomain: sanitizeSalesWebsiteDomain(next.websiteDomain),
       details: normalizeSalesDetailLinks(next.details || {}, current.details || {}),
       meetingMode: mergedMeetingMode,
       meetingPlace: mergedMeetingMode === 'in-person' ? next.meetingPlace || current.meetingPlace : '',
@@ -4334,7 +4578,10 @@ function buildMyphonerMetaPatch({
   const destination = sanitizeText(recordingMeta.destinationNumber);
   if (destination) patch.latestCallDestinationNumber = destination;
   const recordingUrl = sanitizeText(recordingMeta.recordingUrl);
-  if (recordingUrl) patch.latestRecordingUrl = recordingUrl;
+  if (recordingUrl) {
+    patch.latestRecordingUrl = recordingUrl;
+    patch.latestRecordingSyncReason = 'recording-url-synced';
+  }
   return patch;
 }
 
@@ -4388,8 +4635,8 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
 
       const incomingBusinessKey = normalizeLooseKey(
         pickFirstNonEmpty([
-          pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
           source.primary_identifier,
+          pickLeadDataValue(leadDataMap, ['company_name', 'business_name', 'company', 'firma', 'foretak', 'brreg_name', 'name']),
         ])
       );
       const incomingContactKey = normalizeLooseKey(
@@ -4634,11 +4881,45 @@ function extractRecordingFromCall(call = {}, sourceResourceUrl = '') {
   };
 }
 
-async function processMyphonerRecordingFromResource(resourcePath = '') {
+function extractCallResourceFromRecordingPayload(payload = {}) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const candidates = [
+    source.call_resource_url,
+    source.callResourceUrl,
+    source.call_url,
+    source.callUrl,
+    source.call_location,
+    source.callLocation,
+    source?.call?.location,
+    source?.call?.resource_url,
+  ];
+  for (const candidate of candidates) {
+    const parsed = myphonerApi.parseMyPhonerResourcePath(candidate, myphonerApi.getMyPhonerConfig());
+    if (!parsed || !parsed.includes('/calls/')) continue;
+    return parsed;
+  }
+  return '';
+}
+
+function extractCallIdFromRecordingPayload(payload = {}) {
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const direct = sanitizeText(source.call_id || source.callId || source?.call?.id);
+  if (direct) return direct;
+  const callResourcePath = extractCallResourceFromRecordingPayload(source);
+  if (callResourcePath) {
+    const fromResource = myphonerApi.extractMyPhonerIdFromResource(callResourcePath, 'calls');
+    if (fromResource) return sanitizeText(fromResource);
+  }
+  return '';
+}
+
+async function processMyphonerRecordingFromResource(resourcePath = '', payload = {}) {
   const normalizedResource = sanitizeText(resourcePath);
   if (!normalizedResource) throw makeHttpError(410, 'Missing resource URL.');
+  const webhookPayload = payload && typeof payload === 'object' ? payload : {};
   let callPayload = null;
   let leadId = '';
+  let diagnosticReason = '';
   if (normalizedResource.includes('/calls/')) {
     const callResponse = await myphonerApi.fetchMyPhonerCallByResource(normalizedResource);
     if (!callResponse.success) {
@@ -4646,8 +4927,24 @@ async function processMyphonerRecordingFromResource(resourcePath = '') {
     }
     callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
     leadId = extractLeadIdFromCallPayload(callPayload);
+    if (!callPayload || typeof callPayload !== 'object') diagnosticReason = 'call-payload-empty';
   } else if (normalizedResource.includes('/leads/')) {
     leadId = myphonerApi.extractMyPhonerIdFromResource(normalizedResource, 'leads');
+    const callResourcePath = extractCallResourceFromRecordingPayload(webhookPayload);
+    const callId = extractCallIdFromRecordingPayload(webhookPayload);
+    if (callResourcePath || callId) {
+      const callResponse = callResourcePath
+        ? await myphonerApi.fetchMyPhonerCallByResource(callResourcePath)
+        : await myphonerApi.fetchMyPhonerCallById(callId);
+      if (callResponse.success) {
+        callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
+        if (!leadId) leadId = extractLeadIdFromCallPayload(callPayload);
+      } else {
+        diagnosticReason = 'call-fetch-failed-from-webhook-payload';
+      }
+    } else {
+      diagnosticReason = 'recording-webhook-without-call-reference';
+    }
   } else {
     throw makeHttpError(410, 'Unsupported Myphoner recording resource URL.');
   }
@@ -4656,17 +4953,26 @@ async function processMyphonerRecordingFromResource(resourcePath = '') {
   if (callPayload) {
     recordingMeta = extractRecordingFromCall(callPayload, normalizedResource);
   }
-  if (!recordingMeta.recordingUrl && !leadId) {
-    return { ok: true, updated: false };
+  if (!recordingMeta.recordingUrl && !diagnosticReason) {
+    diagnosticReason = callPayload ? 'call-without-recording-url' : 'recording-url-missing';
   }
-  if (leadId) {
+  if (!recordingMeta.recordingUrl && !leadId) {
+    return { ok: true, updated: false, reason: diagnosticReason || 'missing-recording-and-lead' };
+  }
+  const hasRecordingMeta = Boolean(
+    sanitizeText(recordingMeta.recordingUrl) ||
+      sanitizeText(recordingMeta.callId) ||
+      sanitizeText(recordingMeta.callStartedAt) ||
+      sanitizeText(recordingMeta.destinationNumber)
+  );
+  if (leadId && hasRecordingMeta) {
     myphonerIntegration.setRecordingForLead(leadId, recordingMeta);
   }
   const directClient = leadId ? sales.getSalesClientByMyphonerLeadId(leadId) : null;
   const phoneClient = !directClient ? findSalesClientByPhone(recordingMeta.destinationNumber || '') : null;
   const targetClient = directClient || phoneClient;
   if (!targetClient) {
-    return { ok: true, updated: false, leadId };
+    return { ok: true, updated: false, leadId, reason: diagnosticReason || 'target-client-not-found' };
   }
   const patch = buildMyphonerMetaPatch({
     lead: { id: leadId, list_name: targetClient?.myphoner?.listName || '' },
@@ -4688,9 +4994,17 @@ async function processMyphonerRecordingFromResource(resourcePath = '') {
       latestCallDestinationNumber: sanitizeText(
         recordingMeta.destinationNumber || targetClient.myphoner?.latestCallDestinationNumber
       ),
+      latestRecordingSyncReason: sanitizeText(
+        recordingMeta.recordingUrl ? 'recording-url-synced' : diagnosticReason || 'recording-url-missing'
+      ),
     },
   });
-  return { ok: true, updated: Boolean(updated), leadId: leadId || targetClient.myphoner?.leadId || '' };
+  return {
+    ok: true,
+    updated: Boolean(updated),
+    leadId: leadId || targetClient.myphoner?.leadId || '',
+    reason: sanitizeText(recordingMeta.recordingUrl ? '' : diagnosticReason),
+  };
 }
 
 async function handleMyphonerWebhookEvent(req, res, eventType = 'winner') {
@@ -4726,7 +5040,7 @@ async function handleMyphonerWebhookEvent(req, res, eventType = 'winner') {
         winnerComment: sanitizeText(payload.comment || payload.winner_comment),
       });
     } else if (eventType === 'recording') {
-      result = await processMyphonerRecordingFromResource(resourcePath);
+      result = await processMyphonerRecordingFromResource(resourcePath, payload);
     } else {
       throw makeHttpError(400, `Unsupported webhook event type: ${eventType}`);
     }
@@ -5294,6 +5608,80 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   return { client: nextClient, warnings, calendarInviteSent };
 }
 
+async function backfillMissingSalesCalendarEvents({
+  dryRun = true,
+  limit = 0,
+} = {}) {
+  const allClients = sales.getSalesClients();
+  const scopedClients = Number(limit) > 0
+    ? allClients.slice(0, Math.max(1, Math.trunc(Number(limit))))
+    : allClients;
+  const summary = {
+    scanned: scopedClients.length,
+    scheduled: 0,
+    missingEvent: 0,
+    updated: 0,
+    wouldUpdate: 0,
+    unresolved: 0,
+    warnings: 0,
+    warningReasons: {},
+    skippedHasEvent: 0,
+    skippedNoSchedule: 0,
+  };
+  const details = [];
+  const registerWarningReason = (warning = '') => {
+    const key = sanitizeText(warning);
+    if (!key) return;
+    summary.warningReasons[key] = Number(summary.warningReasons[key] || 0) + 1;
+  };
+
+  for (const client of scopedClients) {
+    const hasSchedule = Boolean(client?.agreedTime && client?.meetingAt);
+    if (!hasSchedule) {
+      summary.skippedNoSchedule += 1;
+      continue;
+    }
+    summary.scheduled += 1;
+    const hasEvent = Boolean(sanitizeText(client?.calendar?.eventId));
+    if (hasEvent) {
+      summary.skippedHasEvent += 1;
+      continue;
+    }
+    summary.missingEvent += 1;
+    if (dryRun) {
+      summary.wouldUpdate += 1;
+      details.push({
+        clientId: sanitizeText(client?.id),
+        businessName: sanitizeText(client?.businessName),
+        meetingAt: sanitizeText(client?.meetingAt),
+        status: 'would-sync',
+      });
+      continue;
+    }
+
+    const syncResult = await maybeSyncCalendar(client, client, { notifyAttendees: false });
+    const syncedClient = syncResult.client || client;
+    const warnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
+    summary.warnings += warnings.length;
+    for (const warning of warnings) registerWarningReason(warning);
+    const hasSyncedEvent = Boolean(sanitizeText(syncedClient?.calendar?.eventId));
+    if (hasSyncedEvent) summary.updated += 1;
+    else summary.unresolved += 1;
+    details.push({
+      clientId: sanitizeText(client?.id),
+      businessName: sanitizeText(client?.businessName),
+      meetingAt: sanitizeText(client?.meetingAt),
+      status: hasSyncedEvent ? 'synced' : 'unresolved',
+      warnings,
+    });
+  }
+
+  return {
+    summary,
+    details,
+  };
+}
+
 async function sendSalesThankYou(client, { force = false, onlineViaCalendar = false } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
@@ -5729,6 +6117,7 @@ app.post('/api/admin/integrations/myphoner/attach-recording', adminAuth, (req, r
       latestCallDurationSeconds: Number.isFinite(callDurationSeconds)
         ? callDurationSeconds
         : Number(existing?.myphoner?.latestCallDurationSeconds || 0),
+      latestRecordingSyncReason: 'manual-recording-attach',
       lastRecordingWebhookAt: nowIso(),
       latestEventAt: nowIso(),
     },
@@ -7232,6 +7621,71 @@ app.post('/api/admin/sales/backfill-links', salesAuth, async (req, res) => {
   }
 });
 
+app.post('/api/admin/sales/backfill-calendar', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can run sales calendar backfill.' });
+  }
+  try {
+    const dryRun = parseBoolean(req.body?.dryRun, true);
+    const requestedLimit = Number(req.body?.limit ?? 0);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.max(1, Math.min(5000, Math.trunc(requestedLimit)))
+      : 0;
+    const result = await backfillMissingSalesCalendarEvents({
+      dryRun,
+      limit,
+    });
+    return res.json({
+      ok: true,
+      dryRun,
+      limit,
+      ...result,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed backfilling sales calendar events.',
+    });
+  }
+});
+
+app.post('/api/admin/sales/backfill-integrity', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can run sales integrity backfill.' });
+  }
+  try {
+    const dryRun = parseBoolean(req.body?.dryRun, true);
+    const onlyMissingLinks = parseBoolean(req.body?.onlyMissingLinks, true);
+    const requestedLimit = Number(req.body?.limit ?? 0);
+    const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+      ? Math.max(1, Math.min(5000, Math.trunc(requestedLimit)))
+      : 0;
+    const effectiveBaseUrl =
+      sanitizeText(req.body?.baseUrl) ||
+      sanitizeText(process.env.PUBLIC_API_BASE_URL) ||
+      getRequestBaseUrl(req) ||
+      '';
+    const result = await runSalesDataIntegrityBackfill({
+      dryRun,
+      limit,
+      baseUrl: effectiveBaseUrl,
+      onlyMissingLinks,
+    });
+    return res.json({
+      ok: true,
+      dryRun,
+      limit,
+      onlyMissingLinks,
+      ...result,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed running sales integrity backfill.',
+    });
+  }
+});
+
 app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
@@ -7362,7 +7816,10 @@ app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
   const rawUrl = sanitizeText(client.myphoner?.latestRecordingUrl);
   const recordingUrl = normalizeAbsoluteHttpUrl(rawUrl);
   if (!recordingUrl) {
-    return res.status(404).json({ message: 'No recording URL is synced for this client.' });
+    return res.status(404).json({
+      message: 'No recording URL is synced for this client.',
+      reason: sanitizeText(client.myphoner?.latestRecordingSyncReason || ''),
+    });
   }
 
   let target;
@@ -8264,12 +8721,6 @@ async function ensureData() {
   employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
   await fs.mkdir(SALES_IMPORTS_ROOT, { recursive: true }).catch(() => {});
-  const domainCleanupSummary = cleanupBlockedSalesWebsiteDomains();
-  if (domainCleanupSummary.cleaned) {
-    console.log(
-      `[sales] cleaned blocked website domains: cleaned=${domainCleanupSummary.cleaned}, scanned=${domainCleanupSummary.scanned}`
-    );
-  }
   const correctionSummary = applyConfiguredSalesContactCorrections({ createMissing: true });
   if (correctionSummary.updated || correctionSummary.created) {
     console.log(

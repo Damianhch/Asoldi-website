@@ -176,6 +176,7 @@ export type SalesMyphonerMeta = {
   latestCallUserEmail: string;
   latestCallDestinationNumber: string;
   latestRecordingUrl: string;
+  latestRecordingSyncReason: string;
 };
 
 export type SalesClient = {

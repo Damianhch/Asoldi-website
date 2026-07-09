@@ -1597,6 +1597,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           <li>Winner category: {client.myphoner?.winnerCategory || '—'}</li>
                           <li>Last winner sync: {client.myphoner?.lastWinnerWebhookAt ? formatWhen(client.myphoner.lastWinnerWebhookAt) : '—'}</li>
                           <li>Last recording sync: {client.myphoner?.lastRecordingWebhookAt ? formatWhen(client.myphoner.lastRecordingWebhookAt) : '—'}</li>
+                          <li>Recording sync status: {client.myphoner?.latestRecordingSyncReason || '—'}</li>
                           <li>Call ID: {client.myphoner?.latestCallId || '—'}</li>
                           <li>Call started: {client.myphoner?.latestCallStartedAt ? formatWhen(client.myphoner.latestCallStartedAt) : '—'}</li>
                         </ul>
@@ -1629,7 +1630,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                             </button>
                           </div>
                         ) : (
-                          <p className="mt-2 text-xs text-gray-500">No call recording synced yet for this lead.</p>
+                          <p className="mt-2 text-xs text-gray-500">
+                            No call recording synced yet for this lead.
+                            {client.myphoner?.latestRecordingSyncReason ? ` Last sync status: ${client.myphoner.latestRecordingSyncReason}.` : ''}
+                          </p>
                         )}
                       </details>
                       <details open className="sm:col-span-2 text-sm text-gray-200">

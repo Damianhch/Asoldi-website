@@ -23,21 +23,7 @@ function sanitizeText(value = '') {
 }
 
 function normalizeWebsiteDomain(value = '') {
-  const raw = sanitizeText(value);
-  if (!raw) return '';
-  const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `https://${raw}`;
-  let host = '';
-  try {
-    host = new URL(withProtocol).host.toLowerCase().replace(/^www\./, '');
-  } catch {
-    host = raw
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .split('/')[0]
-      .replace(/^www\./, '');
-  }
-  if (host === 'myphoner.com' || host.endsWith('.myphoner.com')) return '';
-  return raw;
+  return sanitizeText(value);
 }
 
 function normalizeSalesStatus(value = '') {
@@ -195,6 +181,7 @@ function normalizeMyphoner(value = {}) {
     latestCallUserEmail: sanitizeText(input.latestCallUserEmail),
     latestCallDestinationNumber: sanitizeText(input.latestCallDestinationNumber),
     latestRecordingUrl: sanitizeText(input.latestRecordingUrl),
+    latestRecordingSyncReason: sanitizeText(input.latestRecordingSyncReason),
   };
 }
 
