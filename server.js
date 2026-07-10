@@ -8365,6 +8365,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
     res.json({
       ok: true,
       client: updated,
+      websiteMakerBaseUrl: base,
       alreadyExists: Boolean(previousRunId),
       replacedRunId,
       replacedRunDeleted,

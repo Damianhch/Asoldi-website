@@ -306,6 +306,63 @@ function buildMakerRunUrl(
   return `${base}/run/${encodeURIComponent(id)}`;
 }
 
+function hostnameFromUrlLike(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    return new URL(raw).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function isLocalHostname(value = '') {
+  const host = String(value || '').trim().toLowerCase();
+  return Boolean(host) && (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1');
+}
+
+function isTunnelHostname(value = '') {
+  const host = String(value || '').trim().toLowerCase();
+  if (!host) return false;
+  return (
+    host.endsWith('.loca.lt') ||
+    host.endsWith('.localtunnel.me') ||
+    host.endsWith('.ngrok.io') ||
+    host.endsWith('.ngrok-free.app') ||
+    host.endsWith('.trycloudflare.com')
+  );
+}
+
+function remapMakerUrlToBase(baseUrl = '', absoluteUrl = '') {
+  const base = normalizeHttpBaseUrl(baseUrl);
+  const raw = String(absoluteUrl || '').trim();
+  if (!base || !raw) return '';
+  try {
+    const source = new URL(raw);
+    if (source.protocol !== 'http:' && source.protocol !== 'https:') return '';
+    const suffix = `${source.pathname || ''}${source.search || ''}${source.hash || ''}`;
+    const normalizedSuffix = suffix.startsWith('/') ? suffix : `/${suffix}`;
+    return `${base}${normalizedSuffix}`;
+  } catch {
+    return '';
+  }
+}
+
+function shouldUseCurrentMakerBase(baseUrl = '', storedUrl = '') {
+  const currentOrigin = toOrigin(baseUrl);
+  if (!currentOrigin) return false;
+  const storedOrigin = toOrigin(storedUrl);
+  if (!storedOrigin) return true;
+  if (currentOrigin === storedOrigin) return true;
+
+  const currentHost = hostnameFromUrlLike(currentOrigin);
+  const storedHost = hostnameFromUrlLike(storedOrigin);
+  if (!currentHost || !storedHost) return false;
+  if (isLocalHostname(currentHost) && isLocalHostname(storedHost)) return true;
+  if (isTunnelHostname(currentHost) && isTunnelHostname(storedHost)) return true;
+  return false;
+}
+
 function toOrigin(baseUrl = '') {
   const normalized = normalizeHttpBaseUrl(baseUrl);
   if (!normalized) return '';
@@ -867,13 +924,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingRunId(client.id);
     setError('');
     try {
-      await request(`/admin/sales/${client.id}/create-maker-run`, {
+      const data = await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
         body: JSON.stringify({
           websiteMakerBaseUrl,
           forceNewRun,
         }),
       });
+      const resolvedBase = normalizeHttpBaseUrl(data?.websiteMakerBaseUrl || '');
+      if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed creating website run');
@@ -1310,10 +1369,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             );
             const storedDashboardUrl = String(client.makerRun?.dashboardUrl || '').trim();
             const storedPreviewUrl = String(client.makerRun?.previewUrl || '').trim();
-            // Prefer links built from the current Website Maker base URL (including
-            // freshly regenerated tunnel hosts). Stored URLs remain fallback only.
-            const makerDashboardUrl = dynamicDashboardUrl || storedDashboardUrl;
-            const makerPreviewUrl = dynamicPreviewUrl || storedPreviewUrl;
+            const useCurrentBaseForLinks = shouldUseCurrentMakerBase(
+              websiteMakerBaseUrl,
+              storedDashboardUrl || storedPreviewUrl
+            );
+            const remappedDashboardUrl = useCurrentBaseForLinks
+              ? remapMakerUrlToBase(websiteMakerBaseUrl, storedDashboardUrl)
+              : '';
+            const remappedPreviewUrl = useCurrentBaseForLinks
+              ? remapMakerUrlToBase(websiteMakerBaseUrl, storedPreviewUrl)
+              : '';
+            const makerDashboardUrl = remappedDashboardUrl || storedDashboardUrl || dynamicDashboardUrl;
+            const makerPreviewUrl = remappedPreviewUrl || storedPreviewUrl || dynamicPreviewUrl;
             const expanded = expandedId === client.id;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
