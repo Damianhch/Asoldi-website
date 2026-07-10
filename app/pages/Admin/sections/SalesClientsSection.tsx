@@ -780,6 +780,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   }
 
   async function toggleProgress(client: SalesClient, key: ProgressionKey) {
+    if (key === 'step0AgreeMeetingTime') {
+      openEdit(client);
+      return;
+    }
     setProgressBusyKey(`${client.id}:${key}`);
     setError('');
     try {
@@ -1285,7 +1289,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
             {orderedTimelineClients.map((client) => {
-            const step0Done = Boolean(client.progression?.step0AgreeMeetingTime);
+            const step0Done = Boolean(client.agreedTime && client.meetingAt);
             const timeline: { key: ProgressionKey; done: boolean }[] = [
               { key: 'step0AgreeMeetingTime', done: step0Done },
               { key: 'contractSigned', done: Boolean(client.progression?.contractSigned) },
@@ -1370,22 +1374,28 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 </div>
 
                 <div className="flex flex-wrap gap-1.5">
-                  {timeline.map((step) => (
+                  {timeline.map((step) => {
+                    const stepDone = step.key === 'step0AgreeMeetingTime'
+                      ? Boolean(client.agreedTime && client.meetingAt)
+                      : step.done;
+                    return (
                     <button
                       key={step.key}
                       type="button"
                       disabled={progressBusyKey === `${client.id}:${step.key}`}
                       onClick={() => void toggleProgress(client, step.key)}
+                      title={step.key === 'step0AgreeMeetingTime' ? 'Set agreed meeting date/time in Edit client' : undefined}
                       className={`px-2 py-1 rounded-md text-[11px] border transition-colors hover:border-[#FF5B00]/40 disabled:opacity-60 ${
-                        step.done
+                        stepDone
                           ? 'bg-green-900/40 border-green-600/40 text-green-300'
                           : 'bg-black/20 border-white/10 text-gray-400'
                       }`}
                     >
-                      {step.done ? <CheckCircle2 size={11} className="inline mr-1" /> : null}
+                      {stepDone ? <CheckCircle2 size={11} className="inline mr-1" /> : null}
                       {formatStepLabel(step.key)}
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div className="flex flex-wrap gap-2">

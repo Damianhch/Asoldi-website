@@ -74,10 +74,9 @@ function emptyReminders() {
 function normalizeProgression(value = {}, agreedTime = false) {
   const input = value && typeof value === 'object' ? value : {};
   return {
-    // Toggleable directly from the card; defaults to the agreed-time flag on
-    // first creation but, once stored, the explicit toggle value wins.
-    step0AgreeMeetingTime:
-      input.step0AgreeMeetingTime !== undefined ? Boolean(input.step0AgreeMeetingTime) : Boolean(agreedTime),
+    // Step 0 mirrors real scheduling data from Sales/Myphoner: green only when
+    // an agreed meeting exists.
+    step0AgreeMeetingTime: Boolean(agreedTime),
     contractSigned: Boolean(input.contractSigned),
     paymentReceived: Boolean(input.paymentReceived),
     domainConnected: Boolean(input.domainConnected),
