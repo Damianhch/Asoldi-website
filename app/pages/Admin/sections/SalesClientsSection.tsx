@@ -1142,11 +1142,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           finish(() =>
             reject(
               new Error(
-                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again.'
+                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again (first start can take up to ~2 minutes while health checks warm the app).'
               )
             )
           );
-        }, 45_000);
+        }, 120_000);
         const closeWatcherId = window.setInterval(() => {
           if (!popup.closed) return;
           finish(() =>
