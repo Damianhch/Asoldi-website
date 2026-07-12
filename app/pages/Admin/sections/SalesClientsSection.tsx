@@ -355,8 +355,6 @@ function normalizeMakerDashboardDraftUrl(value = '') {
   const rewrite = (url: URL) => {
     if (url.pathname !== '/run-v2') return false;
     if (!url.searchParams.get('draftRunId')) return false;
-    if (String(url.searchParams.get('builderMode') || '').toLowerCase() === 'full') return false;
-    url.pathname = '/run-v2-lite';
     url.searchParams.delete('__chunk_retry');
     return true;
   };

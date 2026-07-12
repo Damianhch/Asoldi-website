@@ -5238,8 +5238,6 @@ function normalizeMakerDashboardPath(pathOrUrl = '') {
   const rewrite = (parsedUrl) => {
     if (sanitizeText(parsedUrl.pathname) !== '/run-v2') return false;
     if (!parsedUrl.searchParams.get('draftRunId')) return false;
-    if (sanitizeText(parsedUrl.searchParams.get('builderMode')).toLowerCase() === 'full') return false;
-    parsedUrl.pathname = '/run-v2-lite';
     parsedUrl.searchParams.delete('__chunk_retry');
     return true;
   };
