@@ -348,6 +348,34 @@ function remapMakerUrlToBase(baseUrl = '', absoluteUrl = '') {
   }
 }
 
+function normalizeMakerDashboardDraftUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const rewrite = (url: URL) => {
+    if (url.pathname !== '/run-v2') return false;
+    if (!url.searchParams.get('draftRunId')) return false;
+    if (String(url.searchParams.get('builderMode') || '').toLowerCase() === 'full') return false;
+    url.pathname = '/run-v2-lite';
+    url.searchParams.delete('__chunk_retry');
+    return true;
+  };
+
+  try {
+    const parsed = new URL(raw);
+    if (!rewrite(parsed)) return raw;
+    return parsed.toString();
+  } catch {
+    try {
+      const relative = new URL(raw, 'https://asoldi.local');
+      if (!rewrite(relative)) return raw;
+      return `${relative.pathname}${relative.search}${relative.hash}`;
+    } catch {
+      return raw;
+    }
+  }
+}
+
 function shouldUseCurrentMakerBase(baseUrl = '', storedUrl = '') {
   const currentOrigin = toOrigin(baseUrl);
   if (!currentOrigin) return false;
@@ -1115,6 +1143,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const popupUrl = new URL('/local-tunnel', localOrigin);
       popupUrl.searchParams.set('returnOrigin', window.location.origin);
       popupUrl.searchParams.set('targetUrl', localTarget);
+      popupUrl.searchParams.set('forceRestart', '1');
 
       const popup = window.open(
         popupUrl.toString(),
@@ -1360,21 +1389,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
-            const dynamicDashboardUrl = buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard');
+            const dynamicDashboardUrl = normalizeMakerDashboardDraftUrl(
+              buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard')
+            );
             const dynamicPreviewUrl = buildMakerRunUrl(
               websiteMakerBaseUrl,
               makerRunId,
               'preview',
               String(client.makerRun?.latestReadyStep || '3'),
             );
-            const storedDashboardUrl = String(client.makerRun?.dashboardUrl || '').trim();
+            const storedDashboardUrl = normalizeMakerDashboardDraftUrl(String(client.makerRun?.dashboardUrl || '').trim());
             const storedPreviewUrl = String(client.makerRun?.previewUrl || '').trim();
             const useCurrentBaseForLinks = shouldUseCurrentMakerBase(
               websiteMakerBaseUrl,
               storedDashboardUrl || storedPreviewUrl
             );
             const remappedDashboardUrl = useCurrentBaseForLinks
-              ? remapMakerUrlToBase(websiteMakerBaseUrl, storedDashboardUrl)
+              ? normalizeMakerDashboardDraftUrl(remapMakerUrlToBase(websiteMakerBaseUrl, storedDashboardUrl))
               : '';
             const remappedPreviewUrl = useCurrentBaseForLinks
               ? remapMakerUrlToBase(websiteMakerBaseUrl, storedPreviewUrl)

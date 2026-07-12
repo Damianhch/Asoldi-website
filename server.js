@@ -5231,10 +5231,38 @@ function joinMakerUrl(baseUrl = '', pathOrUrl = '') {
   return `${base}${withSlash}`;
 }
 
+function normalizeMakerDashboardPath(pathOrUrl = '') {
+  const raw = sanitizeText(pathOrUrl);
+  if (!raw) return '';
+
+  const rewrite = (parsedUrl) => {
+    if (sanitizeText(parsedUrl.pathname) !== '/run-v2') return false;
+    if (!parsedUrl.searchParams.get('draftRunId')) return false;
+    if (sanitizeText(parsedUrl.searchParams.get('builderMode')).toLowerCase() === 'full') return false;
+    parsedUrl.pathname = '/run-v2-lite';
+    parsedUrl.searchParams.delete('__chunk_retry');
+    return true;
+  };
+
+  try {
+    const parsedAbsolute = new URL(raw);
+    if (!rewrite(parsedAbsolute)) return raw;
+    return parsedAbsolute.toString();
+  } catch {
+    try {
+      const parsedRelative = new URL(raw, 'https://asoldi.local');
+      if (!rewrite(parsedRelative)) return raw;
+      return `${parsedRelative.pathname}${parsedRelative.search}${parsedRelative.hash}`;
+    } catch {
+      return raw;
+    }
+  }
+}
+
 function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
   const fallbackDashboardPath = `/run/${encodeURIComponent(runId)}`;
   const fallbackPreviewPath = `/preview/${encodeURIComponent(runId)}/step/3/view?route=/`;
-  const dashboardPath = sanitizeText(handoff.dashboardPath);
+  const dashboardPath = normalizeMakerDashboardPath(handoff.dashboardPath);
   const previewViewPath = sanitizeText(handoff.previewViewPath || handoff.previewPath);
   const exportPath = sanitizeText(handoff.exportPath);
   const links = {
