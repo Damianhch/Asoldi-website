@@ -189,6 +189,22 @@ export async function deleteUser(id) {
   return { ok: true };
 }
 
+export async function deactivateUserKeepingData(id, reason = 'self-service-deactivation') {
+  const users = readUsers();
+  const index = users.findIndex((u) => u.id === id);
+  if (index === -1) return { ok: false, error: 'User not found' };
+  const existing = users[index] || {};
+  users[index] = {
+    ...existing,
+    role: 'none',
+    deactivatedAt: existing.deactivatedAt || new Date().toISOString(),
+    deactivatedReason: String(reason || 'self-service-deactivation'),
+    previousRole: existing.previousRole || existing.role || 'none',
+  };
+  writeUsers(users);
+  return { ok: true };
+}
+
 export async function verifyEmployee(username, password) {
   const user = await getUserByUsername(username);
   if (!user) return { ok: false };

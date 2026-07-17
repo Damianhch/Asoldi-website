@@ -26,6 +26,24 @@ type ClientProfile = {
     selectedPlanType: string;
     lastCheckoutStartedAt: string;
   };
+  payment?: {
+    status?: string;
+    method?: string;
+    planId?: string;
+    planName?: string;
+    amount?: number;
+    currency?: string;
+    stripeCustomerId?: string;
+    stripeSubscriptionId?: string;
+    stripeSessionId?: string;
+    paidAt?: string;
+    cancelAtPeriodEnd?: boolean;
+    currentPeriodEnd?: string;
+    cancelAt?: string;
+    canceledAt?: string;
+    updatedAt?: string;
+  };
+  clientDataBank?: Record<string, any>;
 };
 
 type ClientAuthUser = {

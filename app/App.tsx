@@ -34,6 +34,7 @@ const SalesWorkspace = lazy(() => import('./pages/sales/SalesWorkspace').then((m
 const ClientOnboarding = lazy(() => import('./pages/client/ClientOnboarding').then((m) => ({ default: m.ClientOnboarding })));
 const ClientHome = lazy(() => import('./pages/client/ClientHome').then((m) => ({ default: m.ClientHome })));
 const ClientServices = lazy(() => import('./pages/client/ClientServices').then((m) => ({ default: m.ClientServices })));
+const ClientSettings = lazy(() => import('./pages/client/ClientSettings').then((m) => ({ default: m.ClientSettings })));
 const ClientWebsiteStart = lazy(() => import('./pages/client/ClientWebsiteStart').then((m) => ({ default: m.ClientWebsiteStart })));
 const ClientWebsitePlans = lazy(() => import('./pages/client/ClientWebsitePlans').then((m) => ({ default: m.ClientWebsitePlans })));
 const ClientWebsiteCheckout = lazy(() => import('./pages/client/ClientWebsiteCheckout').then((m) => ({ default: m.ClientWebsiteCheckout })));
@@ -99,6 +100,10 @@ function AppLayout() {
           <Route path="/kunde/hjem" element={<ClientHome />} />
           <Route path="/kunde/onboarding" element={<ClientOnboarding />} />
           <Route path="/kunde/tjenester" element={<ClientServices />} />
+          <Route path="/kunde/innstillinger" element={<ClientSettings />} />
+          <Route path="/kunde/innstillinger/fakturering" element={<ClientSettings />} />
+          <Route path="/kunde/innstillinger/billing" element={<ClientSettings />} />
+          <Route path="/kunde/innstillinger/konto" element={<ClientSettings />} />
           <Route path="/kunde/tjenester/nettside/start" element={<ClientWebsiteStart />} />
           <Route path="/kunde/tjenester/nettside/planer" element={<ClientWebsitePlans />} />
           <Route path="/kunde/tjenester/nettside/checkout" element={<ClientWebsiteCheckout />} />

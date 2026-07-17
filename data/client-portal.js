@@ -171,6 +171,10 @@ function defaultPayment() {
     stripeSubscriptionId: '',
     stripeSessionId: '',
     paidAt: '',
+    cancelAtPeriodEnd: false,
+    currentPeriodEnd: '',
+    cancelAt: '',
+    canceledAt: '',
     updatedAt: '',
     invoiceRequest: null, // faktura: { orgNumber, businessName, invoiceEmail, requestedAt }
   };
@@ -202,8 +206,240 @@ function normalizePayment(input = {}) {
     stripeSubscriptionId: sanitizeText(src.stripeSubscriptionId),
     stripeSessionId: sanitizeText(src.stripeSessionId),
     paidAt: sanitizeText(src.paidAt),
+    cancelAtPeriodEnd: toBoolean(src.cancelAtPeriodEnd, base.cancelAtPeriodEnd),
+    currentPeriodEnd: sanitizeText(src.currentPeriodEnd),
+    cancelAt: sanitizeText(src.cancelAt),
+    canceledAt: sanitizeText(src.canceledAt),
     updatedAt: sanitizeText(src.updatedAt),
     invoiceRequest: ir,
+  };
+}
+
+const DEFAULT_OPENING_DAYS = [
+  { day: 'Mandag', opensAt: '08:00', closesAt: '16:00', closed: false },
+  { day: 'Tirsdag', opensAt: '08:00', closesAt: '16:00', closed: false },
+  { day: 'Onsdag', opensAt: '08:00', closesAt: '16:00', closed: false },
+  { day: 'Torsdag', opensAt: '08:00', closesAt: '16:00', closed: false },
+  { day: 'Fredag', opensAt: '08:00', closesAt: '16:00', closed: false },
+  { day: 'Lørdag', opensAt: '10:00', closesAt: '14:00', closed: true },
+  { day: 'Søndag', opensAt: '10:00', closesAt: '14:00', closed: true },
+];
+
+function normalizeHexColor(value = '', fallback = '') {
+  const candidate = sanitizeText(value).toUpperCase();
+  if (/^#[0-9A-F]{6}$/.test(candidate)) return candidate;
+  const fallbackCandidate = sanitizeText(fallback).toUpperCase();
+  return /^#[0-9A-F]{6}$/.test(fallbackCandidate) ? fallbackCandidate : '';
+}
+
+function normalizeTextList(input, fallback = []) {
+  const source = Array.isArray(input) ? input : (Array.isArray(fallback) ? fallback : []);
+  return source.map((entry) => sanitizeText(entry)).filter(Boolean);
+}
+
+function normalizeNameUrlLinks(input, fallback = []) {
+  const source = Array.isArray(input) ? input : (Array.isArray(fallback) ? fallback : []);
+  const normalized = source
+    .map((entry) => ({
+      name: sanitizeText(entry?.name),
+      url: sanitizeText(entry?.url),
+    }))
+    .filter((entry) => entry.name || entry.url);
+  return normalized.length ? normalized : [{ name: '', url: '' }];
+}
+
+function normalizeMediaList(input, fallback = []) {
+  return normalizeTextList(input, fallback);
+}
+
+function normalizeOpeningHoursDays(input, fallback = DEFAULT_OPENING_DAYS) {
+  const source = Array.isArray(input) ? input : [];
+  const fallbackDays = Array.isArray(fallback) && fallback.length ? fallback : DEFAULT_OPENING_DAYS;
+  return fallbackDays.map((fallbackDay, idx) => {
+    const sourceByIndex = source[idx];
+    const sourceByName = source.find((entry) => (
+      sanitizeText(entry?.day || entry?.name).toLowerCase()
+      === sanitizeText(fallbackDay.day || fallbackDay.name).toLowerCase()
+    ));
+    const row = (sourceByIndex && typeof sourceByIndex === 'object')
+      ? sourceByIndex
+      : (sourceByName && typeof sourceByName === 'object' ? sourceByName : {});
+    return {
+      day: sanitizeText(row.day || row.name || fallbackDay.day || fallbackDay.name),
+      opensAt: sanitizeText(row.opensAt || row.open || fallbackDay.opensAt || fallbackDay.open),
+      closesAt: sanitizeText(row.closesAt || row.close || fallbackDay.closesAt || fallbackDay.close),
+      closed: toBoolean(row.closed, Boolean(fallbackDay.closed)),
+    };
+  });
+}
+
+function normalizeAffiliations(input, fallback = []) {
+  const source = Array.isArray(input) ? input : (Array.isArray(fallback) ? fallback : []);
+  return source.map((category, categoryIndex) => {
+    const itemsSource = Array.isArray(category?.items) ? category.items : [];
+    const items = itemsSource.map((item, itemIndex) => ({
+      id: sanitizeText(item?.id) || `aff-item-${categoryIndex + 1}-${itemIndex + 1}`,
+      title: sanitizeText(item?.title),
+      description: sanitizeText(item?.description || item?.desc),
+      imageUrl: sanitizeText(item?.imageUrl || item?.image),
+    })).filter((item) => item.title || item.description || item.imageUrl);
+    return {
+      id: sanitizeText(category?.id) || `aff-cat-${categoryIndex + 1}`,
+      categoryName: sanitizeText(category?.categoryName || category?.name),
+      items,
+    };
+  }).filter((category) => category.categoryName || category.items.length);
+}
+
+function normalizeProducts(input, fallback = []) {
+  const source = Array.isArray(input) ? input : (Array.isArray(fallback) ? fallback : []);
+  return source.map((category, categoryIndex) => {
+    const itemsSource = Array.isArray(category?.items)
+      ? category.items
+      : (Array.isArray(category?.products) ? category.products : []);
+    const items = itemsSource.map((item, itemIndex) => ({
+      id: sanitizeText(item?.id) || `prod-item-${categoryIndex + 1}-${itemIndex + 1}`,
+      title: sanitizeText(item?.title),
+      description: sanitizeText(item?.description || item?.desc),
+      price: sanitizeText(item?.price),
+      contactInsteadOfPrice: toBoolean(item?.contactInsteadOfPrice, false),
+      imageUrl: sanitizeText(item?.imageUrl || item?.image),
+      included: toBoolean(item?.included ?? item?.isSelected, true),
+    })).filter((item) => item.title || item.description || item.price || item.imageUrl);
+    return {
+      id: sanitizeText(category?.id) || `prod-cat-${categoryIndex + 1}`,
+      categoryName: sanitizeText(category?.categoryName || category?.name),
+      items,
+    };
+  }).filter((category) => category.categoryName || category.items.length);
+}
+
+function defaultClientDataBank(seed = {}) {
+  const businessName = sanitizeText(seed.businessName || seed.companyName);
+  const businessOrgNumber = sanitizeText(seed.businessOrgNumber || seed.organizationNumber);
+  const email = sanitizeText(seed.email).toLowerCase();
+  return {
+    businessCard: {
+      companyName: businessName,
+      industry: '',
+      websiteGoal: '',
+    },
+    generalInfo: {
+      companyName: businessName,
+      companyAddress: '',
+      websiteLanguage: 'Norsk (Norge)',
+      companyPhone: '',
+      companyEmail: email,
+      socialMediaLinks: [],
+      extraLinks: [{ name: '', url: '' }],
+    },
+    brandIdentity: {
+      orgNumber: businessOrgNumber,
+      colors: {
+        primary: '#FF5B00',
+        secondary: '#111827',
+        accent: '#F9F9F8',
+      },
+      logos: {
+        normal: '',
+        favicon: '',
+      },
+    },
+    openingHours: {
+      googleBusinessSyncUrl: '',
+      days: DEFAULT_OPENING_DAYS.map((row) => ({ ...row })),
+    },
+    affiliations: [],
+    products: [],
+    media: {
+      mainHeroImages: [],
+      galleryImages: [],
+      logos: [],
+      icons: [],
+      uncategorized: [],
+    },
+    websiteCreatorQuestions: {
+      targetAudience: '',
+      keyMessage: '',
+      toneOfVoice: '',
+      primaryAction: '',
+      importantKeywords: [],
+      competitorLinks: [],
+    },
+  };
+}
+
+function normalizeClientDataBank(input = {}, fallback = {}) {
+  const base = {
+    ...defaultClientDataBank(),
+    ...(fallback && typeof fallback === 'object' ? fallback : {}),
+  };
+  const src = input && typeof input === 'object' ? input : {};
+
+  const businessCard = {
+    companyName: sanitizeText(src.businessCard?.companyName || base.businessCard.companyName),
+    industry: sanitizeText(src.businessCard?.industry || base.businessCard.industry),
+    websiteGoal: sanitizeText(src.businessCard?.websiteGoal || src.businessCard?.goal || base.businessCard.websiteGoal),
+  };
+
+  const generalInfo = {
+    companyName: sanitizeText(src.generalInfo?.companyName || businessCard.companyName || base.generalInfo.companyName),
+    companyAddress: sanitizeText(src.generalInfo?.companyAddress || src.generalInfo?.address || base.generalInfo.companyAddress),
+    websiteLanguage: sanitizeText(src.generalInfo?.websiteLanguage || src.generalInfo?.language || base.generalInfo.websiteLanguage) || 'Norsk (Norge)',
+    companyPhone: sanitizeText(src.generalInfo?.companyPhone || src.generalInfo?.phone || base.generalInfo.companyPhone),
+    companyEmail: sanitizeText(src.generalInfo?.companyEmail || src.generalInfo?.email || base.generalInfo.companyEmail).toLowerCase(),
+    socialMediaLinks: normalizeTextList(src.generalInfo?.socialMediaLinks || src.generalInfo?.socialLinks, base.generalInfo.socialMediaLinks),
+    extraLinks: normalizeNameUrlLinks(src.generalInfo?.extraLinks, base.generalInfo.extraLinks),
+  };
+
+  const brandIdentity = {
+    orgNumber: sanitizeText(src.brandIdentity?.orgNumber || src.brandIdentity?.organizationNumber || base.brandIdentity.orgNumber),
+    colors: {
+      primary: normalizeHexColor(src.brandIdentity?.colors?.primary, base.brandIdentity.colors.primary),
+      secondary: normalizeHexColor(src.brandIdentity?.colors?.secondary, base.brandIdentity.colors.secondary),
+      accent: normalizeHexColor(src.brandIdentity?.colors?.accent, base.brandIdentity.colors.accent),
+    },
+    logos: {
+      normal: sanitizeText(src.brandIdentity?.logos?.normal || base.brandIdentity.logos.normal),
+      favicon: sanitizeText(src.brandIdentity?.logos?.favicon || base.brandIdentity.logos.favicon),
+    },
+  };
+
+  const openingHours = {
+    googleBusinessSyncUrl: sanitizeText(
+      src.openingHours?.googleBusinessSyncUrl
+      || src.openingHours?.syncLink
+      || base.openingHours.googleBusinessSyncUrl
+    ),
+    days: normalizeOpeningHoursDays(src.openingHours?.days, base.openingHours.days),
+  };
+
+  const media = {
+    mainHeroImages: normalizeMediaList(src.media?.mainHeroImages || src.media?.heroImages, base.media.mainHeroImages),
+    galleryImages: normalizeMediaList(src.media?.galleryImages, base.media.galleryImages),
+    logos: normalizeMediaList(src.media?.logos, base.media.logos),
+    icons: normalizeMediaList(src.media?.icons, base.media.icons),
+    uncategorized: normalizeMediaList(src.media?.uncategorized, base.media.uncategorized),
+  };
+
+  const websiteCreatorQuestions = {
+    targetAudience: sanitizeText(src.websiteCreatorQuestions?.targetAudience || base.websiteCreatorQuestions.targetAudience),
+    keyMessage: sanitizeText(src.websiteCreatorQuestions?.keyMessage || base.websiteCreatorQuestions.keyMessage),
+    toneOfVoice: sanitizeText(src.websiteCreatorQuestions?.toneOfVoice || base.websiteCreatorQuestions.toneOfVoice),
+    primaryAction: sanitizeText(src.websiteCreatorQuestions?.primaryAction || base.websiteCreatorQuestions.primaryAction),
+    importantKeywords: normalizeTextList(src.websiteCreatorQuestions?.importantKeywords, base.websiteCreatorQuestions.importantKeywords),
+    competitorLinks: normalizeTextList(src.websiteCreatorQuestions?.competitorLinks, base.websiteCreatorQuestions.competitorLinks),
+  };
+
+  return {
+    businessCard,
+    generalInfo,
+    brandIdentity,
+    openingHours,
+    affiliations: normalizeAffiliations(src.affiliations, base.affiliations),
+    products: normalizeProducts(src.products, base.products),
+    media,
+    websiteCreatorQuestions,
   };
 }
 
@@ -253,13 +489,29 @@ function normalizeProfile(input = {}) {
   const name = sanitizeText(input.name || input.fullName);
   const source = sanitizeText(input.discoveryChannel || input.source);
   const onboarding = toBoolean(input.onboardingCompleted ?? input.onboardingComplete, false);
+  const fallbackClientDataBank = defaultClientDataBank({
+    businessName: input.businessName,
+    businessOrgNumber: input.businessOrgNumber || input.organizationNumber,
+    email: input.email,
+  });
+  const clientDataBank = normalizeClientDataBank(input.clientDataBank, fallbackClientDataBank);
+  const normalizedBusinessName = sanitizeText(
+    input.businessName
+    || clientDataBank.generalInfo.companyName
+    || clientDataBank.businessCard.companyName
+  );
+  const normalizedBusinessOrgNumber = sanitizeText(
+    input.businessOrgNumber
+    || input.organizationNumber
+    || clientDataBank.brandIdentity.orgNumber
+  );
   return {
     userId: sanitizeText(input.userId),
     email: sanitizeText(input.email).toLowerCase(),
     name,
     fullName: name,
-    businessName: sanitizeText(input.businessName),
-    businessOrgNumber: sanitizeText(input.businessOrgNumber || input.organizationNumber),
+    businessName: normalizedBusinessName,
+    businessOrgNumber: normalizedBusinessOrgNumber,
     position: sanitizeText(input.position),
     discoveryChannel: source,
     source,
@@ -268,6 +520,7 @@ function normalizeProfile(input = {}) {
     customWebsitePlan: normalizeCustomPlan(input.customWebsitePlan),
     websiteBuilder: normalizeWebsiteBuilder(input.websiteBuilder),
     payment: normalizePayment(input.payment),
+    clientDataBank,
     createdAt,
     updatedAt: sanitizeText(input.updatedAt) || createdAt,
   };
@@ -379,6 +632,12 @@ function mergeProfilePatch(current, patch = {}) {
       ...(current.payment || {}),
       ...((patch.payment && typeof patch.payment === 'object') ? patch.payment : {}),
     },
+    clientDataBank: normalizeClientDataBank(
+      (patch.clientDataBank && typeof patch.clientDataBank === 'object')
+        ? patch.clientDataBank
+        : (current.clientDataBank || {}),
+      current.clientDataBank || defaultClientDataBank(current),
+    ),
     updatedAt: nowIso(),
   });
 }
@@ -488,6 +747,10 @@ export function setClientSelectedWebsitePlan(userId, plan = {}) {
 export function setClientPayment(userId, patch = {}) {
   const next = { ...patch, updatedAt: nowIso() };
   return upsertClientProfile(userId, { payment: next }, { syncPortalState: false });
+}
+
+export function setClientDataBank(userId, patch = {}) {
+  return upsertClientProfile(userId, { clientDataBank: patch }, { syncPortalState: false });
 }
 
 export function setClientAppliedPromotionCode(userId, promotionCode = null) {

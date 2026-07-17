@@ -321,6 +321,144 @@ function parsePlanAmount(value = '') {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function unixToIso(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return '';
+  return new Date(numeric * 1000).toISOString();
+}
+
+function planIdForStripePriceId(priceId = '') {
+  const normalizedPriceId = sanitizeText(priceId);
+  if (!normalizedPriceId) return '';
+  for (const plan of CLIENT_WEBSITE_PLANS) {
+    if (sanitizeText(priceIdForPlan(plan.id)) === normalizedPriceId) {
+      return plan.id;
+    }
+  }
+  return '';
+}
+
+function mapStripeInvoiceRecord(invoice = {}) {
+  const amountPaid = Number(invoice.amount_paid || 0) / 100;
+  const amountDue = Number(invoice.amount_due || 0) / 100;
+  return {
+    id: sanitizeText(invoice.id),
+    number: sanitizeText(invoice.number),
+    status: sanitizeText(invoice.status),
+    paid: Boolean(invoice.paid),
+    amountPaid: Number.isFinite(amountPaid) ? amountPaid : 0,
+    amountDue: Number.isFinite(amountDue) ? amountDue : 0,
+    currency: normalizeStripeCurrency(invoice.currency || ''),
+    createdAt: unixToIso(invoice.created),
+    dueAt: unixToIso(invoice.due_date),
+    paidAt: unixToIso(invoice.status_transitions?.paid_at),
+    hostedInvoiceUrl: sanitizeText(invoice.hosted_invoice_url),
+    invoicePdf: sanitizeText(invoice.invoice_pdf),
+  };
+}
+
+async function buildClientBillingOverview(profile = {}) {
+  const payment = profile?.payment && typeof profile.payment === 'object' ? profile.payment : {};
+  const selectedPlan = findWebsitePlan(payment.planId || profile?.websiteBuilder?.selectedPlanId);
+  const summary = {
+    status: sanitizeText(payment.status) || 'none',
+    method: sanitizeText(payment.method),
+    planId: sanitizeText(payment.planId || selectedPlan?.id || profile?.websiteBuilder?.selectedPlanId),
+    planName: sanitizeText(payment.planName || selectedPlan?.name || profile?.websiteBuilder?.selectedPlanName),
+    amount: Number(payment.amount) || parsePlanAmount(selectedPlan?.price || profile?.websiteBuilder?.selectedPlanPrice || ''),
+    currency: normalizeStripeCurrency(payment.currency || ''),
+    stripeCustomerId: sanitizeText(payment.stripeCustomerId),
+    stripeSubscriptionId: sanitizeText(payment.stripeSubscriptionId),
+    paidAt: sanitizeText(payment.paidAt),
+    updatedAt: sanitizeText(payment.updatedAt),
+    cancelAtPeriodEnd: parseBoolean(payment.cancelAtPeriodEnd, false),
+    currentPeriodEnd: sanitizeText(payment.currentPeriodEnd),
+    cancelAt: sanitizeText(payment.cancelAt),
+    canceledAt: sanitizeText(payment.canceledAt),
+  };
+
+  let subscription = null;
+  let invoices = [];
+  let stripePortalAvailable = false;
+  const warnings = [];
+
+  if (isStripeConfigured()) {
+    stripePortalAvailable = Boolean(summary.stripeCustomerId);
+    try {
+      const stripe = getStripe();
+      if (summary.stripeCustomerId) {
+        const invoiceList = await stripe.invoices.list({
+          customer: summary.stripeCustomerId,
+          limit: 30,
+        });
+        invoices = Array.isArray(invoiceList?.data) ? invoiceList.data.map(mapStripeInvoiceRecord) : [];
+      }
+      if (summary.stripeSubscriptionId) {
+        const stripeSub = await stripe.subscriptions.retrieve(summary.stripeSubscriptionId, {
+          expand: ['items.data.price'],
+        });
+        const priceId = sanitizeText(stripeSub?.items?.data?.[0]?.price?.id);
+        const inferredPlanId = planIdForStripePriceId(priceId) || summary.planId;
+        const inferredPlan = findWebsitePlan(inferredPlanId);
+        subscription = {
+          id: sanitizeText(stripeSub.id),
+          status: sanitizeText(stripeSub.status),
+          planId: inferredPlanId,
+          planName: sanitizeText(inferredPlan?.name || summary.planName),
+          priceId,
+          cancelAtPeriodEnd: Boolean(stripeSub.cancel_at_period_end),
+          currentPeriodEnd: unixToIso(stripeSub.current_period_end),
+          cancelAt: unixToIso(stripeSub.cancel_at),
+          canceledAt: unixToIso(stripeSub.canceled_at),
+        };
+        summary.status = subscription.status || summary.status;
+        summary.planId = subscription.planId || summary.planId;
+        summary.planName = subscription.planName || summary.planName;
+        summary.cancelAtPeriodEnd = subscription.cancelAtPeriodEnd;
+        summary.currentPeriodEnd = subscription.currentPeriodEnd;
+        summary.cancelAt = subscription.cancelAt;
+        summary.canceledAt = subscription.canceledAt || summary.canceledAt;
+      }
+    } catch (error) {
+      warnings.push(sanitizeText(error?.message || 'Kunne ikke hente Stripe faktureringsdata.'));
+    }
+  }
+
+  if (!invoices.length && payment.invoiceRequest && typeof payment.invoiceRequest === 'object') {
+    const invoiceRequest = payment.invoiceRequest;
+    invoices = [{
+      id: 'invoice-request',
+      number: 'Fakturaforespørsel',
+      status: 'invoice_requested',
+      paid: false,
+      amountPaid: 0,
+      amountDue: Number(summary.amount || 0),
+      currency: summary.currency || getStripeCurrency(),
+      createdAt: sanitizeText(invoiceRequest.requestedAt || summary.updatedAt),
+      dueAt: '',
+      paidAt: '',
+      hostedInvoiceUrl: '',
+      invoicePdf: '',
+    }];
+  }
+
+  return {
+    summary,
+    subscription,
+    invoices,
+    stripePortalAvailable,
+    warnings,
+    availablePlans: CLIENT_WEBSITE_PLANS.map((plan) => ({
+      id: plan.id,
+      name: plan.name,
+      price: plan.price,
+      description: plan.description,
+      isCurrent: plan.id === summary.planId,
+      stripePriceConfigured: Boolean(sanitizeText(priceIdForPlan(plan.id))),
+    })),
+  };
+}
+
 function normalizePromotionCodeInput(value = '') {
   return sanitizeText(value).toUpperCase().replace(/\s+/g, '');
 }
@@ -6526,6 +6664,263 @@ app.put('/api/client/profile', clientAuth, async (req, res) => {
   return res.json({ profile });
 });
 
+app.get('/api/client/settings', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const billing = await buildClientBillingOverview(profile);
+  return res.json({
+    profile,
+    clientDataBank: profile?.clientDataBank || null,
+    billing,
+  });
+});
+
+app.put('/api/client/settings/client-data', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const payload = req.body?.clientDataBank && typeof req.body.clientDataBank === 'object'
+    ? req.body.clientDataBank
+    : (req.body && typeof req.body === 'object' ? req.body : {});
+  let profile = clientPortal.setClientDataBank(user.id, payload);
+  const bank = profile?.clientDataBank && typeof profile.clientDataBank === 'object' ? profile.clientDataBank : {};
+  profile = clientPortal.upsertClientProfile(user.id, {
+    businessName: sanitizeText(
+      bank?.generalInfo?.companyName
+      || bank?.businessCard?.companyName
+      || profile?.businessName
+    ),
+    businessOrgNumber: sanitizeText(bank?.brandIdentity?.orgNumber || profile?.businessOrgNumber),
+    clientDataBank: bank,
+  }, { syncPortalState: false });
+  return res.json({ profile, clientDataBank: profile?.clientDataBank || null });
+});
+
+app.get('/api/client/billing/overview', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const billing = await buildClientBillingOverview(profile);
+  return res.json({ billing });
+});
+
+app.post('/api/client/billing/portal-session', clientAuth, async (req, res) => {
+  if (!isStripeConfigured()) {
+    return res.status(503).json({ message: 'Stripe er ikke konfigurert for fakturaportalen ennå.' });
+  }
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const customerId = sanitizeText(profile?.payment?.stripeCustomerId);
+  if (!customerId) {
+    return res.status(400).json({ message: 'Ingen Stripe-kunde koblet til kontoen enda.' });
+  }
+  try {
+    const stripe = getStripe();
+    const baseUrl = resolveRequestBaseUrl(req) || normalizeHttpBaseUrl(process.env.APP_URL || '');
+    const returnUrl = `${(baseUrl || 'https://asoldi.com').replace(/\/$/, '')}/kunde/innstillinger/fakturering`;
+    const session = await stripe.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl,
+    });
+    return res.json({ url: sanitizeText(session.url) });
+  } catch (error) {
+    return res.status(500).json({ message: error?.message || 'Kunne ikke åpne Stripe fakturaportal.' });
+  }
+});
+
+app.post('/api/client/billing/upgrade-subscription', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const planId = sanitizeText(req.body?.planId);
+  const targetPlan = findWebsitePlan(planId);
+  if (!targetPlan) {
+    return res.status(400).json({ message: 'Ugyldig abonnementsnivå.' });
+  }
+
+  const selectedProfile = clientPortal.setClientSelectedWebsitePlan(user.id, {
+    id: targetPlan.id,
+    name: targetPlan.name,
+    price: targetPlan.price,
+    type: 'standard',
+  });
+  const subscriptionId = sanitizeText(selectedProfile?.payment?.stripeSubscriptionId);
+  const stripePriceId = sanitizeText(priceIdForPlan(targetPlan.id));
+
+  if (!isStripeConfigured() || !subscriptionId || !stripePriceId) {
+    const refreshed = clientPortal.setClientPayment(user.id, {
+      planId: targetPlan.id,
+      planName: targetPlan.name,
+      amount: parsePlanAmount(targetPlan.price),
+      currency: getStripeCurrency(),
+    });
+    return res.json({
+      ok: true,
+      mode: 'checkout',
+      redirect: '/kunde/tjenester/nettside/checkout',
+      message: 'Planen er oppdatert. Fullfør oppgraderingen i checkout.',
+      profile: refreshed,
+    });
+  }
+
+  try {
+    const stripe = getStripe();
+    const existing = await stripe.subscriptions.retrieve(subscriptionId, {
+      expand: ['items.data.price'],
+    });
+    const itemId = sanitizeText(existing?.items?.data?.[0]?.id);
+    if (!itemId) {
+      return res.status(409).json({ message: 'Fant ingen aktiv abonnementslinje å oppgradere.' });
+    }
+    const updated = await stripe.subscriptions.update(subscriptionId, {
+      cancel_at_period_end: false,
+      proration_behavior: 'create_prorations',
+      items: [{ id: itemId, price: stripePriceId }],
+    });
+    clientPortal.setClientPayment(user.id, {
+      status: sanitizeText(updated.status) || 'active',
+      method: 'card',
+      planId: targetPlan.id,
+      planName: targetPlan.name,
+      amount: parsePlanAmount(targetPlan.price),
+      currency: getStripeCurrency(),
+      stripeSubscriptionId: sanitizeText(updated.id),
+      stripeCustomerId: sanitizeText(updated.customer),
+      cancelAtPeriodEnd: Boolean(updated.cancel_at_period_end),
+      currentPeriodEnd: unixToIso(updated.current_period_end),
+      cancelAt: unixToIso(updated.cancel_at),
+      canceledAt: unixToIso(updated.canceled_at),
+    });
+    const profile = clientPortal.ensureClientProfileForUser(user);
+    const billing = await buildClientBillingOverview(profile);
+    return res.json({
+      ok: true,
+      mode: 'stripe',
+      message: 'Abonnementet er oppgradert.',
+      billing,
+    });
+  } catch (error) {
+    return res.status(502).json({ message: error?.message || 'Kunne ikke oppgradere abonnementet via Stripe.' });
+  }
+});
+
+app.post('/api/client/billing/cancel-subscription', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const immediate = parseBoolean(req.body?.immediate, false);
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const subscriptionId = sanitizeText(profile?.payment?.stripeSubscriptionId);
+
+  if (!subscriptionId || !isStripeConfigured()) {
+    clientPortal.setClientPayment(user.id, {
+      status: 'canceled',
+      cancelAtPeriodEnd: false,
+      canceledAt: nowIso(),
+    });
+    const refreshed = clientPortal.ensureClientProfileForUser(user);
+    const billing = await buildClientBillingOverview(refreshed);
+    return res.json({
+      ok: true,
+      message: 'Abonnementet er avsluttet lokalt.',
+      billing,
+    });
+  }
+
+  try {
+    const stripe = getStripe();
+    const updated = immediate
+      ? await stripe.subscriptions.cancel(subscriptionId)
+      : await stripe.subscriptions.update(subscriptionId, { cancel_at_period_end: true });
+    clientPortal.setClientPayment(user.id, {
+      status: immediate ? 'canceled' : (sanitizeText(updated.status) || 'active'),
+      cancelAtPeriodEnd: immediate ? false : Boolean(updated.cancel_at_period_end),
+      currentPeriodEnd: unixToIso(updated.current_period_end),
+      cancelAt: unixToIso(updated.cancel_at),
+      canceledAt: immediate ? nowIso() : unixToIso(updated.canceled_at),
+    });
+    const refreshed = clientPortal.ensureClientProfileForUser(user);
+    const billing = await buildClientBillingOverview(refreshed);
+    return res.json({
+      ok: true,
+      message: immediate
+        ? 'Abonnementet er avsluttet umiddelbart.'
+        : 'Abonnementet avsluttes ved periodens slutt.',
+      billing,
+    });
+  } catch (error) {
+    return res.status(502).json({ message: error?.message || 'Kunne ikke avslutte abonnementet.' });
+  }
+});
+
+app.post('/api/client/billing/resume-subscription', clientAuth, async (req, res) => {
+  if (!isStripeConfigured()) {
+    return res.status(503).json({ message: 'Stripe er ikke konfigurert for gjenopptak.' });
+  }
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const subscriptionId = sanitizeText(profile?.payment?.stripeSubscriptionId);
+  if (!subscriptionId) {
+    return res.status(400).json({ message: 'Fant ikke et aktivt Stripe-abonnement.' });
+  }
+  try {
+    const updated = await getStripe().subscriptions.update(subscriptionId, {
+      cancel_at_period_end: false,
+    });
+    clientPortal.setClientPayment(user.id, {
+      status: sanitizeText(updated.status) || 'active',
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: unixToIso(updated.current_period_end),
+      cancelAt: '',
+      canceledAt: '',
+    });
+    const refreshed = clientPortal.ensureClientProfileForUser(user);
+    const billing = await buildClientBillingOverview(refreshed);
+    return res.json({
+      ok: true,
+      message: 'Abonnementet fortsetter som normalt.',
+      billing,
+    });
+  } catch (error) {
+    return res.status(502).json({ message: error?.message || 'Kunne ikke gjenoppta abonnementet.' });
+  }
+});
+
+app.post('/api/client/account/delete', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const confirmText = sanitizeText(req.body?.confirmText).toUpperCase();
+  if (confirmText !== 'SLETT') {
+    return res.status(400).json({ message: 'Skriv "SLETT" for å bekrefte.' });
+  }
+
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const subscriptionId = sanitizeText(profile?.payment?.stripeSubscriptionId);
+  if (subscriptionId && isStripeConfigured()) {
+    try {
+      await getStripe().subscriptions.cancel(subscriptionId);
+    } catch (error) {
+      return res.status(502).json({
+        message: error?.message || 'Kunne ikke avslutte aktivt Stripe-abonnement før kontoavslutning.',
+      });
+    }
+  }
+
+  clientPortal.setClientPayment(user.id, {
+    status: 'canceled',
+    cancelAtPeriodEnd: false,
+    canceledAt: nowIso(),
+  });
+  const deactivated = await store.deactivateUserKeepingData(user.id, 'client-self-delete');
+  if (!deactivated.ok) {
+    return res.status(500).json({ message: deactivated.error || 'Kunne ikke deaktivere kontoen.' });
+  }
+  return res.json({
+    ok: true,
+    message: 'Kontoen er deaktivert. Data beholdes for historikk og etterlevelse.',
+  });
+});
+
 app.get('/api/client/brreg-search', clientAuth, async (req, res) => {
   const user = await store.getUserById(req.client.userId);
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
@@ -7047,7 +7442,13 @@ async function handleStripeWebhook(req, res) {
       case 'customer.subscription.deleted': {
         const sub = event.data.object || {};
         const profile = clientPortal.getClientProfileByStripeCustomerId(sanitizeText(sub.customer));
-        if (profile) clientPortal.setClientPayment(profile.userId, { status: 'canceled' });
+        if (profile) {
+          clientPortal.setClientPayment(profile.userId, {
+            status: 'canceled',
+            cancelAtPeriodEnd: false,
+            canceledAt: nowIso(),
+          });
+        }
         break;
       }
       default:
