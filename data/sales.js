@@ -105,8 +105,10 @@ function normalizeMakerRun(value = {}) {
     previewUrl: sanitizeText(input.previewUrl),
     latestReadyStep: sanitizeText(input.latestReadyStep),
     latestStepStatus: sanitizeText(input.latestStepStatus),
+    intakeStatus: sanitizeText(input.intakeStatus),
     exportPath: sanitizeText(input.exportPath),
     statusUpdatedAt: sanitizeText(input.statusUpdatedAt),
+    fieldsSyncedAt: sanitizeText(input.fieldsSyncedAt),
     industry: sanitizeText(input.industry),
     createdAt: sanitizeText(input.createdAt),
   };
@@ -127,6 +129,7 @@ function normalizeCalendar(value = {}) {
     htmlLink: sanitizeText(input.htmlLink),
     meetLink: sanitizeText(input.meetLink),
     calendarId: sanitizeText(input.calendarId),
+    accountKey: sanitizeText(input.accountKey),
     syncedAt: sanitizeText(input.syncedAt),
   };
 }
@@ -422,6 +425,7 @@ export function clearSalesMeetingScheduling(id) {
       htmlLink: '',
       meetLink: '',
       calendarId: '',
+      accountKey: '',
       syncedAt: '',
     },
   });

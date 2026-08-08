@@ -4,6 +4,7 @@ import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './stora
 const MYPHONER_INTEGRATION_PATH = getDataFilePath('myphoner-integration.json');
 const MAX_PROCESSED_EVENTS_PER_TYPE = 3000;
 const MAX_RECORDINGS = 1500;
+const MAX_PENDING_RECORDINGS = 500;
 
 function ensureDataDir() {
   ensurePersistentDataDir();
@@ -15,6 +16,10 @@ function nowIso() {
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
+}
+
+function normalizePhoneDigits(value = '') {
+  return String(value || '').replace(/\D+/g, '');
 }
 
 function normalizeWebhookEntry(value = {}, fallback = {}) {
@@ -48,30 +53,70 @@ function normalizeRecordingEntry(value = {}, fallback = {}) {
   const base = fallback && typeof fallback === 'object' ? fallback : {};
   return {
     recordingUrl: sanitizeText(input.recordingUrl ?? input.url ?? base.recordingUrl),
+    localRecordingUrl: sanitizeText(input.localRecordingUrl ?? base.localRecordingUrl),
     callId: sanitizeText(input.callId ?? base.callId),
+    leadId: sanitizeText(input.leadId ?? base.leadId),
     callStartedAt: sanitizeText(input.callStartedAt ?? base.callStartedAt),
     durationSeconds: Number.isFinite(Number(input.durationSeconds))
       ? Number(input.durationSeconds)
       : Number(base.durationSeconds || 0),
     userEmail: sanitizeText(input.userEmail ?? base.userEmail),
     destinationNumber: sanitizeText(input.destinationNumber ?? base.destinationNumber),
+    destinationDigits: normalizePhoneDigits(input.destinationDigits ?? input.destinationNumber ?? base.destinationDigits ?? base.destinationNumber),
     sourceResourceUrl: sanitizeText(input.sourceResourceUrl ?? base.sourceResourceUrl),
     updatedAt: nowIso(),
   };
 }
 
-function normalizeRecordingMap(value = {}) {
-  const input = value && typeof value === 'object' ? value : {};
+function sortAndCapRecordingMap(input = {}, max = MAX_RECORDINGS) {
   const out = {};
-  for (const [leadId, payload] of Object.entries(input)) {
-    const key = sanitizeText(leadId);
-    if (!key) continue;
-    out[key] = normalizeRecordingEntry(payload);
+  for (const [key, payload] of Object.entries(input || {})) {
+    const entryKey = sanitizeText(key);
+    if (!entryKey) continue;
+    out[entryKey] = normalizeRecordingEntry(payload);
   }
   const sorted = Object.entries(out).sort(
     (a, b) => new Date(b[1]?.updatedAt || 0).getTime() - new Date(a[1]?.updatedAt || 0).getTime()
   );
-  return Object.fromEntries(sorted.slice(0, MAX_RECORDINGS));
+  return Object.fromEntries(sorted.slice(0, max));
+}
+
+function normalizePendingRecordingEntry(value = {}, fallback = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const base = fallback && typeof fallback === 'object' ? fallback : {};
+  const attempts = Number.isFinite(Number(input.attempts))
+    ? Number(input.attempts)
+    : Number.isFinite(Number(base.attempts))
+      ? Number(base.attempts)
+      : 0;
+  return {
+    callId: sanitizeText(input.callId ?? base.callId),
+    leadId: sanitizeText(input.leadId ?? base.leadId),
+    destinationNumber: sanitizeText(input.destinationNumber ?? base.destinationNumber),
+    destinationDigits: normalizePhoneDigits(
+      input.destinationDigits ?? input.destinationNumber ?? base.destinationDigits ?? base.destinationNumber
+    ),
+    sourceResourceUrl: sanitizeText(input.sourceResourceUrl ?? base.sourceResourceUrl),
+    reason: sanitizeText(input.reason ?? base.reason),
+    attempts: Math.max(0, attempts),
+    nextAttemptAt: sanitizeText(input.nextAttemptAt ?? base.nextAttemptAt) || nowIso(),
+    createdAt: sanitizeText(input.createdAt ?? base.createdAt) || nowIso(),
+    updatedAt: nowIso(),
+  };
+}
+
+function normalizePendingRecordingMap(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const out = {};
+  for (const [callId, payload] of Object.entries(input)) {
+    const key = sanitizeText(callId);
+    if (!key) continue;
+    out[key] = normalizePendingRecordingEntry(payload, { callId: key });
+  }
+  const sorted = Object.entries(out).sort(
+    (a, b) => new Date(a[1]?.nextAttemptAt || 0).getTime() - new Date(b[1]?.nextAttemptAt || 0).getTime()
+  );
+  return Object.fromEntries(sorted.slice(0, MAX_PENDING_RECORDINGS));
 }
 
 function normalizeSalesLinksBackfillState(value = {}) {
@@ -93,6 +138,9 @@ function defaultState() {
       recording: {},
     },
     recordingsByLeadId: {},
+    recordingsByCallId: {},
+    recordingsByPhoneDigits: {},
+    pendingRecordingsByCallId: {},
     maintenance: {
       salesLinksBackfill: normalizeSalesLinksBackfillState(),
     },
@@ -123,7 +171,10 @@ function normalizeState(value = {}) {
     winner: normalizeProcessedBucket(input?.processedEvents?.winner),
     recording: normalizeProcessedBucket(input?.processedEvents?.recording),
   };
-  state.recordingsByLeadId = normalizeRecordingMap(input?.recordingsByLeadId);
+  state.recordingsByLeadId = sortAndCapRecordingMap(input?.recordingsByLeadId);
+  state.recordingsByCallId = sortAndCapRecordingMap(input?.recordingsByCallId);
+  state.recordingsByPhoneDigits = sortAndCapRecordingMap(input?.recordingsByPhoneDigits);
+  state.pendingRecordingsByCallId = normalizePendingRecordingMap(input?.pendingRecordingsByCallId);
   state.maintenance = {
     salesLinksBackfill: normalizeSalesLinksBackfillState(input?.maintenance?.salesLinksBackfill),
   };
@@ -244,16 +295,144 @@ export function getRecordingForLead(leadId = '') {
   return state.recordingsByLeadId[key] || null;
 }
 
+export function getRecordingForCall(callId = '') {
+  const key = sanitizeText(callId);
+  if (!key) return null;
+  const state = readStore();
+  return state.recordingsByCallId[key] || null;
+}
+
+export function getRecordingForPhone(phone = '') {
+  const key = normalizePhoneDigits(phone);
+  if (!key) return null;
+  const state = readStore();
+  const direct = state.recordingsByPhoneDigits[key];
+  if (direct) return direct;
+  // Soft match on suffix for NO numbers (8 digits) / international variants.
+  const entries = Object.entries(state.recordingsByPhoneDigits || {});
+  for (const [digits, payload] of entries) {
+    if (!digits) continue;
+    if (digits === key || digits.endsWith(key) || key.endsWith(digits)) return payload;
+  }
+  return null;
+}
+
 export function setRecordingForLead(leadId = '', payload = {}) {
   const key = sanitizeText(leadId);
   if (!key) return null;
   const state = readStore();
   const current = state.recordingsByLeadId[key] || {};
-  state.recordingsByLeadId[key] = normalizeRecordingEntry(payload, current);
-  state.recordingsByLeadId = normalizeRecordingMap(state.recordingsByLeadId);
+  const next = normalizeRecordingEntry({ ...payload, leadId: key }, current);
+  state.recordingsByLeadId[key] = next;
+  if (next.callId) {
+    state.recordingsByCallId[next.callId] = normalizeRecordingEntry(next, state.recordingsByCallId[next.callId] || {});
+  }
+  if (next.destinationDigits) {
+    state.recordingsByPhoneDigits[next.destinationDigits] = normalizeRecordingEntry(
+      next,
+      state.recordingsByPhoneDigits[next.destinationDigits] || {}
+    );
+  }
+  state.recordingsByLeadId = sortAndCapRecordingMap(state.recordingsByLeadId);
+  state.recordingsByCallId = sortAndCapRecordingMap(state.recordingsByCallId);
+  state.recordingsByPhoneDigits = sortAndCapRecordingMap(state.recordingsByPhoneDigits);
   state.updatedAt = nowIso();
   writeStore(state);
   return state.recordingsByLeadId[key];
+}
+
+export function cacheRecordingMeta(payload = {}) {
+  const meta = normalizeRecordingEntry(payload);
+  if (!meta.callId && !meta.leadId && !meta.destinationDigits && !meta.recordingUrl) return null;
+  const state = readStore();
+  if (meta.callId) {
+    state.recordingsByCallId[meta.callId] = normalizeRecordingEntry(meta, state.recordingsByCallId[meta.callId] || {});
+  }
+  if (meta.leadId) {
+    state.recordingsByLeadId[meta.leadId] = normalizeRecordingEntry(meta, state.recordingsByLeadId[meta.leadId] || {});
+  }
+  if (meta.destinationDigits) {
+    state.recordingsByPhoneDigits[meta.destinationDigits] = normalizeRecordingEntry(
+      meta,
+      state.recordingsByPhoneDigits[meta.destinationDigits] || {}
+    );
+  }
+  state.recordingsByLeadId = sortAndCapRecordingMap(state.recordingsByLeadId);
+  state.recordingsByCallId = sortAndCapRecordingMap(state.recordingsByCallId);
+  state.recordingsByPhoneDigits = sortAndCapRecordingMap(state.recordingsByPhoneDigits);
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return meta;
+}
+
+export function enqueuePendingRecording(payload = {}, options = {}) {
+  const callId = sanitizeText(payload.callId);
+  if (!callId) return null;
+  const delayMs = Math.max(5_000, Number(options.delayMs) || 30_000);
+  const state = readStore();
+  const current = state.pendingRecordingsByCallId[callId] || { callId, createdAt: nowIso(), attempts: 0 };
+  const attempts = Number(options.resetAttempts) ? 0 : Number(current.attempts || 0);
+  const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
+  state.pendingRecordingsByCallId[callId] = normalizePendingRecordingEntry(
+    {
+      ...current,
+      ...payload,
+      callId,
+      attempts,
+      nextAttemptAt,
+      reason: sanitizeText(payload.reason || current.reason || 'awaiting-recording-url'),
+    },
+    current
+  );
+  state.pendingRecordingsByCallId = normalizePendingRecordingMap(state.pendingRecordingsByCallId);
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return state.pendingRecordingsByCallId[callId];
+}
+
+export function bumpPendingRecordingAttempt(callId = '', options = {}) {
+  const key = sanitizeText(callId);
+  if (!key) return null;
+  const state = readStore();
+  const current = state.pendingRecordingsByCallId[key];
+  if (!current) return null;
+  const attempts = Number(current.attempts || 0) + 1;
+  const delayMs = Math.max(5_000, Number(options.delayMs) || 60_000);
+  state.pendingRecordingsByCallId[key] = normalizePendingRecordingEntry(
+    {
+      ...current,
+      attempts,
+      nextAttemptAt: new Date(Date.now() + delayMs).toISOString(),
+      reason: sanitizeText(options.reason || current.reason || 'awaiting-recording-url'),
+    },
+    current
+  );
+  state.pendingRecordingsByCallId = normalizePendingRecordingMap(state.pendingRecordingsByCallId);
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return state.pendingRecordingsByCallId[key];
+}
+
+export function clearPendingRecording(callId = '') {
+  const key = sanitizeText(callId);
+  if (!key) return false;
+  const state = readStore();
+  if (!state.pendingRecordingsByCallId[key]) return false;
+  delete state.pendingRecordingsByCallId[key];
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return true;
+}
+
+export function listDuePendingRecordings(limit = 25, nowMs = Date.now()) {
+  const state = readStore();
+  const due = Object.values(state.pendingRecordingsByCallId || {})
+    .filter((entry) => {
+      const nextAt = new Date(entry?.nextAttemptAt || 0).getTime();
+      return Number.isFinite(nextAt) && nextAt <= nowMs;
+    })
+    .sort((a, b) => new Date(a.nextAttemptAt || 0).getTime() - new Date(b.nextAttemptAt || 0).getTime());
+  return due.slice(0, Math.max(1, Number(limit) || 25));
 }
 
 export function getSalesLinksBackfillState() {

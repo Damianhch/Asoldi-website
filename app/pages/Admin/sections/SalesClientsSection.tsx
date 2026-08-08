@@ -63,6 +63,7 @@ type CalendarStatus = {
   calendarId: string;
   redirectUri: string;
   tokenUpdatedAt: string;
+  accountKey?: string;
 };
 
 type MeetingMapPin = {
@@ -293,44 +294,63 @@ function normalizeHttpBaseUrl(value = '') {
   }
 }
 
+function healStaleLocalMakerBase(value = '') {
+  const normalized = normalizeHttpBaseUrl(value);
+  if (!normalized) return '';
+  // Historical localStorage/UI mistakes pointed at :4000 while Maker runs on :3000.
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0):4000$/i.test(normalized)) {
+    return 'http://localhost:3000';
+  }
+  return normalized;
+}
+
 function buildMakerRunUrl(
   baseUrl = '',
   runId = '',
-  mode: 'dashboard' | 'preview' = 'dashboard',
+  mode: 'dashboard' | 'preview' | 'intake' = 'dashboard',
   previewStep = '3',
 ) {
-  const base = normalizeHttpBaseUrl(baseUrl);
+  const base = healStaleLocalMakerBase(baseUrl) || normalizeHttpBaseUrl(baseUrl);
   const id = String(runId || '').trim();
   if (!base || !id) return '';
   if (mode === 'preview') return `${base}/preview/${encodeURIComponent(id)}/step/${encodeURIComponent(previewStep || '3')}/view?route=/`;
+  if (mode === 'intake') return `${base}/run-v2?draftRunId=${encodeURIComponent(id)}`;
   return `${base}/run/${encodeURIComponent(id)}`;
 }
 
-function hostnameFromUrlLike(value = '') {
-  const raw = String(value || '').trim();
-  if (!raw) return '';
-  try {
-    return new URL(raw).hostname.toLowerCase();
-  } catch {
-    return '';
+function resolveOpenInMakerUrl({
+  baseUrl = '',
+  runId = '',
+  storedDashboardUrl = '',
+  intakeStatus = '',
+  latestReadyStep = '',
+}: {
+  baseUrl?: string;
+  runId?: string;
+  storedDashboardUrl?: string;
+  intakeStatus?: string;
+  latestReadyStep?: string;
+}) {
+  const id = String(runId || '').trim();
+  const base = healStaleLocalMakerBase(baseUrl) || 'http://localhost:3000';
+  if (!id) return '';
+  const stored = String(storedDashboardUrl || '').trim();
+  const status = String(intakeStatus || '').trim().toLowerCase();
+  const storedLooksLikeIntake = /\/run-v2(?:\?|$)/i.test(stored) && /[?&]draftRunId=/i.test(stored);
+  const hasReadyStep = Boolean(String(latestReadyStep || '').trim());
+  // Sales drafts stay on /run-v2 until a template is chosen / a step is ready.
+  const intakePending =
+    status === 'pending' ||
+    storedLooksLikeIntake ||
+    (!hasReadyStep && status !== 'configured');
+  // Always open against the CURRENT Website Maker URL field (tunnel or localhost:3000).
+  // Never trust a stale stored host like localhost:4000 from an old create-run.
+  if (intakePending) return buildMakerRunUrl(base, id, 'intake');
+  if (stored) {
+    const remapped = remapMakerUrlToBase(base, stored);
+    if (remapped) return normalizeMakerDashboardDraftUrl(remapped);
   }
-}
-
-function isLocalHostname(value = '') {
-  const host = String(value || '').trim().toLowerCase();
-  return Boolean(host) && (host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '::1');
-}
-
-function isTunnelHostname(value = '') {
-  const host = String(value || '').trim().toLowerCase();
-  if (!host) return false;
-  return (
-    host.endsWith('.loca.lt') ||
-    host.endsWith('.localtunnel.me') ||
-    host.endsWith('.ngrok.io') ||
-    host.endsWith('.ngrok-free.app') ||
-    host.endsWith('.trycloudflare.com')
-  );
+  return buildMakerRunUrl(base, id, 'dashboard');
 }
 
 function remapMakerUrlToBase(baseUrl = '', absoluteUrl = '') {
@@ -372,21 +392,6 @@ function normalizeMakerDashboardDraftUrl(value = '') {
       return raw;
     }
   }
-}
-
-function shouldUseCurrentMakerBase(baseUrl = '', storedUrl = '') {
-  const currentOrigin = toOrigin(baseUrl);
-  if (!currentOrigin) return false;
-  const storedOrigin = toOrigin(storedUrl);
-  if (!storedOrigin) return true;
-  if (currentOrigin === storedOrigin) return true;
-
-  const currentHost = hostnameFromUrlLike(currentOrigin);
-  const storedHost = hostnameFromUrlLike(storedOrigin);
-  if (!currentHost || !storedHost) return false;
-  if (isLocalHostname(currentHost) && isLocalHostname(storedHost)) return true;
-  if (isTunnelHostname(currentHost) && isTunnelHostname(storedHost)) return true;
-  return false;
 }
 
 function toOrigin(baseUrl = '') {
@@ -701,7 +706,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     try {
       const stored = window.localStorage.getItem(MAKER_BASE_URL_STORAGE_KEY);
       if (!stored) return;
-      const normalized = normalizeHttpBaseUrl(stored);
+      const normalized = healStaleLocalMakerBase(stored) || normalizeHttpBaseUrl(stored);
       if (normalized) setWebsiteMakerBaseUrl(normalized);
     } catch {
       // Ignore storage access issues.
@@ -709,8 +714,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   }, []);
 
   useEffect(() => {
-    const normalized = normalizeHttpBaseUrl(websiteMakerBaseUrl);
+    const normalized = healStaleLocalMakerBase(websiteMakerBaseUrl) || normalizeHttpBaseUrl(websiteMakerBaseUrl);
     if (!normalized) return;
+    if (normalized !== websiteMakerBaseUrl) {
+      setWebsiteMakerBaseUrl(normalized);
+      return;
+    }
     try {
       window.localStorage.setItem(MAKER_BASE_URL_STORAGE_KEY, normalized);
     } catch {
@@ -1310,18 +1319,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               </button>
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
-              Automatic welcome/reminder emails are currently disabled. Use the manual send buttons on each client card.
+              Maker must be reachable at this URL. Use <code>http://localhost:3000</code> locally, or click
+              &quot;New tunnel URL&quot; for asoldi.com → Maker. Stale <code>:4000</code> bases are auto-corrected to
+              <code>:3000</code>.
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
             <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
               Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured ? 'Not connected' : 'Not configured'}
             </span>
-            {calendarStatus?.configured && !calendarStatus.connected && (
+            {calendarStatus?.configured && (
               <button type="button" onClick={connectGoogleCalendar} className="px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
-                Connect Google Calendar
+                {calendarStatus.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
               </button>
             )}
+            <p className="text-[11px] text-gray-500 max-w-xs md:text-right">
+              Connection covers admin and sales logins that share the same email. Meeting sync uses the client owner calendar when available, otherwise your connected calendar.
+            </p>
           </div>
         </div>
       </div>
@@ -1387,29 +1401,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
-            const dynamicDashboardUrl = normalizeMakerDashboardDraftUrl(
-              buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard')
-            );
-            const dynamicPreviewUrl = buildMakerRunUrl(
-              websiteMakerBaseUrl,
-              makerRunId,
-              'preview',
-              String(client.makerRun?.latestReadyStep || '3'),
-            );
             const storedDashboardUrl = normalizeMakerDashboardDraftUrl(String(client.makerRun?.dashboardUrl || '').trim());
             const storedPreviewUrl = String(client.makerRun?.previewUrl || '').trim();
-            const useCurrentBaseForLinks = shouldUseCurrentMakerBase(
-              websiteMakerBaseUrl,
-              storedDashboardUrl || storedPreviewUrl
-            );
-            const remappedDashboardUrl = useCurrentBaseForLinks
-              ? normalizeMakerDashboardDraftUrl(remapMakerUrlToBase(websiteMakerBaseUrl, storedDashboardUrl))
-              : '';
-            const remappedPreviewUrl = useCurrentBaseForLinks
-              ? remapMakerUrlToBase(websiteMakerBaseUrl, storedPreviewUrl)
-              : '';
-            const makerDashboardUrl = remappedDashboardUrl || storedDashboardUrl || dynamicDashboardUrl;
-            const makerPreviewUrl = remappedPreviewUrl || storedPreviewUrl || dynamicPreviewUrl;
+            const makerDashboardUrl = resolveOpenInMakerUrl({
+              baseUrl: websiteMakerBaseUrl,
+              runId: makerRunId,
+              storedDashboardUrl,
+              intakeStatus: String(client.makerRun?.intakeStatus || ''),
+              latestReadyStep: String(client.makerRun?.latestReadyStep || ''),
+            });
+            const makerPreviewUrl =
+              remapMakerUrlToBase(healStaleLocalMakerBase(websiteMakerBaseUrl) || websiteMakerBaseUrl, storedPreviewUrl) ||
+              buildMakerRunUrl(
+                websiteMakerBaseUrl,
+                makerRunId,
+                'preview',
+                String(client.makerRun?.latestReadyStep || '3'),
+              );
             const expanded = expandedId === client.id;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
@@ -1689,6 +1697,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           <li>Import source run: {client.websiteImport?.sourceRunId || '—'}</li>
                           <li>Import step: {client.websiteImport?.sourceStep || '—'}</li>
                           <li>Calendar event: {client.calendar?.eventId || '—'}</li>
+                          <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
                           <li>Meet link: {client.calendar?.meetLink || '—'}</li>
                           <li>Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}</li>
                           <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>

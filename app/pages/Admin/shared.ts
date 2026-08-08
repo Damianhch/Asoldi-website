@@ -121,6 +121,7 @@ export type SalesCalendarMeta = {
   htmlLink: string;
   meetLink: string;
   calendarId: string;
+  accountKey: string;
   syncedAt: string;
 };
 
@@ -140,8 +141,10 @@ export type SalesMakerRunMeta = {
   previewUrl: string;
   latestReadyStep: string;
   latestStepStatus: string;
+  intakeStatus?: string;
   exportPath: string;
   statusUpdatedAt: string;
+  fieldsSyncedAt?: string;
   industry: string;
   createdAt: string;
 };

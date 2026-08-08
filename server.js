@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import * as store from './data/store.js';
@@ -28,6 +28,8 @@ import {
   deleteMeetingEvent,
   exchangeGoogleCalendarCode,
   getGoogleCalendarStatus,
+  resolveCalendarSyncAccountKey,
+  shareGoogleCalendarToken,
   upsertMeetingEvent,
 } from './lib/google-calendar.js';
 import {
@@ -157,9 +159,11 @@ const MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS = Number(process.env.MYPHONER_AUTO_LI
 const MYPHONER_AUTO_LINK_SEARCH_CACHE_MS = Number(process.env.MYPHONER_AUTO_LINK_SEARCH_CACHE_MS || 6 * 60 * 60 * 1000);
 const SERPAPI_API_KEY = sanitizeText(process.env.SERPAPI_API_KEY || process.env.SERP_API_KEY);
 const SERPAPI_ENGINE = sanitizeText(process.env.SERPAPI_ENGINE || 'google') || 'google';
-const SERPAPI_TIMEOUT_MS = Number(process.env.SERPAPI_TIMEOUT_MS || MYPHONER_AUTO_LINK_ENRICH_TIMEOUT_MS || 6000);
-const SERPAPI_HL = sanitizeText(process.env.SERPAPI_HL || '');
-const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || '');
+// site:-queries regularly take >10s on SerpAPI; a short timeout silently drops the best results.
+const SERPAPI_TIMEOUT_MS = Number(process.env.SERPAPI_TIMEOUT_MS || 15000);
+// Default to Norwegian Google results for local business profile discovery.
+const SERPAPI_HL = sanitizeText(process.env.SERPAPI_HL || 'no') || 'no';
+const SERPAPI_GL = sanitizeText(process.env.SERPAPI_GL || 'no') || 'no';
 const SERPAPI_MIN_INTERVAL_MS = Number(process.env.SERPAPI_MIN_INTERVAL_MS || 900);
 const SERPAPI_RETRY_LIMIT = Number(process.env.SERPAPI_RETRY_LIMIT || 3);
 const SERPAPI_RETRY_BACKOFF_MS = Number(process.env.SERPAPI_RETRY_BACKOFF_MS || 1200);
@@ -167,17 +171,39 @@ const SOCIAL_BRAVE_FALLBACK_ENABLED = String(process.env.SOCIAL_BRAVE_FALLBACK_E
 const SOCIAL_BRAVE_TIMEOUT_MS = Number(process.env.SOCIAL_BRAVE_TIMEOUT_MS || 3500);
 const SOCIAL_BRAVE_MIN_INTERVAL_MS = Number(process.env.SOCIAL_BRAVE_MIN_INTERVAL_MS || 250);
 const SOCIAL_BRAVE_MAX_LINKS = Number(process.env.SOCIAL_BRAVE_MAX_LINKS || 80);
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 2);
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 0);
-const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 1);
-const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '1') !== '0';
+// Stricter defaults: prefer empty over wrong Instagram/Facebook profiles.
+// The effective min score also scales down for short business names (see selectBestSearchCandidate).
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_SCORE || 4);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN || 2);
+const MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES = Number(process.env.MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES || 2);
+// Inventing handles from business names caused widespread wrong IG/FB links.
+const MYPHONER_SOCIAL_FORCE_FILL_ENABLED = String(process.env.MYPHONER_SOCIAL_FORCE_FILL || '0') === '1';
 const MYPHONER_LEAD_CATALOG_MAX_PAGES = Math.max(1, Number(process.env.MYPHONER_LEAD_CATALOG_MAX_PAGES || 25));
+const MYPHONER_RECORDING_RETRY_MAX_ATTEMPTS = Math.max(3, Number(process.env.MYPHONER_RECORDING_RETRY_MAX_ATTEMPTS || 12));
+const MYPHONER_RECORDING_RETRY_DELAYS_MS = String(process.env.MYPHONER_RECORDING_RETRY_DELAYS_MS || '15000,30000,60000,120000,300000,600000')
+  .split(',')
+  .map((entry) => Number(String(entry || '').trim()))
+  .filter((entry) => Number.isFinite(entry) && entry >= 5_000);
+const MYPHONER_RECORDING_DOWNLOAD_ENABLED = String(process.env.MYPHONER_RECORDING_DOWNLOAD_ENABLED || '1') !== '0';
+const MYPHONER_RECORDING_PENDING_BATCH = Math.max(1, Number(process.env.MYPHONER_RECORDING_PENDING_BATCH || 20));
 const SALES_LINK_BACKFILL_ENABLED = String(process.env.SALES_LINK_BACKFILL_ENABLED || '1') !== '0';
-const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v4-proff-first-result');
+const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL_VERSION || 'social-links-v5-strict-serp-myphoner');
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
+const MYPHONER_RECORDINGS_DIR = path.join(getPersistentDataDir(), 'myphoner-recordings');
+try {
+  mkdirSync(MYPHONER_RECORDINGS_DIR, { recursive: true });
+} catch {
+  // Directory is created again during startup / download paths.
+}
 let myphonerWebhookReconcileInterval = null;
 let myphonerWebhookReconcileRunning = false;
+let myphonerRecordingRetryRunning = false;
+let myphonerRecordingRetryInterval = null;
+const MYPHONER_RECORDING_RETRY_TICK_MS = Math.max(
+  15_000,
+  Number(process.env.MYPHONER_RECORDING_RETRY_TICK_MS || 30_000)
+);
 const pendingSalesLinkEnrichment = new Set();
 const salesSearchCache = new Map();
 let serpApiMissingKeyWarned = false;
@@ -2512,6 +2538,12 @@ function buildSalesDetailsFromMyphonerLead(lead = {}, leadDataMap = new Map()) {
 
 function normalizeSearchText(value = '') {
   return String(value || '')
+    // Transliterate Norwegian letters instead of dropping them ("KVÆRNER" -> "kvaerner", not "kv rner").
+    .replace(/[æÆ]/g, 'ae')
+    .replace(/[øØ]/g, 'o')
+    .replace(/[åÅ]/g, 'a')
+    // kafe/cafe/café/kafé are interchangeable spellings ("Bydelskafe" vs "Bydelscafe").
+    .replace(/caf(?=e|é)/gi, 'kaf')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
@@ -2772,12 +2804,21 @@ async function resolveProffCompanyUrlByOrganizationNumber({
 function buildBusinessSearchTokens(values = []) {
   const stopWords = new Set([
     'as', 'og', 'the', 'for', 'and', 'med', 'til', 'hos', 'butikk', 'norge',
+    // Legal/structural words that rarely appear on social profiles.
+    'holding', 'gruppen', 'group', 'invest', 'konsern', 'ans', 'enk',
   ]);
   const tokens = normalizeSearchText((Array.isArray(values) ? values : [values]).join(' '))
     .split(' ')
     .map((entry) => sanitizeText(entry))
     .filter((entry) => entry.length >= 3 && !stopWords.has(entry));
   return [...new Set(tokens)].slice(0, 10);
+}
+
+function haystackHasCityToken(haystack = '', cityToken = '') {
+  const token = sanitizeText(cityToken);
+  if (!token || !haystack) return false;
+  // Word-boundary match: short city names like "Ler" must not match inside other words.
+  return ` ${haystack} `.includes(` ${token} `);
 }
 
 function scoreSalesSearchCandidate(candidate = {}, context = {}) {
@@ -2792,7 +2833,7 @@ function scoreSalesSearchCandidate(candidate = {}, context = {}) {
   for (const token of businessTokens) {
     if (token && haystack.includes(token)) score += 2;
   }
-  if (cityToken && haystack.includes(cityToken)) score += 2;
+  if (haystackHasCityToken(haystack, cityToken)) score += 2;
   if (organizationNumber && haystack.includes(organizationNumber)) score += 3;
   return score;
 }
@@ -2808,6 +2849,7 @@ function canonicalizeInstagramProfileUrl(value = '') {
     const firstSegment = sanitizeText(segments[0]).toLowerCase();
     const blocked = new Set([
       'p', 'reel', 'reels', 'stories', 'explore', 'accounts', 'developer', 'legal', 'about',
+      'popular', 'directory', 'web', 'tags',
     ]);
     if (!firstSegment || blocked.has(firstSegment)) return '';
     return `https://www.instagram.com/${segments[0]}/`;
@@ -2839,6 +2881,14 @@ function canonicalizeFacebookProfileUrl(value = '') {
     if (blocked.has(firstSegment)) return '';
     if ((firstSegment === 'pages' || firstSegment === 'people') && segments[1]) {
       return `https://www.facebook.com/${segments[0]}/${segments[1]}/`;
+    }
+    // Modern page URLs: facebook.com/p/<Name>-<numericId>. Canonicalize to the numeric id
+    // so all URL variants of the same page merge into one candidate.
+    if (firstSegment === 'p') {
+      if (!segments[1]) return '';
+      const idMatch = sanitizeText(segments[1]).match(/-(\d{5,})$/);
+      if (idMatch?.[1]) return `https://www.facebook.com/${idMatch[1]}/`;
+      return `https://www.facebook.com/p/${segments[1]}/`;
     }
     return `https://www.facebook.com/${segments[0]}/`;
   } catch {
@@ -2876,8 +2926,9 @@ function extractSocialProfileIdentifier(url = '') {
     if (!segments.length) return '';
     const first = sanitizeText(segments[0]).toLowerCase();
     if (first === 'profile.php') return '';
-    if ((first === 'pages' || first === 'people') && segments[1]) {
-      return normalizeSearchText(segments[1]).replace(/\s+/g, '');
+    if ((first === 'pages' || first === 'people' || first === 'p') && segments[1]) {
+      // Strip the trailing numeric page id from facebook.com/p/<Name>-<id> slugs.
+      return normalizeSearchText(sanitizeText(segments[1]).replace(/-\d{5,}$/, '')).replace(/\s+/g, '');
     }
     return normalizeSearchText(segments[0]).replace(/\s+/g, '');
   } catch {
@@ -2931,33 +2982,136 @@ function inferFallbackSocialLinks({
     },
   };
 
-  if (!sanitizeText(instagramUrl)) {
-    const handle = currentFacebookHandle || businessHandle;
-    if (handle) {
-      inferred.instagramUrl = `https://www.instagram.com/${handle}/`;
-      inferred.sources.instagram = currentFacebookHandle ? 'from-facebook-handle' : 'from-business-name';
-    }
+  // Only mirror an already-verified opposite-platform handle. Never invent from business name.
+  if (!sanitizeText(instagramUrl) && currentFacebookHandle) {
+    inferred.instagramUrl = `https://www.instagram.com/${currentFacebookHandle}/`;
+    inferred.sources.instagram = 'from-facebook-handle';
+  } else if (!sanitizeText(instagramUrl) && businessHandle && MYPHONER_SOCIAL_FORCE_FILL_ENABLED) {
+    // Opt-in only: business-name slug fill is historically a major source of wrong links.
+    inferred.instagramUrl = `https://www.instagram.com/${businessHandle}/`;
+    inferred.sources.instagram = 'from-business-name';
   }
 
-  if (!sanitizeText(facebookUrl)) {
-    const handle = currentInstagramHandle || businessHandle;
-    if (handle) {
-      inferred.facebookUrl = `https://www.facebook.com/${handle}/`;
-      inferred.sources.facebook = currentInstagramHandle ? 'from-instagram-handle' : 'from-business-name';
-    }
+  if (!sanitizeText(facebookUrl) && currentInstagramHandle) {
+    inferred.facebookUrl = `https://www.facebook.com/${currentInstagramHandle}/`;
+    inferred.sources.facebook = 'from-instagram-handle';
+  } else if (!sanitizeText(facebookUrl) && businessHandle && MYPHONER_SOCIAL_FORCE_FILL_ENABLED) {
+    inferred.facebookUrl = `https://www.facebook.com/${businessHandle}/`;
+    inferred.sources.facebook = 'from-business-name';
   }
 
   return inferred;
 }
 
+function compactSocialHandleCompare(value = '') {
+  return sanitizeSocialHandle(value).replace(/[._-]+/g, '');
+}
+
+function isLikelyInventedSocialProfileUrl(url = '', businessName = '') {
+  const handle = compactSocialHandleCompare(extractSocialProfileIdentifier(url));
+  if (!handle || handle.length < 4) return false;
+  const businessHandle = compactSocialHandleCompare(buildBusinessSocialHandleSeed(businessName));
+  if (!businessHandle || businessHandle.length < 4) return false;
+  if (handle === businessHandle) return true;
+  // Near-identical slug (common force-fill pattern).
+  if (handle.startsWith(businessHandle) || businessHandle.startsWith(handle)) {
+    const longer = Math.max(handle.length, businessHandle.length);
+    const shorter = Math.min(handle.length, businessHandle.length);
+    return shorter / longer >= 0.85;
+  }
+  return false;
+}
+
+function shouldRevalidateSocialProfileUrl(url = '', provider = 'instagram', businessName = '') {
+  const normalized = sanitizeText(url);
+  if (!normalized) return true;
+  const canonical =
+    sanitizeText(provider).toLowerCase().includes('face')
+      ? canonicalizeFacebookProfileUrl(normalized)
+      : canonicalizeInstagramProfileUrl(normalized);
+  if (!canonical) return true;
+  return isLikelyInventedSocialProfileUrl(canonical, businessName);
+}
+
+function preferMyphonerSocialUrl(currentUrl = '', leadUrl = '', canonicalize = (value) => value) {
+  const leadCanonical = sanitizeText(canonicalize(leadUrl || ''));
+  if (leadCanonical) return leadCanonical;
+  const currentCanonical = sanitizeText(canonicalize(currentUrl || ''));
+  return currentCanonical || sanitizeText(currentUrl || '');
+}
+
+
+function buildCompactBusinessNameVariants(businessName = '') {
+  // Norwegians transliterate æ as both "ae" and "e" in handles (Kværner -> kvaerner/kverner),
+  // and å as both "a" and "aa". Generate compact variants covering the common spellings.
+  const base = String(businessName || '');
+  const spellings = [
+    { ae: 'ae', o: 'o', a: 'a' },
+    { ae: 'e', o: 'o', a: 'a' },
+    { ae: 'ae', o: 'oe', a: 'aa' },
+  ];
+  const variants = new Set();
+  for (const map of spellings) {
+    const transliterated = base
+      .replace(/[æÆ]/g, map.ae)
+      .replace(/[øØ]/g, map.o)
+      .replace(/[åÅ]/g, map.a)
+      .replace(/caf(?=e|é)/gi, 'kaf')
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase();
+    // Handles may keep or drop connector/legal words ("lisafrisoroghudpleie" keeps "og"),
+    // so generate both spellings.
+    const raw = transliterated.replace(/[^a-z0-9]+/g, '');
+    const stripped = transliterated
+      .replace(/\b(as|ans|da|enk|og|for|med)\b/g, ' ')
+      .replace(/[^a-z0-9]+/g, '');
+    if (raw) variants.add(raw);
+    if (stripped) variants.add(stripped);
+  }
+  return [...variants];
+}
+
+function isHandleSegmentPartOfBusiness(segment = '', { nameVariants = [], cityToken = '' } = {}) {
+  const value = sanitizeText(segment);
+  if (!value) return true;
+  if (value === sanitizeText(cityToken)) return true;
+  if (['norge', 'no', 'as', 'offisiell', 'official'].includes(value)) return true;
+  return nameVariants.some((variant) => variant.includes(value));
+}
+
 function hasStrongSocialIdentifierMatch({ url = '', matchedTokens = [], context = {} } = {}) {
   const profileIdentifier = extractSocialProfileIdentifier(url);
   if (!profileIdentifier) return false;
-  const normalizedBusinessName = normalizeSearchText(context.businessName || '').replace(/\s+/g, '');
-  if (normalizedBusinessName && profileIdentifier.includes(normalizedBusinessName)) return true;
-  for (const token of Array.isArray(matchedTokens) ? matchedTokens : []) {
-    const compact = normalizeSearchText(token).replace(/\s+/g, '');
-    if (compact && profileIdentifier.includes(compact)) return true;
+  const compactHandle = profileIdentifier.replace(/[._-]+/g, '');
+  if (compactHandle.length < 3) return false;
+  const nameVariants = buildCompactBusinessNameVariants(context.businessName || '');
+  const cityToken = normalizeSearchText(context.cityToken || '').replace(/\s+/g, '');
+
+  // Full business name inside the handle, or handle is a >=5 char prefix-chunk of the name.
+  for (const variant of nameVariants) {
+    if (variant.length >= 5 && compactHandle.includes(variant)) return true;
+    if (compactHandle.length >= 5 && variant.includes(compactHandle)) return true;
+  }
+
+  const tokens = (Array.isArray(matchedTokens) ? matchedTokens : [])
+    .map((token) => normalizeSearchText(token).replace(/\s+/g, ''))
+    .filter((token) => token.length >= 4);
+  if (!tokens.length) return false;
+  const matchedInHandle = tokens.filter((token) => compactHandle.includes(token));
+  if (!matchedInHandle.length) return false;
+
+  // Structural check: whatever surrounds the matched name-word in the handle must itself
+  // belong to the business name or city. This accepts "sirkusbilvask" and "rosto.oslo" but
+  // rejects "sirkusshopping", "songlagetvaarenbyneset" and "elena.olkhovska".
+  for (const token of matchedInHandle) {
+    const index = compactHandle.indexOf(token);
+    if (index < 0) continue;
+    const prefix = compactHandle.slice(0, index);
+    const suffix = compactHandle.slice(index + token.length);
+    const prefixOk = isHandleSegmentPartOfBusiness(prefix, { nameVariants, cityToken });
+    const suffixOk = isHandleSegmentPartOfBusiness(suffix, { nameVariants, cityToken });
+    if (prefixOk && suffixOk) return true;
   }
   return false;
 }
@@ -2971,10 +3125,20 @@ function selectBestSearchCandidate(
     minConfidenceMargin = 0,
     minBusinessTokenMatches = 1,
     strictConfidence = false,
+    requireIdentifierMatch = false,
   } = {}
 ) {
   const businessTokens = getSearchContextBusinessTokens(context);
-  const normalizedBusinessName = normalizeSearchText(context.businessName || '');
+  // Compare exact names without legal suffixes ("... AS") and with/without connector words,
+  // since pages write "bakeri & pizza" as often as "bakeri og pizza".
+  const simplifiedBusinessName = normalizeBusinessNameForSearchQuery(context.businessName || '');
+  const exactNameVariants = [
+    ...new Set([
+      normalizeSearchText(simplifiedBusinessName),
+      normalizeSearchText(simplifiedBusinessName.replace(/\b(og|for|med|and)\b/gi, ' ')),
+    ]),
+  ].filter(Boolean);
+  const cityToken = sanitizeText(context.cityToken);
   const scored = (Array.isArray(results) ? results : [])
     .map((entry) => {
       const url = normalizeUrl(entry?.url || '');
@@ -2983,17 +3147,29 @@ function selectBestSearchCandidate(
       const score = scoreSalesSearchCandidate(entry, context);
       const matchedTokens = collectMatchedBusinessTokens(haystack, businessTokens);
       const tokenMatches = matchedTokens.length;
-      const exactBusinessNameMatch = Boolean(normalizedBusinessName && haystack.includes(normalizedBusinessName));
+      const exactBusinessNameMatch = exactNameVariants.some((variant) => haystack.includes(variant));
+      const cityMatch = haystackHasCityToken(haystack, cityToken);
       const strongIdentifierMatch = hasStrongSocialIdentifierMatch({
         url,
         matchedTokens,
         context,
       });
+      // Google's own ranking is a real relevance signal: reward top-2 placement.
+      const position = Number.isFinite(Number(entry?.position)) ? Number(entry.position) : -1;
+      const positionBonus = position === 0 ? 2 : position === 1 ? 1 : 0;
+      // A vanity handle that does NOT match the business (e.g. a choir page mentioning the
+      // cafe) is affirmative evidence against the candidate. Numeric ids stay neutral.
+      const profileIdentifier = extractSocialProfileIdentifier(url);
+      const handleMismatchPenalty =
+        profileIdentifier && !/^\d+$/.test(profileIdentifier) && !strongIdentifierMatch ? 2 : 0;
       const confidencePoints =
         score +
         tokenMatches * 2 +
         (exactBusinessNameMatch ? 2 : 0) +
-        (strongIdentifierMatch ? 2 : 0);
+        (strongIdentifierMatch ? 2 : 0) +
+        (cityMatch ? 1 : 0) +
+        positionBonus -
+        handleMismatchPenalty;
       return {
         url,
         score,
@@ -3001,16 +3177,27 @@ function selectBestSearchCandidate(
         tokenMatches,
         exactBusinessNameMatch,
         strongIdentifierMatch,
+        cityMatch,
+        position,
         query: sanitizeText(entry?.query || ''),
       };
     })
-    .filter(Boolean)
-    .sort((a, b) => {
-      if (b.confidencePoints !== a.confidencePoints) return b.confidencePoints - a.confidencePoints;
-      if (b.score !== a.score) return b.score - a.score;
-      return b.tokenMatches - a.tokenMatches;
-    });
-  if (!scored.length) {
+    .filter(Boolean);
+  // Multiple raw results (page + subpages) often canonicalize to the same profile URL;
+  // merge them so a duplicate of the top candidate never counts as a competing runner-up.
+  const byCanonicalUrl = new Map();
+  for (const candidate of scored) {
+    const existing = byCanonicalUrl.get(candidate.url);
+    if (!existing || candidate.confidencePoints > existing.confidencePoints) {
+      byCanonicalUrl.set(candidate.url, candidate);
+    }
+  }
+  const ranked = [...byCanonicalUrl.values()].sort((a, b) => {
+    if (b.confidencePoints !== a.confidencePoints) return b.confidencePoints - a.confidencePoints;
+    if (b.score !== a.score) return b.score - a.score;
+    return b.tokenMatches - a.tokenMatches;
+  });
+  if (!ranked.length) {
     return {
       url: '',
       reason: 'no-canonical-candidates',
@@ -3019,15 +3206,21 @@ function selectBestSearchCandidate(
       scoredCount: 0,
     };
   }
-  const top = scored[0];
-  const runnerUp = scored[1] || null;
-  if (top.score < minScore) {
+  const top = ranked[0];
+  const runnerUp = ranked[1] || null;
+  // Short names can't accumulate a high absolute score (+2 per matched name word),
+  // so scale the requirement: 1-word names need 2, 2-word names need 4, capped at minScore.
+  const effectiveMinScore = Math.min(
+    Math.max(1, Number(minScore) || 1),
+    Math.max(2, businessTokens.length * 2)
+  );
+  if (top.score < effectiveMinScore) {
     return {
       url: '',
       reason: 'score-below-min',
       top,
       runnerUp,
-      scoredCount: scored.length,
+      scoredCount: ranked.length,
     };
   }
 
@@ -3040,17 +3233,40 @@ function selectBestSearchCandidate(
         reason: 'insufficient-token-matches',
         top,
         runnerUp,
-        scoredCount: scored.length,
+        scoredCount: ranked.length,
       };
     }
-    const hasHighTokenSignal = top.tokenMatches >= requiredTokenMatches + 1 && top.score >= minScore + 2;
-    if (!top.strongIdentifierMatch && !top.exactBusinessNameMatch && !hasHighTokenSignal) {
+    // Instagram business profiles virtually always incorporate the business name in the
+    // handle; exact-name mentions in bios/posts of other accounts are not enough there.
+    if (requireIdentifierMatch && !top.strongIdentifierMatch) {
+      return {
+        url: '',
+        reason: 'missing-handle-match',
+        top,
+        runnerUp,
+        scoredCount: ranked.length,
+      };
+    }
+    // Token quantity alone is not enough: generic words ("thai", "takeaway") pile up on
+    // unrelated pages. Require the handle or the exact business name to match.
+    if (!top.strongIdentifierMatch && !top.exactBusinessNameMatch) {
       return {
         url: '',
         reason: 'missing-identifier-signal',
         top,
         runnerUp,
-        scoredCount: scored.length,
+        scoredCount: ranked.length,
+      };
+    }
+    // When location is known, token-only matches need city corroboration.
+    // Exact-name or matching-handle results pass without it.
+    if (cityToken && !top.cityMatch && !top.strongIdentifierMatch && !top.exactBusinessNameMatch) {
+      return {
+        url: '',
+        reason: 'missing-city-signal',
+        top,
+        runnerUp,
+        scoredCount: ranked.length,
       };
     }
     if (runnerUp && top.confidencePoints - runnerUp.confidencePoints < Math.max(0, Number(minConfidenceMargin || 0))) {
@@ -3059,16 +3275,16 @@ function selectBestSearchCandidate(
         reason: 'ambiguous-top-candidates',
         top,
         runnerUp,
-        scoredCount: scored.length,
+        scoredCount: ranked.length,
       };
     }
-  } else if (runnerUp && top.score === runnerUp.score && top.score < minScore + 2) {
+  } else if (runnerUp && top.score === runnerUp.score && top.score < effectiveMinScore + 2) {
     return {
       url: '',
       reason: 'ambiguous-low-confidence',
       top,
       runnerUp,
-      scoredCount: scored.length,
+      scoredCount: ranked.length,
     };
   }
   return {
@@ -3076,7 +3292,7 @@ function selectBestSearchCandidate(
     reason: 'resolved',
     top,
     runnerUp,
-    scoredCount: scored.length,
+    scoredCount: ranked.length,
   };
 }
 
@@ -3130,6 +3346,31 @@ function extractMyphonerLocationHint(lead = {}, leadDataMap = new Map()) {
   ]);
 }
 
+function extractCityTokenFromLocationHint(locationHint = '') {
+  const parts = normalizeSearchText(locationHint)
+    .split(' ')
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+  if (!parts.length) return '';
+  const streetLike =
+    /^(?:.*(?:vegen|veien|gata|gaten|gate|vei|veg|street|road|alleen|alle|plass|plassen)|[a-z]+(?:vn|gt))$/;
+  // Norwegian addresses are usually "... <postal> <city>" — prefer the token after postal code.
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    if (!/^\d{4}$/.test(parts[index])) continue;
+    const candidate = parts[index + 1];
+    if (candidate && candidate.length >= 3 && !/^\d+$/.test(candidate) && !streetLike.test(candidate)) {
+      return candidate;
+    }
+  }
+  // Otherwise take the last non-street, non-numeric token (city/post place).
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const candidate = parts[index];
+    if (!candidate || candidate.length < 3 || /^\d+$/.test(candidate) || streetLike.test(candidate)) continue;
+    return candidate;
+  }
+  return '';
+}
+
 function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new Map()) {
   const source = lead && typeof lead === 'object' ? lead : {};
   const businessName = sanitizeText(
@@ -3139,10 +3380,7 @@ function buildSalesLinkSearchContext(client = {}, lead = {}, leadDataMap = new M
       pickLeadDataValue(leadDataMap, ['organization_name', 'org_name'])
   );
   const locationHint = sanitizeText(extractMyphonerLocationHint(lead, leadDataMap));
-  const cityToken = normalizeSearchText(locationHint)
-    .split(' ')
-    .map((entry) => sanitizeText(entry))
-    .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) || '';
+  const cityToken = extractCityTokenFromLocationHint(locationHint);
   const organizationNumber = sanitizeText(extractOrganizationNumberFromLead(lead, leadDataMap));
   const businessTokens = buildBusinessSearchTokens([businessName]);
   return {
@@ -3169,11 +3407,12 @@ function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {})
   if (!businessName && !simplifiedBusinessName) return [];
   const locationHint = sanitizeText(context?.locationHint || '');
   const cityToken = sanitizeText(context?.cityToken || '');
+  const organizationNumber = sanitizeText(context?.organizationNumber || '').replace(/\D+/g, '');
   const fragments = [
-    [businessName, socialProvider, locationHint],
-    [`"${businessName}"`, `site:${siteDomain}`],
-    [simplifiedBusinessName, `site:${siteDomain}`],
-    [simplifiedBusinessName, socialProvider, cityToken],
+    [businessName, socialProvider, cityToken || locationHint, 'Norge'],
+    [`"${businessName}"`, `site:${siteDomain}`, cityToken],
+    [simplifiedBusinessName, `site:${siteDomain}`, cityToken || 'Norge'],
+    [simplifiedBusinessName, socialProvider, cityToken, organizationNumber],
   ];
   const querySet = new Set();
   for (const parts of fragments) {
@@ -3186,7 +3425,7 @@ function buildSocialSearchQueries({ provider = 'instagram', context = {} } = {})
     if (!query || query.length < 4) continue;
     querySet.add(query);
   }
-  return [...querySet].slice(0, 3);
+  return [...querySet].slice(0, 4);
 }
 
 async function lookupBrregEntityByOrganizationNumber(orgNumber = '') {
@@ -3209,6 +3448,7 @@ async function resolveBestSearchCandidate({
   minConfidenceMargin = 0,
   minBusinessTokenMatches = 1,
   strictConfidence = false,
+  requireIdentifierMatch = false,
 } = {}) {
   const list = [...new Set((Array.isArray(queries) ? queries : [queries]).map((entry) => sanitizeText(entry)).filter(Boolean))];
   if (!list.length) {
@@ -3223,23 +3463,11 @@ async function resolveBestSearchCandidate({
     };
   }
 
+  // Pool results from ALL queries before selecting, so the correct profile competes even
+  // when the first query surfaces a plausible-but-wrong candidate.
   let queryCount = 0;
   let rawResultCount = 0;
-  let bestFailure = null;
-
-  const shouldReplaceBestFailure = (current = null, next = null) => {
-    if (!next) return false;
-    if (!current) return true;
-    const currentTop = current?.top || null;
-    const nextTop = next?.top || null;
-    const currentPoints = Number(currentTop?.confidencePoints || currentTop?.score || 0);
-    const nextPoints = Number(nextTop?.confidencePoints || nextTop?.score || 0);
-    if (nextPoints !== currentPoints) return nextPoints > currentPoints;
-    const currentCandidates = Number(current?.uniqueCandidateCount || 0);
-    const nextCandidates = Number(next?.uniqueCandidateCount || 0);
-    return nextCandidates > currentCandidates;
-  };
-
+  const pooledByUrl = new Map();
   for (const query of list) {
     queryCount += 1;
     const serpResults = await searchSerpApi(query);
@@ -3251,64 +3479,55 @@ async function resolveBestSearchCandidate({
       if (normalizedResults.length) provider = 'brave';
     }
     rawResultCount += normalizedResults.length;
-
-    if (!normalizedResults.length) {
-      const failure = {
-        url: '',
-        reason: 'no-search-results',
-        queryCount,
-        rawResultCount,
-        uniqueCandidateCount: 0,
-        top: null,
-        runnerUp: null,
-      };
-      if (shouldReplaceBestFailure(bestFailure, failure)) bestFailure = failure;
-      continue;
-    }
-
-    const dedupedResults = [];
-    const seenUrls = new Set();
-    for (const entry of normalizedResults) {
+    normalizedResults.forEach((entry, index) => {
       const key = coerceHttpUrl(entry?.url || '');
-      if (!key || seenUrls.has(key)) continue;
-      seenUrls.add(key);
-      dedupedResults.push({
+      if (!key) return;
+      const existing = pooledByUrl.get(key);
+      if (existing) {
+        // Keep the best (lowest) ranking position seen across queries.
+        if (index < Number(existing.position)) existing.position = index;
+        return;
+      }
+      pooledByUrl.set(key, {
         ...entry,
         query,
         provider,
         url: key,
+        position: index,
       });
-    }
-
-    const selected = selectBestSearchCandidate(dedupedResults, {
-      context,
-      normalizeUrl,
-      minScore,
-      minConfidenceMargin,
-      minBusinessTokenMatches,
-      strictConfidence,
     });
-    const candidateResolution = {
-      url: sanitizeText(selected?.url || ''),
-      reason: sanitizeText(selected?.reason || 'unknown'),
+  }
+  const pooledResults = [...pooledByUrl.values()];
+
+  if (!pooledResults.length) {
+    return {
+      url: '',
+      reason: 'no-search-results',
       queryCount,
       rawResultCount,
-      uniqueCandidateCount: dedupedResults.length,
-      top: selected?.top || null,
-      runnerUp: selected?.runnerUp || null,
+      uniqueCandidateCount: 0,
+      top: null,
+      runnerUp: null,
     };
-    if (candidateResolution.url) return candidateResolution;
-    if (shouldReplaceBestFailure(bestFailure, candidateResolution)) bestFailure = candidateResolution;
   }
-  if (bestFailure) return bestFailure;
+
+  const selected = selectBestSearchCandidate(pooledResults, {
+    context,
+    normalizeUrl,
+    minScore,
+    minConfidenceMargin,
+    minBusinessTokenMatches,
+    strictConfidence,
+    requireIdentifierMatch,
+  });
   return {
-    url: '',
-    reason: rawResultCount ? 'no-canonical-candidates' : 'no-search-results',
+    url: sanitizeText(selected?.url || ''),
+    reason: sanitizeText(selected?.reason || 'unknown'),
     queryCount,
     rawResultCount,
-    uniqueCandidateCount: 0,
-    top: null,
-    runnerUp: null,
+    uniqueCandidateCount: pooledResults.length,
+    top: selected?.top || null,
+    runnerUp: selected?.runnerUp || null,
   };
 }
 
@@ -3361,10 +3580,19 @@ async function enrichSalesClientLinksFromMyphoner({
     : currentWebsiteDomain;
   const resolvedMeetingPlace = currentMeetingPlace || leadMeetingPlace;
   const socialDiagnostics = {};
+  const socialBusinessNameHint = sanitizeText(resolvedBusinessName || currentBusinessName);
 
-  if (!nextDetails.instagramUrl && leadDetails.instagramUrl) nextDetails.instagramUrl = leadDetails.instagramUrl;
-  if (!nextDetails.facebookUrl && leadDetails.facebookUrl) nextDetails.facebookUrl = leadDetails.facebookUrl;
-  if (!nextDetails.proffUrl && leadDetails.proffUrl) nextDetails.proffUrl = leadDetails.proffUrl;
+  // MyPhoner is the source of truth when it already has profile URLs.
+  nextDetails.instagramUrl = preferMyphonerSocialUrl(
+    nextDetails.instagramUrl,
+    leadDetails.instagramUrl,
+    canonicalizeInstagramProfileUrl
+  );
+  nextDetails.facebookUrl = preferMyphonerSocialUrl(
+    nextDetails.facebookUrl,
+    leadDetails.facebookUrl,
+    canonicalizeFacebookProfileUrl
+  );
   if (!nextDetails.googleBusinessProfile && leadDetails.googleBusinessProfile) {
     nextDetails.googleBusinessProfile = leadDetails.googleBusinessProfile;
   }
@@ -3404,12 +3632,7 @@ async function enrichSalesClientLinksFromMyphoner({
       ...searchContext,
       locationHint: enrichedLocationHint || searchContext.locationHint,
       cityToken:
-        searchContext.cityToken ||
-        normalizeSearchText(enrichedLocationHint)
-          .split(' ')
-          .map((entry) => sanitizeText(entry))
-          .find((entry) => entry.length >= 3 && !/^\d+$/.test(entry)) ||
-        '',
+        searchContext.cityToken || extractCityTokenFromLocationHint(enrichedLocationHint),
       businessTokens: buildBusinessSearchTokens([
         searchContext.businessName,
         enrichedBusinessName,
@@ -3421,6 +3644,10 @@ async function enrichSalesClientLinksFromMyphoner({
     ...searchContext,
     businessName: baseBusinessName || searchContext.businessName,
   };
+
+  // Proff is orgnr-first: MyPhoner has no proff link, but its orgnr builds a
+  // deterministic proff.no/selskap/x/x/x/<orgnr> URL that Proff resolves itself.
+  if (!nextDetails.proffUrl && leadDetails.proffUrl) nextDetails.proffUrl = leadDetails.proffUrl;
 
   let proffResolution = {
     url: sanitizeText(nextDetails.proffUrl),
@@ -3451,6 +3678,30 @@ async function enrichSalesClientLinksFromMyphoner({
   }
   socialDiagnostics.proff = proffResolution;
 
+  const myphonerInstagramUrl = sanitizeText(canonicalizeInstagramProfileUrl(leadDetails.instagramUrl));
+  const myphonerFacebookUrl = sanitizeText(canonicalizeFacebookProfileUrl(leadDetails.facebookUrl));
+  // Never wipe MyPhoner-provided profiles; only re-check likely invented auto-fill URLs.
+  const shouldSearchInstagram =
+    !myphonerInstagramUrl &&
+    shouldRevalidateSocialProfileUrl(nextDetails.instagramUrl, 'instagram', socialBusinessNameHint);
+  const shouldSearchFacebook =
+    !myphonerFacebookUrl &&
+    shouldRevalidateSocialProfileUrl(nextDetails.facebookUrl, 'facebook', socialBusinessNameHint);
+  if (shouldSearchInstagram && nextDetails.instagramUrl) {
+    socialDiagnostics.instagramCleared = {
+      previousUrl: sanitizeText(nextDetails.instagramUrl),
+      reason: 'likely-invented-handle',
+    };
+    nextDetails.instagramUrl = '';
+  }
+  if (shouldSearchFacebook && nextDetails.facebookUrl) {
+    socialDiagnostics.facebookCleared = {
+      previousUrl: sanitizeText(nextDetails.facebookUrl),
+      reason: 'likely-invented-handle',
+    };
+    nextDetails.facebookUrl = '';
+  }
+
   let instagramResolution = {
     url: sanitizeText(nextDetails.instagramUrl),
     reason: sanitizeText(nextDetails.instagramUrl) ? 'already-present' : 'not-attempted',
@@ -3472,8 +3723,11 @@ async function enrichSalesClientLinksFromMyphoner({
       minConfidenceMargin: Math.max(0, MYPHONER_SOCIAL_CONFIDENCE_MIN_MARGIN),
       minBusinessTokenMatches: Math.max(1, MYPHONER_SOCIAL_CONFIDENCE_MIN_TOKEN_MATCHES),
       strictConfidence: true,
+      requireIdentifierMatch: true,
     });
     if (instagramResolution.url) nextDetails.instagramUrl = instagramResolution.url;
+  } else if (sanitizeText(leadDetails.instagramUrl)) {
+    instagramResolution.reason = 'myphoner-social-url';
   }
   socialDiagnostics.instagram = instagramResolution;
 
@@ -3500,10 +3754,13 @@ async function enrichSalesClientLinksFromMyphoner({
       strictConfidence: true,
     });
     if (facebookResolution.url) nextDetails.facebookUrl = facebookResolution.url;
+  } else if (sanitizeText(leadDetails.facebookUrl)) {
+    facebookResolution.reason = 'myphoner-social-url';
   }
   socialDiagnostics.facebook = facebookResolution;
 
-  if (MYPHONER_SOCIAL_FORCE_FILL_ENABLED && (!nextDetails.instagramUrl || !nextDetails.facebookUrl)) {
+  // Mirror a verified opposite-platform handle only. Business-name slug invention stays opt-in.
+  if (!nextDetails.instagramUrl || !nextDetails.facebookUrl) {
     const fallbackSocial = inferFallbackSocialLinks({
       businessName: baseBusinessName || currentClient.businessName,
       instagramUrl: nextDetails.instagramUrl,
@@ -3511,25 +3768,39 @@ async function enrichSalesClientLinksFromMyphoner({
     });
 
     if (!nextDetails.instagramUrl && fallbackSocial.instagramUrl) {
-      nextDetails.instagramUrl = fallbackSocial.instagramUrl;
-      socialDiagnostics.instagram = {
-        ...(socialDiagnostics.instagram || {}),
-        url: fallbackSocial.instagramUrl,
-        reason: 'force-fill-handle',
-        forced: true,
-        fallbackSource: sanitizeText(fallbackSocial.sources?.instagram),
-      };
+      const allowFill =
+        fallbackSocial.sources?.instagram === 'from-facebook-handle' || MYPHONER_SOCIAL_FORCE_FILL_ENABLED;
+      if (allowFill) {
+        nextDetails.instagramUrl = fallbackSocial.instagramUrl;
+        socialDiagnostics.instagram = {
+          ...(socialDiagnostics.instagram || {}),
+          url: fallbackSocial.instagramUrl,
+          reason:
+            fallbackSocial.sources?.instagram === 'from-facebook-handle'
+              ? 'mirror-facebook-handle'
+              : 'force-fill-handle',
+          forced: fallbackSocial.sources?.instagram !== 'from-facebook-handle',
+          fallbackSource: sanitizeText(fallbackSocial.sources?.instagram),
+        };
+      }
     }
 
     if (!nextDetails.facebookUrl && fallbackSocial.facebookUrl) {
-      nextDetails.facebookUrl = fallbackSocial.facebookUrl;
-      socialDiagnostics.facebook = {
-        ...(socialDiagnostics.facebook || {}),
-        url: fallbackSocial.facebookUrl,
-        reason: 'force-fill-handle',
-        forced: true,
-        fallbackSource: sanitizeText(fallbackSocial.sources?.facebook),
-      };
+      const allowFill =
+        fallbackSocial.sources?.facebook === 'from-instagram-handle' || MYPHONER_SOCIAL_FORCE_FILL_ENABLED;
+      if (allowFill) {
+        nextDetails.facebookUrl = fallbackSocial.facebookUrl;
+        socialDiagnostics.facebook = {
+          ...(socialDiagnostics.facebook || {}),
+          url: fallbackSocial.facebookUrl,
+          reason:
+            fallbackSocial.sources?.facebook === 'from-instagram-handle'
+              ? 'mirror-instagram-handle'
+              : 'force-fill-handle',
+          forced: fallbackSocial.sources?.facebook !== 'from-instagram-handle',
+          fallbackSource: sanitizeText(fallbackSocial.sources?.facebook),
+        };
+      }
     }
   }
 
@@ -3539,6 +3810,15 @@ async function enrichSalesClientLinksFromMyphoner({
     const nextValue = sanitizeText(normalizedNext[field]);
     if (nextValue && nextValue !== previous) return true;
     if (field === 'proffUrl' && previous && !nextValue && shouldResolveProffUrl(previous)) return true;
+    // Persist clearing of invented/wrong social auto-fill links.
+    if (
+      (field === 'instagramUrl' || field === 'facebookUrl') &&
+      previous &&
+      !nextValue &&
+      isLikelyInventedSocialProfileUrl(previous, socialBusinessNameHint)
+    ) {
+      return true;
+    }
     return false;
   });
   if (!currentMeetingPlace && leadMeetingPlace) changedFields.push('meetingPlace');
@@ -3631,19 +3911,29 @@ function scheduleSalesClientLinkEnrichment({
   }, 0);
 }
 
-function collectMissingSalesLinkFields(details = {}) {
+function collectMissingSalesLinkFields(details = {}, businessName = '') {
   const normalized = normalizeSalesDetailLinks(details || {});
   const missing = [];
   if (!sanitizeText(normalized.googleBusinessProfile)) missing.push('googleBusinessProfile');
   if (shouldResolveProffUrl(normalized.proffUrl)) missing.push('proffUrl');
-  if (!sanitizeText(normalized.instagramUrl)) missing.push('instagramUrl');
-  if (!sanitizeText(normalized.facebookUrl)) missing.push('facebookUrl');
+  if (
+    !sanitizeText(normalized.instagramUrl) ||
+    isLikelyInventedSocialProfileUrl(normalized.instagramUrl, businessName)
+  ) {
+    missing.push('instagramUrl');
+  }
+  if (
+    !sanitizeText(normalized.facebookUrl) ||
+    isLikelyInventedSocialProfileUrl(normalized.facebookUrl, businessName)
+  ) {
+    missing.push('facebookUrl');
+  }
   return missing;
 }
 
 function collectMissingSalesBackfillFields(client = {}) {
   const source = client && typeof client === 'object' ? client : {};
-  const missing = collectMissingSalesLinkFields(source?.details || {});
+  const missing = collectMissingSalesLinkFields(source?.details || {}, source?.businessName || '');
   if (!sanitizeText(source?.meetingPlace)) missing.push('meetingPlace');
   return missing;
 }
@@ -4472,6 +4762,7 @@ async function backfillExistingSalesClientLinks({
       const remainingMissing = collectMissingSalesBackfillFields({
         details: resolvedDetails,
         meetingPlace: resolvedMeetingPlace,
+        businessName: sanitizeText(result?.resolvedBusinessName || workingClient?.businessName),
       });
       if (remainingMissing.includes('googleBusinessProfile')) {
         if (googleRaw) clientReasons.push('google-url-unparseable');
@@ -4888,7 +5179,13 @@ async function upsertSalesClientFromMyphonerLead({
     source.comment,
     pickLeadDataValue(leadDataMap, ['winner_comment', 'comment', 'notes', 'note']),
   ]);
-  const storedRecording = leadId ? myphonerIntegration.getRecordingForLead(leadId) : null;
+  const phoneForRecording =
+    pickMyphonerLeadPhone(source, leadDataMap, winnerCommentText) ||
+    normalizePhoneCandidate(source.destination_number || source.tertiary_identifier || '');
+  const storedRecording =
+    (leadId ? myphonerIntegration.getRecordingForLead(leadId) : null) ||
+    (phoneForRecording ? myphonerIntegration.getRecordingForPhone(phoneForRecording) : null) ||
+    null;
   const resolvedOwnerId = await resolveMyphonerSalesOwnerId(source, existing?.ownerId || '');
   const myphonerPatch = buildMyphonerMetaPatch({
     lead: source,
@@ -4935,7 +5232,11 @@ async function upsertSalesClientFromMyphonerLead({
     client = sales.createSalesClient(createPayload);
   }
   if (!client) throw makeHttpError(500, 'Failed creating/updating sales client from Myphoner.');
-  const syncResult = await maybeSyncCalendar(client, existing || null);
+  const syncResult = await maybeSyncCalendar(client, existing || null, {
+    notifyAttendees: false,
+    actorAccountKey: '',
+    fallbackAccountKeys: await resolveCalendarFallbackAccountKeys(client?.ownerId || '', ''),
+  });
   const finalClient = syncResult.client || client;
   scheduleSalesClientLinkEnrichment({
     clientId: sanitizeText(finalClient?.id),
@@ -4969,11 +5270,31 @@ async function processMyphonerWinnerFromResource(resourcePath = '', { winnerCate
     winnerCategory,
     winnerComment,
   });
+  let client = upserted.client;
+  const recordingAttach = await attachCachedOrPendingRecordingToClient(client, {
+    syncReason: 'winner-recording-attached',
+  });
+  if (recordingAttach.client) client = recordingAttach.client;
+  // Always schedule a short follow-up in case new_call arrives slightly after winner.
+  const followUpCallId = sanitizeText(client?.myphoner?.latestCallId || recordingAttach.callId);
+  if (followUpCallId && !sanitizeText(client?.myphoner?.latestRecordingUrl)) {
+    myphonerIntegration.enqueuePendingRecording(
+      {
+        callId: followUpCallId,
+        leadId: sanitizeText(client?.myphoner?.leadId),
+        destinationNumber: sanitizeText(client?.contactPhone || client?.myphoner?.latestCallDestinationNumber),
+        reason: 'winner-followup-awaiting-recording',
+      },
+      { delayMs: recordingRetryDelayMs(0) }
+    );
+  }
   return {
     ok: true,
     created: Boolean(upserted.created),
-    clientId: sanitizeText(upserted.client?.id),
-    leadId: sanitizeText(upserted.client?.myphoner?.leadId),
+    clientId: sanitizeText(client?.id),
+    leadId: sanitizeText(client?.myphoner?.leadId),
+    recordingAttached: Boolean(recordingAttach.attached),
+    recordingReason: sanitizeText(recordingAttach.reason),
     warnings: upserted.warnings || [],
   };
 }
@@ -4987,6 +5308,7 @@ function extractLeadIdFromCallPayload(call = {}) {
     source.leadLocation,
     source?.lead?.location,
     source.resource_url,
+    source.location,
   ];
   for (const candidate of locationCandidates) {
     const resourcePath = myphonerApi.parseMyPhonerResourcePath(candidate, myphonerApi.getMyPhonerConfig());
@@ -5008,14 +5330,290 @@ function extractRecordingFromCall(call = {}, sourceResourceUrl = '') {
   const latest = normalized.sort(
     (a, b) => new Date(b.callStartedAt || 0).getTime() - new Date(a.callStartedAt || 0).getTime()
   )[0] || null;
+  const destinationNumber = sanitizeText(source.destination_number || source.destinationNumber);
   return {
     recordingUrl: sanitizeText(latest?.recordingUrl),
-    callId: sanitizeText(source.id || myphonerApi.extractMyPhonerIdFromResource(sourceResourceUrl, 'calls')),
+    callId: sanitizeText(
+      source.id ||
+        source.call_id ||
+        source.callId ||
+        myphonerApi.extractMyPhonerIdFromResource(sourceResourceUrl, 'calls') ||
+        myphonerApi.extractMyPhonerIdFromResource(source.location || '', 'calls')
+    ),
+    leadId: extractLeadIdFromCallPayload(source),
     callStartedAt: sanitizeText(latest?.callStartedAt || myphonerApi.parseMyPhonerDateToIso(source.started_at)),
     durationSeconds: Number.isFinite(Number(source.duration)) ? Number(source.duration) : 0,
     userEmail: sanitizeText(source.user_email || source.userEmail),
-    destinationNumber: sanitizeText(source.destination_number || source.destinationNumber),
-    sourceResourceUrl: sanitizeText(sourceResourceUrl),
+    destinationNumber,
+    destinationDigits: normalizePhoneDigits(destinationNumber),
+    sourceResourceUrl: sanitizeText(sourceResourceUrl || source.location || ''),
+  };
+}
+
+function recordingRetryDelayMs(attempt = 0) {
+  const delays = MYPHONER_RECORDING_RETRY_DELAYS_MS.length
+    ? MYPHONER_RECORDING_RETRY_DELAYS_MS
+    : [15_000, 30_000, 60_000, 120_000, 300_000, 600_000];
+  const index = Math.max(0, Math.min(delays.length - 1, Number(attempt) || 0));
+  return delays[index];
+}
+
+function isLocalOrManagedRecordingUrl(url = '') {
+  const raw = sanitizeText(url);
+  if (!raw) return false;
+  if (raw.includes('/myphoner-audio/') || raw.includes('/myphoner-recordings/')) return true;
+  return false;
+}
+
+function preferRecordingUrl(primary = '', secondary = '') {
+  const first = sanitizeText(primary);
+  const second = sanitizeText(secondary);
+  if (first && !isLocalOrManagedRecordingUrl(first) && second && isLocalOrManagedRecordingUrl(second)) {
+    // Prefer durable local copy once downloaded.
+    return second;
+  }
+  return first || second;
+}
+
+async function ensureMyphonerRecordingsDir() {
+  await fs.mkdir(MYPHONER_RECORDINGS_DIR, { recursive: true });
+  return MYPHONER_RECORDINGS_DIR;
+}
+
+function guessRecordingExtension(contentType = '', sourceUrl = '') {
+  const type = sanitizeText(contentType).toLowerCase();
+  if (type.includes('wav')) return '.wav';
+  if (type.includes('mpeg') || type.includes('mp3')) return '.mp3';
+  if (type.includes('mp4') || type.includes('m4a')) return '.m4a';
+  if (type.includes('ogg')) return '.ogg';
+  if (type.includes('flac')) return '.flac';
+  try {
+    const pathname = new URL(sourceUrl).pathname || '';
+    const ext = path.extname(pathname).toLowerCase();
+    if (LOCAL_RECORDING_EXTENSIONS.has(ext)) return ext;
+  } catch {
+    // ignore
+  }
+  return '.wav';
+}
+
+async function downloadMyphonerRecordingToLocal(recordingUrl = '', callId = '') {
+  if (!MYPHONER_RECORDING_DOWNLOAD_ENABLED) return '';
+  const sourceUrl = coerceHttpUrl(recordingUrl);
+  if (!sourceUrl) return '';
+  const safeCallId = sanitizeText(callId).replace(/[^a-zA-Z0-9_-]/g, '') || `rec-${Date.now()}`;
+  const myphonerConfig = myphonerApi.getMyPhonerConfig();
+  const myphonerHost = sanitizeText(myphonerConfig?.subdomain)
+    ? `${sanitizeText(myphonerConfig.subdomain).toLowerCase()}.myphoner.com`
+    : '';
+  let targetHost = '';
+  try {
+    targetHost = new URL(sourceUrl).host.toLowerCase();
+  } catch {
+    return '';
+  }
+  const headers = { Accept: '*/*' };
+  if (myphonerHost && targetHost === myphonerHost && myphonerApi.isMyPhonerConfigured(myphonerConfig)) {
+    headers.Authorization = `Token "${myphonerConfig.apiKey}"`;
+  }
+  try {
+    const response = await fetch(sourceUrl, { method: 'GET', headers, redirect: 'follow' });
+    if (!response.ok) {
+      console.warn(`[myphoner recording] download failed ${response.status} for call ${safeCallId}`);
+      return '';
+    }
+    const contentType = sanitizeText(response.headers.get('content-type'));
+    const ext = guessRecordingExtension(contentType, sourceUrl);
+    const fileName = `${safeCallId}${ext}`;
+    await ensureMyphonerRecordingsDir();
+    const absolutePath = path.join(MYPHONER_RECORDINGS_DIR, fileName);
+    const payload = Buffer.from(await response.arrayBuffer());
+    if (!payload.length) return '';
+    await fs.writeFile(absolutePath, payload);
+    const baseUrl = normalizeHttpBaseUrl(process.env.APP_URL || '');
+    if (!baseUrl) return `/myphoner-recordings/${encodeURIComponent(fileName)}`;
+    return `${baseUrl}/myphoner-recordings/${encodeURIComponent(fileName)}`;
+  } catch (error) {
+    console.warn(`[myphoner recording] download error for call ${safeCallId}:`, sanitizeText(error?.message) || error);
+    return '';
+  }
+}
+
+async function enrichRecordingMetaWithLocalCopy(recordingMeta = {}) {
+  const meta = recordingMeta && typeof recordingMeta === 'object' ? { ...recordingMeta } : {};
+  const sourceUrl = coerceHttpUrl(meta.recordingUrl || meta.localRecordingUrl);
+  if (!sourceUrl) return meta;
+  if (isLocalOrManagedRecordingUrl(sourceUrl)) {
+    meta.localRecordingUrl = sourceUrl;
+    meta.recordingUrl = sourceUrl;
+    return meta;
+  }
+  const localUrl = await downloadMyphonerRecordingToLocal(sourceUrl, meta.callId || '');
+  if (localUrl) {
+    meta.localRecordingUrl = localUrl;
+    meta.recordingUrl = localUrl;
+  }
+  return meta;
+}
+
+function findSalesClientForRecordingMeta(recordingMeta = {}, leadId = '') {
+  const meta = recordingMeta && typeof recordingMeta === 'object' ? recordingMeta : {};
+  const resolvedLeadId = sanitizeText(leadId || meta.leadId);
+  if (resolvedLeadId) {
+    const byLead = sales.getSalesClientByMyphonerLeadId(resolvedLeadId);
+    if (byLead) return byLead;
+  }
+  const byPhone = findSalesClientByPhone(meta.destinationNumber || meta.destinationDigits || '');
+  if (byPhone) return byPhone;
+  const callId = sanitizeText(meta.callId);
+  if (callId) {
+    const byCall = sales.getSalesClients().find((client) => sanitizeText(client?.myphoner?.latestCallId) === callId);
+    if (byCall) return byCall;
+  }
+  return null;
+}
+
+function applyRecordingMetaToSalesClient(client, recordingMeta = {}, syncReason = 'recording-url-synced') {
+  if (!client?.id) return null;
+  const meta = recordingMeta && typeof recordingMeta === 'object' ? recordingMeta : {};
+  const recordingUrl = preferRecordingUrl(meta.localRecordingUrl, meta.recordingUrl);
+  const patch = buildMyphonerMetaPatch({
+    lead: { id: meta.leadId || client.myphoner?.leadId, list_name: client?.myphoner?.listName || '' },
+    resourcePath: client?.myphoner?.leadResourceUrl || meta.sourceResourceUrl || '',
+    recording: {
+      ...meta,
+      recordingUrl,
+    },
+    eventType: 'recording',
+  });
+  return sales.updateSalesClient(client.id, {
+    myphoner: {
+      ...(client.myphoner || {}),
+      ...patch,
+      latestRecordingUrl: sanitizeText(recordingUrl || client.myphoner?.latestRecordingUrl),
+      latestCallId: sanitizeText(meta.callId || client.myphoner?.latestCallId),
+      latestCallStartedAt: sanitizeText(meta.callStartedAt || client.myphoner?.latestCallStartedAt),
+      latestCallDurationSeconds: Number.isFinite(Number(meta.durationSeconds))
+        ? Number(meta.durationSeconds)
+        : Number(client.myphoner?.latestCallDurationSeconds || 0),
+      latestCallUserEmail: sanitizeText(meta.userEmail || client.myphoner?.latestCallUserEmail),
+      latestCallDestinationNumber: sanitizeText(
+        meta.destinationNumber || client.myphoner?.latestCallDestinationNumber
+      ),
+      latestRecordingSyncReason: sanitizeText(
+        recordingUrl ? syncReason || 'recording-url-synced' : syncReason || 'recording-url-missing'
+      ),
+    },
+  });
+}
+
+function cacheRecordingMetaEverywhere(recordingMeta = {}, leadId = '') {
+  const meta = {
+    ...(recordingMeta && typeof recordingMeta === 'object' ? recordingMeta : {}),
+    leadId: sanitizeText(leadId || recordingMeta?.leadId),
+    destinationDigits: normalizePhoneDigits(recordingMeta?.destinationDigits || recordingMeta?.destinationNumber),
+  };
+  return myphonerIntegration.cacheRecordingMeta(meta);
+}
+
+function resolveCachedRecordingForClient(client = {}) {
+  const leadId = sanitizeText(client?.myphoner?.leadId);
+  const callId = sanitizeText(client?.myphoner?.latestCallId);
+  const phone = sanitizeText(client?.contactPhone || client?.myphoner?.latestCallDestinationNumber);
+  const byLead = leadId ? myphonerIntegration.getRecordingForLead(leadId) : null;
+  if (byLead?.recordingUrl || byLead?.localRecordingUrl) return byLead;
+  const byCall = callId ? myphonerIntegration.getRecordingForCall(callId) : null;
+  if (byCall?.recordingUrl || byCall?.localRecordingUrl) return byCall;
+  const byPhone = phone ? myphonerIntegration.getRecordingForPhone(phone) : null;
+  if (byPhone?.recordingUrl || byPhone?.localRecordingUrl) return byPhone;
+  return byLead || byCall || byPhone || null;
+}
+
+async function attachCachedOrPendingRecordingToClient(client = {}, options = {}) {
+  const current = client && typeof client === 'object' ? client : null;
+  if (!current?.id) return { attached: false, reason: 'missing-client' };
+  if (sanitizeText(current?.myphoner?.latestRecordingUrl) && !options.force) {
+    return { attached: false, reason: 'already-has-recording', client: current };
+  }
+  let cached = resolveCachedRecordingForClient(current);
+  if (!(cached?.recordingUrl || cached?.localRecordingUrl)) {
+    const callId = sanitizeText(current?.myphoner?.latestCallId || cached?.callId);
+    if (callId) {
+      myphonerIntegration.enqueuePendingRecording(
+        {
+          callId,
+          leadId: sanitizeText(current?.myphoner?.leadId),
+          destinationNumber: sanitizeText(current?.contactPhone || current?.myphoner?.latestCallDestinationNumber),
+          reason: 'winner-awaiting-recording-url',
+        },
+        { delayMs: recordingRetryDelayMs(0), resetAttempts: true }
+      );
+      return { attached: false, reason: 'queued-pending-call', callId };
+    }
+    return { attached: false, reason: 'no-cached-recording' };
+  }
+  cached = await enrichRecordingMetaWithLocalCopy(cached);
+  cacheRecordingMetaEverywhere(cached, current?.myphoner?.leadId);
+  const updated = applyRecordingMetaToSalesClient(
+    current,
+    cached,
+    options.syncReason || 'winner-recording-attached'
+  );
+  if (cached.callId) myphonerIntegration.clearPendingRecording(cached.callId);
+  return { attached: Boolean(updated?.myphoner?.latestRecordingUrl), client: updated || current, reason: '' };
+}
+
+async function ingestMyphonerCallRecording(callPayload = {}, options = {}) {
+  const sourceResourceUrl = sanitizeText(options.sourceResourceUrl || callPayload?.location || '');
+  let recordingMeta = extractRecordingFromCall(callPayload, sourceResourceUrl);
+  const leadId = sanitizeText(options.leadId || recordingMeta.leadId);
+  recordingMeta.leadId = leadId;
+  if (recordingMeta.recordingUrl) {
+    recordingMeta = await enrichRecordingMetaWithLocalCopy(recordingMeta);
+  }
+  cacheRecordingMetaEverywhere(recordingMeta, leadId);
+  if (recordingMeta.callId && !recordingMeta.recordingUrl) {
+    myphonerIntegration.enqueuePendingRecording(
+      {
+        callId: recordingMeta.callId,
+        leadId,
+        destinationNumber: recordingMeta.destinationNumber,
+        sourceResourceUrl,
+        reason: options.pendingReason || 'call-without-recording-url',
+      },
+      { delayMs: recordingRetryDelayMs(0) }
+    );
+  }
+  if (recordingMeta.callId && recordingMeta.recordingUrl) {
+    myphonerIntegration.clearPendingRecording(recordingMeta.callId);
+  }
+  const targetClient = findSalesClientForRecordingMeta(recordingMeta, leadId);
+  if (!targetClient) {
+    return {
+      ok: true,
+      updated: false,
+      pending: Boolean(recordingMeta.callId && !recordingMeta.recordingUrl),
+      leadId,
+      callId: recordingMeta.callId,
+      reason: recordingMeta.recordingUrl
+        ? 'target-client-not-found'
+        : options.pendingReason || 'call-without-recording-url',
+      recordingUrl: recordingMeta.recordingUrl || '',
+    };
+  }
+  const syncReason = recordingMeta.recordingUrl
+    ? options.syncReason || 'recording-url-synced'
+    : options.pendingReason || 'call-without-recording-url';
+  const updated = applyRecordingMetaToSalesClient(targetClient, recordingMeta, syncReason);
+  return {
+    ok: true,
+    updated: Boolean(updated),
+    pending: Boolean(recordingMeta.callId && !recordingMeta.recordingUrl),
+    leadId: leadId || targetClient.myphoner?.leadId || '',
+    callId: recordingMeta.callId,
+    clientId: sanitizeText(updated?.id || targetClient.id),
+    reason: recordingMeta.recordingUrl ? '' : syncReason,
+    recordingUrl: recordingMeta.recordingUrl || '',
   };
 }
 
@@ -5051,17 +5649,52 @@ function extractCallIdFromRecordingPayload(payload = {}) {
   return '';
 }
 
+function extractCallIdFromAnyPayload(payload = {}, resourcePath = '') {
+  const direct = extractCallIdFromRecordingPayload(payload);
+  if (direct) return direct;
+  const fromResource = myphonerApi.extractMyPhonerIdFromResource(resourcePath, 'calls');
+  if (fromResource) return sanitizeText(fromResource);
+  const source = payload && typeof payload === 'object' ? payload : {};
+  const nestedCandidates = [
+    source.resource_url,
+    source.resourceUrl,
+    source.url,
+    source.location,
+    source?.call?.id,
+    source?.data?.id,
+    source?.data?.call_id,
+  ];
+  for (const candidate of nestedCandidates) {
+    const asText = sanitizeText(candidate);
+    if (!asText) continue;
+    if (/^\d+$/.test(asText) || /^[a-zA-Z0-9_-]{6,}$/.test(asText)) {
+      // Prefer explicit call ids only when resource path already indicates calls.
+      if (sanitizeText(resourcePath).includes('/calls/')) return asText;
+    }
+    const parsed = myphonerApi.parseMyPhonerResourcePath(asText, myphonerApi.getMyPhonerConfig());
+    const callId = myphonerApi.extractMyPhonerIdFromResource(parsed, 'calls');
+    if (callId) return sanitizeText(callId);
+  }
+  return '';
+}
+
 async function processMyphonerRecordingFromResource(resourcePath = '', payload = {}) {
   const normalizedResource = sanitizeText(resourcePath);
-  if (!normalizedResource) throw makeHttpError(410, 'Missing resource URL.');
+  if (!normalizedResource) throw makeHttpError(400, 'Missing resource URL.');
   const webhookPayload = payload && typeof payload === 'object' ? payload : {};
+  const webhookEvent = sanitizeText(webhookPayload.event || webhookPayload.event_name || '').toLowerCase();
   let callPayload = null;
   let leadId = '';
   let diagnosticReason = '';
+
   if (normalizedResource.includes('/calls/')) {
     const callResponse = await myphonerApi.fetchMyPhonerCallByResource(normalizedResource);
     if (!callResponse.success) {
-      throw makeHttpError(callResponse.status === 404 ? 410 : 502, callResponse.error || 'Failed fetching Myphoner call.');
+      // Temporary upstream failures should not unsubscribe the webhook (410).
+      throw makeHttpError(
+        callResponse.status === 404 ? 404 : 502,
+        callResponse.error || 'Failed fetching Myphoner call.'
+      );
     }
     callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
     leadId = extractLeadIdFromCallPayload(callPayload);
@@ -5069,7 +5702,7 @@ async function processMyphonerRecordingFromResource(resourcePath = '', payload =
   } else if (normalizedResource.includes('/leads/')) {
     leadId = myphonerApi.extractMyPhonerIdFromResource(normalizedResource, 'leads');
     const callResourcePath = extractCallResourceFromRecordingPayload(webhookPayload);
-    const callId = extractCallIdFromRecordingPayload(webhookPayload);
+    const callId = extractCallIdFromAnyPayload(webhookPayload, normalizedResource);
     if (callResourcePath || callId) {
       const callResponse = callResourcePath
         ? await myphonerApi.fetchMyPhonerCallByResource(callResourcePath)
@@ -5081,68 +5714,75 @@ async function processMyphonerRecordingFromResource(resourcePath = '', payload =
         diagnosticReason = 'call-fetch-failed-from-webhook-payload';
       }
     } else {
-      diagnosticReason = 'recording-webhook-without-call-reference';
+      // Official docs describe resource_url as a lead URL. Recover by phone cache /
+      // previously seen call ids for this lead, and keep waiting for a call webhook.
+      const leadClient = leadId ? sales.getSalesClientByMyphonerLeadId(leadId) : null;
+      const leadPhone =
+        sanitizeText(leadClient?.contactPhone) ||
+        sanitizeText(leadClient?.myphoner?.latestCallDestinationNumber);
+      const cached =
+        (leadId ? myphonerIntegration.getRecordingForLead(leadId) : null) ||
+        (leadPhone ? myphonerIntegration.getRecordingForPhone(leadPhone) : null) ||
+        (leadClient?.myphoner?.latestCallId
+          ? myphonerIntegration.getRecordingForCall(leadClient.myphoner.latestCallId)
+          : null);
+      if (cached?.callId) {
+        const callResponse = await myphonerApi.fetchMyPhonerCallById(cached.callId);
+        if (callResponse.success) {
+          callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
+        } else {
+          diagnosticReason = 'lead-webhook-cached-call-fetch-failed';
+        }
+      } else if ((cached?.recordingUrl || cached?.localRecordingUrl) && leadClient?.id) {
+        const attached = await attachCachedOrPendingRecordingToClient(leadClient, {
+          force: true,
+          syncReason: 'recording-cache-attached',
+        });
+        return {
+          ok: true,
+          updated: Boolean(attached.attached),
+          leadId,
+          reason: attached.attached ? '' : attached.reason || 'recording-webhook-without-call-reference',
+        };
+      } else {
+        diagnosticReason = 'recording-webhook-without-call-reference';
+        if (leadClient?.id) {
+          sales.updateSalesClient(leadClient.id, {
+            myphoner: {
+              ...(leadClient.myphoner || {}),
+              lastRecordingWebhookAt: nowIso(),
+              latestRecordingSyncReason: diagnosticReason,
+            },
+          });
+        }
+        return { ok: true, updated: false, leadId, reason: diagnosticReason, pending: true };
+      }
     }
   } else {
-    throw makeHttpError(410, 'Unsupported Myphoner recording resource URL.');
+    // Unknown resource shape: try treating the last path segment as a call id before giving up.
+    const maybeCallId = extractCallIdFromAnyPayload(webhookPayload, normalizedResource);
+    if (!maybeCallId) {
+      throw makeHttpError(400, 'Unsupported Myphoner recording resource URL.');
+    }
+    const callResponse = await myphonerApi.fetchMyPhonerCallById(maybeCallId);
+    if (!callResponse.success) {
+      throw makeHttpError(502, callResponse.error || 'Failed fetching Myphoner call.');
+    }
+    callPayload = callResponse.data && typeof callResponse.data === 'object' ? callResponse.data : {};
+    leadId = extractLeadIdFromCallPayload(callPayload);
   }
 
-  let recordingMeta = {};
-  if (callPayload) {
-    recordingMeta = extractRecordingFromCall(callPayload, normalizedResource);
+  if (!callPayload) {
+    return { ok: true, updated: false, leadId, reason: diagnosticReason || 'recording-url-missing', pending: true };
   }
-  if (!recordingMeta.recordingUrl && !diagnosticReason) {
-    diagnosticReason = callPayload ? 'call-without-recording-url' : 'recording-url-missing';
-  }
-  if (!recordingMeta.recordingUrl && !leadId) {
-    return { ok: true, updated: false, reason: diagnosticReason || 'missing-recording-and-lead' };
-  }
-  const hasRecordingMeta = Boolean(
-    sanitizeText(recordingMeta.recordingUrl) ||
-      sanitizeText(recordingMeta.callId) ||
-      sanitizeText(recordingMeta.callStartedAt) ||
-      sanitizeText(recordingMeta.destinationNumber)
-  );
-  if (leadId && hasRecordingMeta) {
-    myphonerIntegration.setRecordingForLead(leadId, recordingMeta);
-  }
-  const directClient = leadId ? sales.getSalesClientByMyphonerLeadId(leadId) : null;
-  const phoneClient = !directClient ? findSalesClientByPhone(recordingMeta.destinationNumber || '') : null;
-  const targetClient = directClient || phoneClient;
-  if (!targetClient) {
-    return { ok: true, updated: false, leadId, reason: diagnosticReason || 'target-client-not-found' };
-  }
-  const patch = buildMyphonerMetaPatch({
-    lead: { id: leadId, list_name: targetClient?.myphoner?.listName || '' },
-    resourcePath: targetClient?.myphoner?.leadResourceUrl || normalizedResource,
-    recording: recordingMeta,
-    eventType: 'recording',
+
+  const result = await ingestMyphonerCallRecording(callPayload, {
+    sourceResourceUrl: normalizedResource,
+    leadId,
+    syncReason: webhookEvent === 'new_call' ? 'new-call-recording-synced' : 'recording-url-synced',
+    pendingReason: diagnosticReason || 'call-without-recording-url',
   });
-  const updated = sales.updateSalesClient(targetClient.id, {
-    myphoner: {
-      ...(targetClient.myphoner || {}),
-      ...patch,
-      latestRecordingUrl: sanitizeText(recordingMeta.recordingUrl || targetClient.myphoner?.latestRecordingUrl),
-      latestCallId: sanitizeText(recordingMeta.callId || targetClient.myphoner?.latestCallId),
-      latestCallStartedAt: sanitizeText(recordingMeta.callStartedAt || targetClient.myphoner?.latestCallStartedAt),
-      latestCallDurationSeconds: Number.isFinite(Number(recordingMeta.durationSeconds))
-        ? Number(recordingMeta.durationSeconds)
-        : Number(targetClient.myphoner?.latestCallDurationSeconds || 0),
-      latestCallUserEmail: sanitizeText(recordingMeta.userEmail || targetClient.myphoner?.latestCallUserEmail),
-      latestCallDestinationNumber: sanitizeText(
-        recordingMeta.destinationNumber || targetClient.myphoner?.latestCallDestinationNumber
-      ),
-      latestRecordingSyncReason: sanitizeText(
-        recordingMeta.recordingUrl ? 'recording-url-synced' : diagnosticReason || 'recording-url-missing'
-      ),
-    },
-  });
-  return {
-    ok: true,
-    updated: Boolean(updated),
-    leadId: leadId || targetClient.myphoner?.leadId || '',
-    reason: sanitizeText(recordingMeta.recordingUrl ? '' : diagnosticReason),
-  };
+  return result;
 }
 
 async function handleMyphonerWebhookEvent(req, res, eventType = 'winner') {
@@ -5178,14 +5818,25 @@ async function handleMyphonerWebhookEvent(req, res, eventType = 'winner') {
         winnerComment: sanitizeText(payload.comment || payload.winner_comment),
       });
     } else if (eventType === 'recording') {
-      result = await processMyphonerRecordingFromResource(resourcePath, payload);
+      const eventHint = sanitizeText(req.query?.event || payload.event || '');
+      result = await processMyphonerRecordingFromResource(resourcePath, {
+        ...payload,
+        event: eventHint || payload.event,
+      });
     } else {
       throw makeHttpError(400, `Unsupported webhook event type: ${eventType}`);
     }
+    // Always ACK so Myphoner keeps the subscription. Pending retries are owned by our worker.
     myphonerIntegration.markProcessedEvent(eventType, resourcePath, nowIso());
+    if (eventType === 'recording') {
+      console.log(
+        `[myphoner webhook recording] resource=${resourcePath} updated=${Boolean(result?.updated)} pending=${Boolean(result?.pending)} reason=${sanitizeText(result?.reason)} callId=${sanitizeText(result?.callId)} leadId=${sanitizeText(result?.leadId)}`
+      );
+    }
     return res.json({ ok: true, eventType, resourcePath, ...result });
   } catch (error) {
     const status = httpStatusFromError(error, 500);
+    // Only permanently invalid winner/resource subscriptions should unsubscribe.
     if (status === 410) {
       return res.status(410).json({
         message: sanitizeText(error?.message) || 'Webhook resource is no longer valid.',
@@ -5290,7 +5941,8 @@ async function reconcileMyphonerWebhooks() {
     const existing = myphonerIntegration.getAccountWebhook(eventName);
     const targetChanged = sanitizeText(existing?.targetUrl) !== recordingTargetUrl;
     const eventChanged = sanitizeText(existing?.event).toLowerCase() !== eventName;
-    if (existing && !targetChanged && !eventChanged) {
+    const missingWebhookId = !sanitizeText(existing?.webhookId);
+    if (existing && !targetChanged && !eventChanged && !missingWebhookId) {
       summary.reusedAccountWebhooks += 1;
       continue;
     }
@@ -5324,7 +5976,106 @@ async function reconcileMyphonerWebhooks() {
     summary.createdAccountWebhooks += 1;
   }
 
+  // Sync webhook IDs from Myphoner so local registry stays accurate even after
+  // "target already taken" reuse paths that previously left webhookId empty.
+  const remoteHooksResponse = await myphonerApi.listMyPhonerWebhooks();
+  if (remoteHooksResponse.success && Array.isArray(remoteHooksResponse.data)) {
+    for (const hook of remoteHooksResponse.data) {
+      const eventName = sanitizeText(hook?.event).toLowerCase();
+      const targetUrl = sanitizeText(hook?.target_url || hook?.targetUrl);
+      const webhookId = sanitizeText(hook?.id || hook?.webhook_id);
+      if (!eventName || !targetUrl || !webhookId) continue;
+      if (eventName === 'new_recording' || eventName === 'new_call') {
+        const expected = buildMyphonerWebhookTargetUrl('recording', { event: eventName });
+        if (expected && targetUrl === expected) {
+          myphonerIntegration.setAccountWebhook(eventName, {
+            webhookId,
+            targetUrl,
+            event: eventName,
+          });
+        }
+      }
+    }
+    summary.syncedRemoteWebhooks = remoteHooksResponse.data.length;
+  }
+
   return summary;
+}
+
+async function processPendingMyphonerRecordings(options = {}) {
+  if (myphonerRecordingRetryRunning) {
+    return { ok: true, skipped: 'already-running' };
+  }
+  myphonerRecordingRetryRunning = true;
+  const summary = {
+    ok: true,
+    checked: 0,
+    attached: 0,
+    pending: 0,
+    exhausted: 0,
+    failed: 0,
+  };
+  try {
+    const due = myphonerIntegration.listDuePendingRecordings(
+      Number(options.limit) || MYPHONER_RECORDING_PENDING_BATCH
+    );
+    for (const entry of due) {
+      summary.checked += 1;
+      const callId = sanitizeText(entry?.callId);
+      if (!callId) continue;
+      const attempts = Number(entry?.attempts || 0);
+      if (attempts >= MYPHONER_RECORDING_RETRY_MAX_ATTEMPTS) {
+        myphonerIntegration.clearPendingRecording(callId);
+        summary.exhausted += 1;
+        const client = findSalesClientForRecordingMeta(
+          {
+            callId,
+            leadId: entry.leadId,
+            destinationNumber: entry.destinationNumber,
+          },
+          entry.leadId
+        );
+        if (client?.id && !client.myphoner?.latestRecordingUrl) {
+          sales.updateSalesClient(client.id, {
+            myphoner: {
+              ...(client.myphoner || {}),
+              latestCallId: callId || client.myphoner?.latestCallId,
+              latestRecordingSyncReason: 'recording-retry-exhausted',
+            },
+          });
+        }
+        continue;
+      }
+      const callResponse = await myphonerApi.fetchMyPhonerCallById(callId);
+      if (!callResponse.success) {
+        myphonerIntegration.bumpPendingRecordingAttempt(callId, {
+          delayMs: recordingRetryDelayMs(attempts + 1),
+          reason: 'pending-call-fetch-failed',
+        });
+        summary.failed += 1;
+        summary.pending += 1;
+        continue;
+      }
+      const result = await ingestMyphonerCallRecording(callResponse.data || {}, {
+        sourceResourceUrl: sanitizeText(entry.sourceResourceUrl || `/api/v2/calls/${callId}`),
+        leadId: sanitizeText(entry.leadId),
+        syncReason: 'pending-recording-retry-synced',
+        pendingReason: 'call-without-recording-url',
+      });
+      if (result.recordingUrl) {
+        summary.attached += 1;
+      } else {
+        myphonerIntegration.bumpPendingRecordingAttempt(callId, {
+          delayMs: recordingRetryDelayMs(attempts + 1),
+          reason: result.reason || 'call-without-recording-url',
+        });
+        summary.pending += 1;
+      }
+    }
+    return summary;
+  } finally {
+    myphonerRecordingRetryRunning = false;
+  }
 }
 
 async function runMyphonerWebhookReconcileTick() {
@@ -5334,11 +6085,15 @@ async function runMyphonerWebhookReconcileTick() {
     const result = await reconcileMyphonerWebhooks();
     if (!result?.ok && result?.skipped) {
       console.log(`[myphoner] webhook reconcile skipped: ${result.skipped}`);
-      return;
-    }
-    if (result?.ok) {
+    } else if (result?.ok) {
       console.log(
         `[myphoner] webhook reconcile complete: lists=${result.checkedLists}, created=${result.createdListWebhooks}, reused=${result.reusedListWebhooks}, removed=${result.removedListWebhooks}, accountCreated=${result.createdAccountWebhooks}, accountReused=${result.reusedAccountWebhooks}`
+      );
+    }
+    const pendingResult = await processPendingMyphonerRecordings();
+    if (pendingResult?.ok && Number(pendingResult.checked || 0) > 0) {
+      console.log(
+        `[myphoner] pending recording retry: checked=${pendingResult.checked}, attached=${pendingResult.attached}, pending=${pendingResult.pending}, exhausted=${pendingResult.exhausted}, failed=${pendingResult.failed}`
       );
     }
   } catch (error) {
@@ -5357,10 +6112,43 @@ function startMyphonerWebhookReconcileLoop() {
   }, Math.max(60_000, MYPHONER_WEBHOOK_RECONCILE_MS));
 }
 
+async function runMyphonerRecordingRetryTick() {
+  try {
+    const pendingResult = await processPendingMyphonerRecordings();
+    if (pendingResult?.ok && Number(pendingResult.checked || 0) > 0) {
+      console.log(
+        `[myphoner] recording retry tick: checked=${pendingResult.checked}, attached=${pendingResult.attached}, pending=${pendingResult.pending}, exhausted=${pendingResult.exhausted}, failed=${pendingResult.failed}`
+      );
+    }
+  } catch (error) {
+    console.error('[myphoner] recording retry tick failed:', error?.message || error);
+  }
+}
+
+function startMyphonerRecordingRetryLoop() {
+  if (!myphonerApi.isMyPhonerConfigured()) return;
+  if (myphonerRecordingRetryInterval) return;
+  void runMyphonerRecordingRetryTick();
+  myphonerRecordingRetryInterval = setInterval(() => {
+    void runMyphonerRecordingRetryTick();
+  }, MYPHONER_RECORDING_RETRY_TICK_MS);
+}
+
 function joinMakerUrl(baseUrl = '', pathOrUrl = '') {
   const raw = sanitizeText(pathOrUrl);
   if (!raw) return '';
   if (/^https?:\/\//i.test(raw)) {
+    // Keep path/query from absolute Maker handoff URLs, but re-base onto the
+    // active Website Maker origin when one is provided (tunnel/port rotation).
+    try {
+      const parsed = new URL(raw);
+      const suffix = `${parsed.pathname || ''}${parsed.search || ''}${parsed.hash || ''}`;
+      const base = normalizeHttpBaseUrl(baseUrl);
+      if (base && suffix && suffix !== '/') return `${base}${suffix.startsWith('/') ? suffix : `/${suffix}`}`;
+      if (suffix && suffix !== '/') return `${parsed.protocol}//${parsed.host}${suffix}`;
+    } catch {
+      // Fall through to origin normalization.
+    }
     return normalizeHttpBaseUrl(raw);
   }
   const base = normalizeHttpBaseUrl(baseUrl);
@@ -5373,37 +6161,41 @@ function normalizeMakerDashboardPath(pathOrUrl = '') {
   const raw = sanitizeText(pathOrUrl);
   if (!raw) return '';
 
-  const rewrite = (parsedUrl) => {
-    if (sanitizeText(parsedUrl.pathname) !== '/run-v2') return false;
-    if (!parsedUrl.searchParams.get('draftRunId')) return false;
+  const toPath = (parsedUrl) => {
     parsedUrl.searchParams.delete('__chunk_retry');
-    return true;
+    return `${parsedUrl.pathname || ''}${parsedUrl.search || ''}${parsedUrl.hash || ''}` || '';
   };
 
   try {
     const parsedAbsolute = new URL(raw);
-    if (!rewrite(parsedAbsolute)) return raw;
-    return parsedAbsolute.toString();
+    return toPath(parsedAbsolute);
   } catch {
     try {
       const parsedRelative = new URL(raw, 'https://asoldi.local');
-      if (!rewrite(parsedRelative)) return raw;
-      return `${parsedRelative.pathname}${parsedRelative.search}${parsedRelative.hash}`;
+      return toPath(parsedRelative);
     } catch {
-      return raw;
+      return raw.startsWith('/') ? raw : `/${raw}`;
     }
   }
 }
 
 function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
-  const fallbackDashboardPath = `/run/${encodeURIComponent(runId)}`;
-  const fallbackPreviewPath = `/preview/${encodeURIComponent(runId)}/step/3/view?route=/`;
-  const dashboardPath = normalizeMakerDashboardPath(handoff.dashboardPath);
+  const encodedRunId = encodeURIComponent(runId);
+  const intakePath = sanitizeText(handoff.intakePath) || `/run-v2?draftRunId=${encodedRunId}`;
+  const handoffDashboardPath = normalizeMakerDashboardPath(handoff.dashboardPath);
+  const wantsIntake =
+    /\/run-v2/i.test(handoffDashboardPath) ||
+    /pending/i.test(sanitizeText(handoff.intakeStatus)) ||
+    Boolean(sanitizeText(handoff.needsIntakeSetup));
+  const fallbackDashboardPath = wantsIntake ? intakePath : `/run/${encodedRunId}`;
+  const fallbackPreviewPath = `/preview/${encodedRunId}/step/3/view?route=/`;
+  const dashboardPath = handoffDashboardPath || fallbackDashboardPath;
   const previewViewPath = sanitizeText(handoff.previewViewPath || handoff.previewPath);
   const exportPath = sanitizeText(handoff.exportPath);
   const links = {
     dashboardUrl: joinMakerUrl(websiteMakerBaseUrl, dashboardPath || fallbackDashboardPath),
     previewUrl: joinMakerUrl(websiteMakerBaseUrl, previewViewPath || fallbackPreviewPath),
+    intakeStatus: wantsIntake ? 'pending' : sanitizeText(handoff.intakeStatus) || 'configured',
   };
   const latestReadyStep = sanitizeText(handoff.latestReadyStep);
   const latestStepStatus = sanitizeText(handoff.latestStepStatus);
@@ -5656,6 +6448,82 @@ function canAccessSalesClient(req, client) {
   return Boolean(client.ownerId) && client.ownerId === req.salesUser?.accountKey;
 }
 
+async function accountKeyToEmail(accountKey = '') {
+  const key = sanitizeText(accountKey);
+  if (!key) return '';
+  if (key.startsWith('admin:')) return normalizeEmail(key.slice('admin:'.length));
+  if (key.startsWith('sales:')) {
+    const userId = key.slice('sales:'.length);
+    try {
+      const user = await store.getUserById(userId);
+      return normalizeEmail(user?.username);
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
+/** Admin + sales account keys that belong to the same email inbox. */
+async function resolveSiblingCalendarAccountKeys(accountKey = '') {
+  const key = sanitizeText(accountKey);
+  if (!key) return [];
+  const email = await accountKeyToEmail(key);
+  if (!email) return [];
+
+  const keys = new Set();
+  keys.add(`admin:${email}`);
+  try {
+    const admin = await store.getAdmin();
+    if (admin?.username && normalizeEmail(admin.username) === email) {
+      keys.add(`admin:${sanitizeText(admin.username)}`);
+    }
+  } catch {
+    // Ignore admin lookup failures; still share with other known keys.
+  }
+
+  try {
+    const users = await store.getAllUsers();
+    for (const user of Array.isArray(users) ? users : []) {
+      if (normalizeEmail(user?.username) !== email) continue;
+      const userId = sanitizeText(user?.id);
+      if (userId) keys.add(`sales:${userId}`);
+    }
+  } catch {
+    // Ignore user lookup failures.
+  }
+
+  keys.delete(key);
+  return [...keys];
+}
+
+async function ensureSharedCalendarTokens(accountKey = '') {
+  const key = sanitizeText(accountKey);
+  if (!key) return getGoogleCalendarStatus(key);
+  const status = getGoogleCalendarStatus(key);
+  if (!status.connected) return status;
+  const siblings = await resolveSiblingCalendarAccountKeys(key);
+  if (siblings.length) shareGoogleCalendarToken(key, siblings);
+  return getGoogleCalendarStatus(key);
+}
+
+async function resolveCalendarFallbackAccountKeys(ownerId = '', actorAccountKey = '') {
+  const keys = new Set();
+  const owner = sanitizeText(ownerId);
+  const actor = sanitizeText(actorAccountKey);
+  if (actor) keys.add(actor);
+  if (owner) {
+    for (const sibling of await resolveSiblingCalendarAccountKeys(owner)) keys.add(sibling);
+  }
+  if (actor) {
+    for (const sibling of await resolveSiblingCalendarAccountKeys(actor)) keys.add(sibling);
+  }
+  const configuredOwner = sanitizeText(MYPHONER_DEFAULT_SALES_OWNER_KEY);
+  if (configuredOwner) keys.add(configuredOwner);
+  keys.delete(owner);
+  return [...keys];
+}
+
 function buildClientGoogleOAuthState() {
   return signOAuthState('client-login', {});
 }
@@ -5718,15 +6586,40 @@ async function finalizeClientGoogleSignIn(googleProfile) {
 
 async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   const notifyAttendees = Boolean(options?.notifyAttendees);
+  const actorAccountKey = sanitizeText(options?.actorAccountKey);
   const warnings = [];
   let nextClient = client;
   let calendarInviteSent = false;
-  const accountKey = client.ownerId || '';
+
+  const previousAccountKey = sanitizeText(
+    previousClient?.calendar?.accountKey || nextClient?.calendar?.accountKey
+  );
+  const fallbackAccountKeys = Array.isArray(options?.fallbackAccountKeys)
+    ? options.fallbackAccountKeys
+    : await resolveCalendarFallbackAccountKeys(nextClient?.ownerId || '', actorAccountKey);
+
+  // Heal admin/sales token split for the same email before resolving.
+  for (const key of [previousAccountKey, nextClient?.ownerId, actorAccountKey, ...fallbackAccountKeys]) {
+    const candidate = sanitizeText(key);
+    if (!candidate) continue;
+    if (getGoogleCalendarStatus(candidate).connected) {
+      await ensureSharedCalendarTokens(candidate);
+      break;
+    }
+  }
+
+  const accountKey = resolveCalendarSyncAccountKey({
+    ownerId: nextClient?.ownerId || '',
+    actorAccountKey,
+    fallbackAccountKeys,
+    previousAccountKey,
+  });
+  const deleteAccountKey = previousAccountKey || accountKey;
 
   if (!nextClient.agreedTime || !nextClient.meetingAt) {
     if (nextClient.calendar?.eventId) {
       try {
-        await deleteMeetingEvent(nextClient.calendar.eventId, accountKey);
+        await deleteMeetingEvent(nextClient.calendar.eventId, deleteAccountKey);
       } catch (error) {
         warnings.push(`Calendar cleanup failed: ${error.message}`);
       }
@@ -5747,11 +6640,25 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
       // new invitation email instead of occasionally treating it as a silent update.
       if (notifyAttendees && normalizeMeetingMode(nextClient?.meetingMode) === 'online' && currentEventId) {
         try {
-          await deleteMeetingEvent(currentEventId, accountKey);
+          await deleteMeetingEvent(currentEventId, deleteAccountKey);
           eventIdForUpsert = '';
         } catch (deleteError) {
           warnings.push(`Calendar pre-invite cleanup failed: ${deleteError.message}`);
         }
+      }
+      // If the event lived on a different connected account, recreate instead of
+      // updating with a token that cannot see the old event id.
+      if (
+        eventIdForUpsert &&
+        previousAccountKey &&
+        previousAccountKey !== accountKey
+      ) {
+        try {
+          await deleteMeetingEvent(eventIdForUpsert, previousAccountKey);
+        } catch {
+          // Best-effort cleanup; insert will still create a fresh event.
+        }
+        eventIdForUpsert = '';
       }
       const calendarMeta = await upsertMeetingEvent(
         nextClient,
@@ -5762,6 +6669,14 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
       calendarInviteSent = notifyAttendees;
+      if (
+        sanitizeText(nextClient?.ownerId) &&
+        accountKey !== sanitizeText(nextClient.ownerId)
+      ) {
+        warnings.push(
+          `Synced to your connected Google Calendar (${accountKey}) because the client owner calendar (${nextClient.ownerId}) is not connected.`
+        );
+      }
     } catch (error) {
       warnings.push(`Calendar sync failed: ${error.message}`);
     }
@@ -5823,7 +6738,11 @@ async function backfillMissingSalesCalendarEvents({
       continue;
     }
 
-    const syncResult = await maybeSyncCalendar(client, client, { notifyAttendees: false });
+    const syncResult = await maybeSyncCalendar(client, client, {
+      notifyAttendees: false,
+      actorAccountKey: '',
+      fallbackAccountKeys: await resolveCalendarFallbackAccountKeys(client?.ownerId || '', ''),
+    });
     const syncedClient = syncResult.client || client;
     const warnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
     summary.warnings += warnings.length;
@@ -6315,6 +7234,59 @@ app.post('/api/admin/sales/sync-local-recordings', adminAuth, async (req, res) =
     return res.status(httpStatusFromError(error, 500)).json({
       ok: false,
       message: sanitizeText(error?.message) || 'Failed syncing local recordings.',
+    });
+  }
+});
+
+app.post('/api/admin/integrations/myphoner/retry-recordings', adminAuth, async (req, res) => {
+  try {
+    const enqueueMissing = parseBoolean(req.body?.enqueueMissing, true);
+    const summary = {
+      ok: true,
+      enqueued: 0,
+      skippedHasRecording: 0,
+      skippedNoCallId: 0,
+      attachedFromCache: 0,
+      pendingRetry: null,
+    };
+    if (enqueueMissing) {
+      for (const client of sales.getSalesClients()) {
+        if (sanitizeText(client?.myphoner?.latestRecordingUrl)) {
+          summary.skippedHasRecording += 1;
+          continue;
+        }
+        const cachedAttach = await attachCachedOrPendingRecordingToClient(client, {
+          syncReason: 'admin-retry-cache-attached',
+        });
+        if (cachedAttach.attached) {
+          summary.attachedFromCache += 1;
+          continue;
+        }
+        const callId = sanitizeText(client?.myphoner?.latestCallId || cachedAttach.callId);
+        if (!callId) {
+          summary.skippedNoCallId += 1;
+          continue;
+        }
+        myphonerIntegration.enqueuePendingRecording(
+          {
+            callId,
+            leadId: sanitizeText(client?.myphoner?.leadId),
+            destinationNumber: sanitizeText(client?.contactPhone || client?.myphoner?.latestCallDestinationNumber),
+            reason: 'admin-retry-enqueued',
+          },
+          { delayMs: 1_000, resetAttempts: true }
+        );
+        summary.enqueued += 1;
+      }
+    }
+    summary.pendingRetry = await processPendingMyphonerRecordings({
+      limit: Math.max(MYPHONER_RECORDING_PENDING_BATCH, Number(req.body?.limit) || 50),
+    });
+    return res.json(summary);
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed retrying Myphoner recordings.',
     });
   }
 });
@@ -7875,8 +8847,13 @@ async function resolveImportedSiteRoot(importDir, preferredSiteFolder) {
 }
 
 // --- Sales workflow (admin + sales role). Each principal scopes to their own calendar/clients.
-app.get('/api/admin/sales/google/status', salesAuth, (req, res) => {
-  res.json(getGoogleCalendarStatus(req.salesUser.accountKey));
+app.get('/api/admin/sales/google/status', salesAuth, async (req, res) => {
+  try {
+    const status = await ensureSharedCalendarTokens(req.salesUser.accountKey);
+    res.json(status);
+  } catch (error) {
+    res.status(500).json({ message: error.message || 'Failed to read Google Calendar status.' });
+  }
 });
 
 app.get('/api/admin/sales/google/auth-url', salesAuth, (req, res) => {
@@ -7897,7 +8874,8 @@ app.get('/api/admin/sales/google/oauth/callback', async (req, res) => {
     return res.status(400).send('<h2>Invalid or expired OAuth state.</h2>');
   }
   try {
-    await exchangeGoogleCalendarCode(code, accountKey);
+    const siblings = await resolveSiblingCalendarAccountKeys(accountKey);
+    await exchangeGoogleCalendarCode(code, accountKey, siblings);
     return res.send('<html><body><h3>Google Calendar connected.</h3><script>window.close()</script></body></html>');
   } catch (error) {
     return res.status(500).send(`<h2>Google Calendar connection failed:</h2><pre>${String(error.message || error)}</pre>`);
@@ -7935,10 +8913,12 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   if (!isMakerStatusCallbackAuthorized(req)) {
     return res.status(401).json({ message: 'Unauthorized callback.' });
   }
+  const event = sanitizeText(req.body?.event) || 'run.step.updated';
   const runId = sanitizeText(req.body?.runId);
   const salesClientId = sanitizeText(req.body?.salesClientId);
   const callbackStatus = sanitizeText(req.body?.status);
   const handoff = req.body?.handoff && typeof req.body.handoff === 'object' ? req.body.handoff : {};
+  const fields = req.body?.fields && typeof req.body.fields === 'object' ? req.body.fields : {};
 
   let client = salesClientId ? sales.getSalesClientById(salesClientId) : null;
   if (!client && runId) {
@@ -7951,6 +8931,55 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   const nextRunId = runId || sanitizeText(client.makerRun?.runId);
   if (!nextRunId) {
     return res.status(400).json({ message: 'runId is required.' });
+  }
+
+  // Maker → Sales field sync (links + core parameters edited in Website Maker).
+  if (event === 'run.fields.updated') {
+    const links = fields.quickFillLinks && typeof fields.quickFillLinks === 'object' ? fields.quickFillLinks : {};
+    const detailsPatch = normalizeSalesDetailLinks(
+      {
+        instagramUrl: sanitizeText(links.instagramProfile ?? fields.instagramUrl),
+        facebookUrl: sanitizeText(links.facebookProfile ?? fields.facebookUrl),
+        proffUrl: sanitizeText(links.proffLink ?? fields.proffUrl),
+        googleBusinessProfile: sanitizeText(
+          links.googleBusinessProfile ?? fields.googleBusinessProfile ?? client.details?.googleBusinessProfile
+        ),
+        otherLinks: sanitizeText(links.customLink ?? fields.customLink ?? client.details?.otherLinks),
+      },
+      client.details || {}
+    );
+    const clientPatch = {
+      details: detailsPatch,
+    };
+    if (Object.prototype.hasOwnProperty.call(fields, 'businessName')) {
+      clientPatch.businessName = sanitizeText(fields.businessName) || client.businessName;
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'industry')) {
+      const nextIndustry = sanitizeText(fields.industry);
+      if (nextIndustry) clientPatch.industry = nextIndustry;
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'phone')) {
+      clientPatch.contactPhone = sanitizeText(fields.phone);
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'email')) {
+      clientPatch.contactEmail = sanitizeText(fields.email);
+    }
+    if (Object.prototype.hasOwnProperty.call(fields, 'address')) {
+      const nextAddress = sanitizeText(fields.address);
+      if (nextAddress || Object.prototype.hasOwnProperty.call(fields, 'address')) {
+        clientPatch.meetingPlace = nextAddress;
+      }
+    }
+    const updatedClient = sales.updateSalesClient(client.id, clientPatch);
+    const makerPatch = {
+      runId: nextRunId,
+      industry: sanitizeText(updatedClient?.industry || client.industry),
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+      statusUpdatedAt: new Date().toISOString(),
+      fieldsSyncedAt: new Date().toISOString(),
+    };
+    const updated = sales.setSalesMakerRun(client.id, makerPatch);
+    return res.json({ ok: true, event, client: updated, fieldsApplied: true });
   }
 
   const makerBaseUrl = resolveWebsiteMakerBaseUrl('', client);
@@ -7969,17 +8998,18 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   else if (callbackStatus) patch.latestStepStatus = callbackStatus;
 
   const updated = sales.setSalesMakerRun(client.id, patch);
-  return res.json({ ok: true, client: updated });
+  return res.json({ ok: true, event, client: updated });
 });
 
-app.get('/api/admin/sales', salesAuth, (req, res) => {
+app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const clients = req.salesUser.isAdmin
     ? all
     : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+  const calendar = await ensureSharedCalendarTokens(req.salesUser.accountKey);
   res.json({
     clients,
-    calendar: getGoogleCalendarStatus(req.salesUser.accountKey),
+    calendar,
   });
 });
 
@@ -8219,7 +9249,13 @@ async function resolveLocalRecordingAsset(targetPathname = '') {
   const roots = [
     path.resolve(distPath),
     path.resolve(__dirname, 'public'),
+    path.resolve(getPersistentDataDir()),
   ];
+
+  // Allow /myphoner-recordings/<file> to resolve from the persistent recordings dir.
+  if (normalized.replace(/\\/g, '/').startsWith('myphoner-recordings/')) {
+    roots.unshift(path.resolve(getPersistentDataDir()));
+  }
 
   for (const root of roots) {
     const candidate = path.resolve(root, normalized);
@@ -8229,6 +9265,18 @@ async function resolveLocalRecordingAsset(targetPathname = '') {
       if (stats.isFile()) return candidate;
     } catch {
       // Keep trying other roots.
+    }
+  }
+
+  // Direct filename lookup in managed recordings dir.
+  const baseName = path.basename(normalized);
+  if (baseName && baseName === normalized.replace(/^[/\\]+/, '')) {
+    const managed = path.resolve(MYPHONER_RECORDINGS_DIR, baseName);
+    try {
+      const stats = await fs.stat(managed);
+      if (stats.isFile()) return managed;
+    } catch {
+      // ignore
     }
   }
   return '';
@@ -8276,7 +9324,9 @@ app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
   const targetHost = String(target.host || '').toLowerCase();
   const isMyphonerHost = Boolean(myphonerHost && targetHost === myphonerHost);
   const isAppHost = Boolean(allowedHosts.has(targetHost));
-  if (!isAppHost) {
+  // App host + Myphoner host are preferred. External CDN URLs are also allowed
+  // because Myphoner often serves recordings from signed third-party storage.
+  if (!isAppHost && !isMyphonerHost && !/^https?:$/i.test(target.protocol)) {
     return res.status(403).json({ message: 'Recording host is not allowed.' });
   }
   if (/^\/api\/admin\/sales\/[^/]+\/recording$/i.test(target.pathname)) {
@@ -8335,7 +9385,10 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     const payload = buildSalesInput(req.body || {}, { requireCore: true });
     payload.ownerId = req.salesUser.accountKey;
     let client = sales.createSalesClient(payload);
-    const syncResult = await maybeSyncCalendar(client, null, { notifyAttendees: false });
+    const syncResult = await maybeSyncCalendar(client, null, {
+      notifyAttendees: false,
+      actorAccountKey: req.salesUser.accountKey,
+    });
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
@@ -8370,7 +9423,10 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
       existing.meetingMode !== client.meetingMode ||
       existing.contactEmail !== client.contactEmail;
 
-    const syncResult = await maybeSyncCalendar(client, existing, { notifyAttendees: false });
+    const syncResult = await maybeSyncCalendar(client, existing, {
+      notifyAttendees: false,
+      actorAccountKey: req.salesUser.accountKey,
+    });
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
@@ -8396,7 +9452,14 @@ app.delete('/api/admin/sales/:id', salesAuth, async (req, res) => {
 
   if (existing.calendar?.eventId) {
     try {
-      await deleteMeetingEvent(existing.calendar.eventId, existing.ownerId || '');
+      const deleteKey =
+        sanitizeText(existing.calendar?.accountKey) ||
+        resolveCalendarSyncAccountKey({
+          ownerId: existing.ownerId || '',
+          actorAccountKey: req.salesUser.accountKey,
+          previousAccountKey: existing.calendar?.accountKey || '',
+        });
+      await deleteMeetingEvent(existing.calendar.eventId, deleteKey);
     } catch {
       // Ignore remote cleanup failures; deletion in local sales store still proceeds.
     }
@@ -8465,7 +9528,10 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
     const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
-    const syncResult = await maybeSyncCalendar(client, client, { notifyAttendees: isOnline });
+    const syncResult = await maybeSyncCalendar(client, client, {
+      notifyAttendees: isOnline,
+      actorAccountKey: req.salesUser.accountKey,
+    });
     client = syncResult.client || client;
     const sentResult = await sendSalesThankYou(client, {
       force: true,
@@ -8779,9 +9845,10 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       }
     }
 
+    const makerLinks = buildMakerRunLinks(base, runId, runHandoff);
     const updated = sales.setSalesMakerRun(client.id, {
       runId,
-      ...buildMakerRunLinks(base, runId, runHandoff),
+      ...makerLinks,
       industry: client.industry || '',
       createdAt:
         forceNewRun || !sanitizeText(client.makerRun?.createdAt)
@@ -8796,7 +9863,11 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       alreadyExists: Boolean(previousRunId),
       replacedRunId,
       replacedRunDeleted,
-      handoff: runHandoff,
+      handoff: {
+        ...runHandoff,
+        dashboardPath: makerLinks.dashboardUrl ? normalizeMakerDashboardPath(makerLinks.dashboardUrl) : runHandoff?.dashboardPath,
+        intakeStatus: makerLinks.intakeStatus || runHandoff?.intakeStatus || '',
+      },
     });
   } catch (error) {
     res.status(502).json({ message: error.message || 'Failed reaching the Website Maker.' });
@@ -9062,6 +10133,18 @@ app.use((req, res, next) => {
   next();
 });
 
+app.use(
+  '/myphoner-recordings',
+  express.static(MYPHONER_RECORDINGS_DIR, {
+    fallthrough: true,
+    setHeaders: (res, filePath) => {
+      res.setHeader('Content-Type', recordingContentTypeForPath(filePath));
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  })
+);
+
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -9155,12 +10238,14 @@ async function ensureData() {
       `[sales] applied bundled contact corrections: updated=${correctionSummary.updated}, created=${correctionSummary.created}, matched=${correctionSummary.matched}`
     );
   }
+  await ensureMyphonerRecordingsDir().catch(() => {});
   await runStartupSalesRecordingBackfill();
 }
 
 ensureData().then(() => {
   startSalesReminderLoop();
   startMyphonerWebhookReconcileLoop();
+  startMyphonerRecordingRetryLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
