@@ -28,6 +28,7 @@ import {
   deleteMeetingEvent,
   exchangeGoogleCalendarCode,
   getGoogleCalendarStatus,
+  isRealGoogleMeetLink,
   resolveCalendarSyncAccountKey,
   shareGoogleCalendarToken,
   upsertMeetingEvent,
@@ -6601,6 +6602,7 @@ async function finalizeClientGoogleSignIn(googleProfile) {
 
 async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   const notifyAttendees = Boolean(options?.notifyAttendees);
+  const requireMeetLink = Boolean(options?.requireMeetLink);
   const actorAccountKey = sanitizeText(options?.actorAccountKey);
   const warnings = [];
   let nextClient = client;
@@ -6630,6 +6632,7 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
     previousAccountKey,
   });
   const deleteAccountKey = previousAccountKey || accountKey;
+  const isOnline = normalizeMeetingMode(nextClient?.meetingMode) === 'online';
 
   if (!nextClient.agreedTime || !nextClient.meetingAt) {
     if (nextClient.calendar?.eventId) {
@@ -6651,9 +6654,13 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
     try {
       const currentEventId = sanitizeText(previousClient?.calendar?.eventId || nextClient?.calendar?.eventId);
       let eventIdForUpsert = currentEventId;
-      // For manual online welcome sends, force a fresh event so Google emits a
-      // new invitation email instead of occasionally treating it as a silent update.
-      if (notifyAttendees && normalizeMeetingMode(nextClient?.meetingMode) === 'online' && currentEventId) {
+      const hasRealMeet = isRealGoogleMeetLink(nextClient?.calendar?.meetLink);
+      // Fresh event when we must guarantee a real Meet link and the current one is missing/fake.
+      if (
+        isOnline
+        && currentEventId
+        && (notifyAttendees || (requireMeetLink && !hasRealMeet))
+      ) {
         try {
           await deleteMeetingEvent(currentEventId, deleteAccountKey);
           eventIdForUpsert = '';
@@ -6679,7 +6686,10 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
         nextClient,
         eventIdForUpsert,
         accountKey,
-        { sendUpdates: notifyAttendees ? 'all' : 'none' }
+        {
+          sendUpdates: notifyAttendees ? 'all' : 'none',
+          forceConference: isOnline && (requireMeetLink || !hasRealMeet),
+        }
       );
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
@@ -6692,11 +6702,16 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
           `Synced to your connected Google Calendar (${accountKey}) because the client owner calendar (${nextClient.ownerId}) is not connected.`
         );
       }
+      if (requireMeetLink && isOnline && !isRealGoogleMeetLink(nextClient?.calendar?.meetLink)) {
+        warnings.push('Google Calendar sync ran but did not return a real Google Meet link.');
+      }
     } catch (error) {
       warnings.push(`Calendar sync failed: ${error.message}`);
     }
   } else if (calendarStatus.configured && !calendarStatus.connected) {
     warnings.push('Google Calendar is not connected for this salesperson yet. Connect it from the Sales page.');
+  } else if (!calendarStatus.configured) {
+    warnings.push('Google Calendar is not configured on the server.');
   }
 
   return { client: nextClient, warnings, calendarInviteSent };
@@ -6785,6 +6800,12 @@ async function sendSalesThankYou(client, { force = false } = {}) {
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
+  if (
+    normalizeMeetingMode(client?.meetingMode) === 'online'
+    && !isRealGoogleMeetLink(client?.calendar?.meetLink)
+  ) {
+    return { sent: false, reason: 'missing-meet-link' };
+  }
   // Always send the Asoldi template over SMTP. Online meetings include an .ics
   // attachment clients can Accept — Google Calendar notify emails are not a substitute.
   const message = buildSalesThankYouEmail(client, client.calendar || {});
@@ -6857,6 +6878,9 @@ function salesEmailFailureMessage(reason = '') {
     return 'SMTP is not configured on the server (set SMTP_HOST, SMTP_USER, SMTP_PASS).';
   }
   if (reason === 'already-sent') return 'Email was already sent.';
+  if (reason === 'missing-meet-link') {
+    return 'Online meeting has no real Google Meet link yet. Connect Google Calendar on Sales, then send again.';
+  }
   return 'Could not send email.';
 }
 
@@ -9597,10 +9621,10 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     if (!client) return res.status(404).json({ message: 'Sales client not found.' });
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
-    // Sync Meet/calendar metadata silently. Invitation delivery is always the
-    // SMTP template (+ .ics for online), not Google's own notify email.
+    // Create/sync a real Google Meet link before sending online welcome mail.
     const syncResult = await maybeSyncCalendar(client, client, {
       notifyAttendees: false,
+      requireMeetLink: normalizeMeetingMode(client?.meetingMode) === 'online',
       actorAccountKey: req.salesUser.accountKey,
     });
     client = syncResult.client || client;
