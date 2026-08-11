@@ -6780,21 +6780,22 @@ async function backfillMissingSalesCalendarEvents({
   };
 }
 
-async function sendSalesThankYou(client, { force = false, onlineViaCalendar = false } = {}) {
+async function sendSalesThankYou(client, { force = false } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
-  if (onlineViaCalendar && normalizeMeetingMode(client?.meetingMode) === 'online') {
-    const updated = sales.markSalesReminderSent(client.id, 'thankYou');
-    return { sent: true, client: updated || client, channel: 'calendar' };
-  }
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
+  // Always send the Asoldi template over SMTP. Online meetings include an .ics
+  // attachment clients can Accept — Google Calendar notify emails are not a substitute.
   const message = buildSalesThankYouEmail(client, client.calendar || {});
   await emailLib.sendEmail({
     to: client.contactEmail,
     subject: message.subject,
     text: message.text,
     html: message.html,
+    attachments: message.attachments,
+    headers: message.headers,
+    icalEvent: message.icalEvent,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
   return { sent: true, client: updated || client, channel: 'email' };
@@ -9543,16 +9544,14 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     if (!client) return res.status(404).json({ message: 'Sales client not found.' });
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
-    const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+    // Sync Meet/calendar metadata silently. Invitation delivery is always the
+    // SMTP template (+ .ics for online), not Google's own notify email.
     const syncResult = await maybeSyncCalendar(client, client, {
-      notifyAttendees: isOnline,
+      notifyAttendees: false,
       actorAccountKey: req.salesUser.accountKey,
     });
     client = syncResult.client || client;
-    const sentResult = await sendSalesThankYou(client, {
-      force: true,
-      onlineViaCalendar: isOnline && syncResult.calendarInviteSent,
-    });
+    const sentResult = await sendSalesThankYou(client, { force: true });
     client = sentResult.client || client;
     if (!sentResult.sent) {
       return res.status(400).json({
@@ -9565,6 +9564,7 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     return res.json({
       ok: true,
       sent: true,
+      channel: sentResult.channel || 'email',
       client,
       warnings: syncResult.warnings || [],
     });

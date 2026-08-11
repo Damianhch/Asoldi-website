@@ -417,6 +417,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [clientSearchInput, setClientSearchInput] = useState('');
   const [clientSearchQuery, setClientSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -1032,9 +1033,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   async function sendWelcomeEmail(client: SalesClient) {
     setSendingWelcomeId(client.id);
     setError('');
+    setNotice('');
     try {
-      await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
+      const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
       await loadSales();
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      if (warnings.length) {
+        setNotice(`Welcome email sent to ${client.contactEmail}. Warning: ${warnings.join(' | ')}`);
+      } else {
+        setNotice(`Welcome email sent to ${client.contactEmail}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed sending welcome email');
     } finally {
@@ -1045,12 +1053,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   async function sendReminderEmail(client: SalesClient) {
     setSendingReminderId(client.id);
     setError('');
+    setNotice('');
     try {
       await request(`/admin/sales/${client.id}/send-reminder`, {
         method: 'POST',
         body: JSON.stringify({ kind: '24h' }),
       });
       await loadSales();
+      setNotice(`Reminder email sent to ${client.contactEmail}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed sending reminder email');
     } finally {
@@ -1394,6 +1404,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       </div>
 
       {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3">{error}</div>}
+      {notice && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-200 px-4 py-3">{notice}</div>}
 
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
