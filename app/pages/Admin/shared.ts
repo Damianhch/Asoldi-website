@@ -182,8 +182,11 @@ export type SalesMyphonerMeta = {
   latestRecordingSyncReason: string;
 };
 
+export type SalesProduct = 'asoldi' | 'ssu';
+
 export type SalesClient = {
   id: string;
+  product: SalesProduct;
   businessName: string;
   contactPerson: string;
   contactEmail: string;

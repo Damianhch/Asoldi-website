@@ -21,7 +21,7 @@ import {
   Wand2,
   X,
 } from 'lucide-react';
-import { API, salesAuthHeaders, type SalesClient } from '../shared';
+import { API, salesAuthHeaders, type SalesClient, type SalesProduct } from '../shared';
 import 'leaflet/dist/leaflet.css';
 
 type WebsiteOffer = {
@@ -81,6 +81,7 @@ type Props = {
 };
 
 type SalesFormState = {
+  product: SalesProduct;
   businessName: string;
   contactPerson: string;
   contactEmail: string;
@@ -99,6 +100,7 @@ type SalesFormState = {
 };
 
 const INITIAL_FORM: SalesFormState = {
+  product: 'asoldi',
   businessName: '',
   contactPerson: '',
   contactEmail: '',
@@ -115,6 +117,14 @@ const INITIAL_FORM: SalesFormState = {
   otherLinks: '',
   googleBusinessProfile: '',
 };
+
+function normalizeSalesProduct(value: unknown): SalesProduct {
+  return String(value || '').trim().toLowerCase() === 'ssu' ? 'ssu' : 'asoldi';
+}
+
+function isSsuClient(client: Pick<SalesClient, 'product'> | null | undefined) {
+  return normalizeSalesProduct(client?.product) === 'ssu';
+}
 
 function parseDetails(details: Record<string, unknown> | undefined) {
   const safe = details && typeof details === 'object' ? details : {};
@@ -413,6 +423,8 @@ function toOrigin(baseUrl = '') {
 
 export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [clients, setClients] = useState<SalesClient[]>([]);
+  const [productCounts, setProductCounts] = useState<{ asoldi: number; ssu: number }>({ asoldi: 0, ssu: 0 });
+  const [productBracket, setProductBracket] = useState<SalesProduct>('asoldi');
   const [calendarStatus, setCalendarStatus] = useState<CalendarStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -473,6 +485,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     () => normalizeClientSearchText(clientSearchQuery),
     [clientSearchQuery]
   );
+  const productClients = useMemo(
+    () => clients.filter((client) => normalizeSalesProduct(client.product) === productBracket),
+    [clients, productBracket]
+  );
+  const isSsuBracket = productBracket === 'ssu';
   const clientMatchesNameSearch = (client: SalesClient) => {
     if (!normalizedClientSearchQuery) return true;
     const haystack = [
@@ -489,11 +506,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     return matchesClientSearchQuery(haystack, normalizedClientSearchQuery);
   };
   const timelineClients = useMemo(
-    () => clients.filter((client) => client.status !== 'not-sold' && clientMatchesNameSearch(client)),
-    [clients, normalizedClientSearchQuery]
+    () => productClients.filter((client) => client.status !== 'not-sold' && clientMatchesNameSearch(client)),
+    [productClients, normalizedClientSearchQuery]
   );
   const emailAudit = useMemo(() => {
-    const rows = clients.map((client) => {
+    const rows = productClients.map((client) => {
       const email = normalizeEmail(client.contactEmail);
       const hasEmail = Boolean(email);
       const valid = hasEmail && EMAIL_RE.test(email);
@@ -509,10 +526,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       invalid: rows.filter((entry) => entry.hasEmail && !entry.valid).length,
       flaggedTest: rows.filter((entry) => entry.testLike).length,
     };
-  }, [clients]);
+  }, [productClients]);
   const archivedClients = useMemo(
-    () => clients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
-    [clients, normalizedClientSearchQuery]
+    () => productClients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
+    [productClients, normalizedClientSearchQuery]
   );
   const activeMeetingGroups = useMemo(() => {
     const upcoming: SalesClient[] = [];
@@ -544,6 +561,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   );
   const firstNoMeetingDateClientId = activeMeetingGroups.noMeetingDate[0]?.id || '';
   const firstPastDueClientId = activeMeetingGroups.pastDue[0]?.id || '';
+  const visibleMeetingMapPins = useMemo(() => {
+    const allowedIds = new Set(productClients.map((client) => client.id));
+    return meetingMapPins.filter((pin) => allowedIds.has(pin.clientId));
+  }, [meetingMapPins, productClients]);
 
   async function request(path: string, init?: RequestInit) {
     const headers: Record<string, string> = {
@@ -596,7 +617,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
     try {
       const data = await request('/admin/sales');
-      setClients(Array.isArray(data.clients) ? data.clients : []);
+      const nextClients = Array.isArray(data.clients) ? data.clients : [];
+      setClients(nextClients);
+      const counts = data.products && typeof data.products === 'object'
+        ? data.products
+        : {
+            asoldi: nextClients.filter((client: SalesClient) => normalizeSalesProduct(client.product) === 'asoldi').length,
+            ssu: nextClients.filter((client: SalesClient) => normalizeSalesProduct(client.product) === 'ssu').length,
+          };
+      setProductCounts({
+        asoldi: Number(counts.asoldi) || 0,
+        ssu: Number(counts.ssu) || 0,
+      });
       setCalendarStatus((data.calendar || null) as CalendarStatus | null);
       void loadMeetingMap();
     } catch (err) {
@@ -676,13 +708,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const markerLayer = meetingMapMarkerLayerRef.current || L.layerGroup().addTo(map);
       markerLayer.clearLayers();
 
-      if (!meetingMapPins.length) {
+      if (!visibleMeetingMapPins.length) {
         map.setView(SALES_MAP_DEFAULT_CENTER, SALES_MAP_DEFAULT_ZOOM);
         return;
       }
 
       const bounds = L.latLngBounds([]);
-      for (const pin of meetingMapPins) {
+      for (const pin of visibleMeetingMapPins) {
         const lat = Number(pin.latitude);
         const lng = Number(pin.longitude);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
@@ -714,7 +746,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [meetingMapPins]);
+  }, [visibleMeetingMapPins]);
 
   useEffect(
     () => () => {
@@ -826,7 +858,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
   function openCreate() {
     setEditingId(null);
-    setForm(INITIAL_FORM);
+    setForm({ ...INITIAL_FORM, product: productBracket });
     setShowForm(true);
   }
 
@@ -834,6 +866,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     const details = parseDetails(client.details);
     setEditingId(client.id);
     setForm({
+      product: normalizeSalesProduct(client.product),
       businessName: client.businessName || '',
       contactPerson: client.contactPerson || '',
       contactEmail: client.contactEmail || '',
@@ -859,6 +892,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setError('');
     try {
       const payload = {
+        product: form.product,
         businessName: form.businessName,
         contactPerson: form.contactPerson,
         contactEmail: form.contactEmail,
@@ -868,7 +902,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         meetingMode: form.meetingMode,
         agreedTime: form.agreedTime,
         meetingAt: form.agreedTime ? toIsoDateTime(form.meetingAt) : '',
-        websiteDomain: form.websiteDomain,
+        websiteDomain: form.product === 'ssu' ? '' : form.websiteDomain,
         details: {
           instagramUrl: form.instagramUrl,
           facebookUrl: form.facebookUrl,
@@ -1341,7 +1375,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold text-white">Sales clients</h2>
-            <p className="text-sm text-gray-400 mt-1">Add meetings, sync Google Calendar, sync previews from Website Maker, and move won clients to the Clients tab.</p>
+            <p className="text-sm text-gray-400 mt-1">
+              {isSsuBracket
+                ? 'SSU partner leads from MyPhoner. Meeting time/type and contract/payment only — no website Maker flow.'
+                : 'Website leads: meetings, Google Calendar, Website Maker previews, and promote won clients to Clients.'}
+            </p>
           </div>
           <div className="flex items-center gap-3">
             <button type="button" onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]">
@@ -1349,6 +1387,31 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               Add client
             </button>
           </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setProductBracket('asoldi')}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${
+              productBracket === 'asoldi'
+                ? 'bg-[#FF5B00] border-[#FF5B00] text-white'
+                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-white/10'
+            }`}
+          >
+            Websites ({productCounts.asoldi})
+          </button>
+          <button
+            type="button"
+            onClick={() => setProductBracket('ssu')}
+            className={`px-3 py-1.5 rounded-lg text-sm border ${
+              productBracket === 'ssu'
+                ? 'bg-[#FF5B00] border-[#FF5B00] text-white'
+                : 'bg-black/20 border-white/10 text-gray-300 hover:bg-white/10'
+            }`}
+          >
+            SSU ({productCounts.ssu})
+          </button>
         </div>
 
         <form onSubmit={applyClientNameSearch} className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
@@ -1399,6 +1462,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           </div>
         </div>
 
+        {!isSsuBracket && (
         <div className="mt-4 grid md:grid-cols-[1fr_auto] gap-4 items-end">
           <div>
             <label className="text-xs text-gray-500">Website Maker URL</label>
@@ -1440,6 +1504,19 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </p>
           </div>
         </div>
+        )}
+        {isSsuBracket && (
+          <div className="mt-4 flex flex-col items-start gap-2 rounded-xl border border-white/10 bg-black/20 p-3">
+            <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
+              Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured ? 'Not connected' : 'Not configured'}
+            </span>
+            {calendarStatus?.configured && (
+              <button type="button" onClick={connectGoogleCalendar} className="px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
+                {calendarStatus.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {(error || notice) && (
@@ -1458,7 +1535,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </p>
           </div>
           <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
-            {meetingMapPins.length} pins
+            {visibleMeetingMapPins.length} pins
           </span>
         </div>
         {meetingMapError && (
@@ -1475,7 +1552,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
           )}
         </div>
-        {!meetingMapLoading && meetingMapPins.length === 0 && (
+        {!meetingMapLoading && visibleMeetingMapPins.length === 0 && (
           <p className="mt-2 text-xs text-gray-500">No in-person meeting places to show yet.</p>
         )}
         {meetingMapUnresolvedCount > 0 && (
@@ -1496,13 +1573,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
             {orderedTimelineClients.map((client) => {
+            const clientIsSsu = isSsuClient(client);
             const step0Done = Boolean(client.agreedTime && client.meetingAt);
             const timeline: { key: ProgressionKey; done: boolean }[] = [
               { key: 'step0AgreeMeetingTime', done: step0Done },
               { key: 'contractSigned', done: Boolean(client.progression?.contractSigned) },
               { key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived) },
-              { key: 'domainConnected', done: Boolean(client.progression?.domainConnected) },
-              { key: 'live', done: Boolean(client.progression?.live) },
+              ...(!clientIsSsu
+                ? ([
+                    { key: 'domainConnected', done: Boolean(client.progression?.domainConnected) },
+                    { key: 'live', done: Boolean(client.progression?.live) },
+                  ] as { key: ProgressionKey; done: boolean }[])
+                : []),
             ];
             const importedPreviewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
@@ -1551,6 +1633,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-300">
                         {client.meetingMode === 'in-person' ? 'In person' : 'Online'}
                       </span>
+                      {clientIsSsu && (
+                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-sky-900/30 border border-sky-700/30 text-sky-300">
+                          SSU
+                        </span>
+                      )}
                       {client.status === 'secondary' && (
                         <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300">
                           Secondary
@@ -1610,7 +1697,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  {hasRun ? (
+                  {!clientIsSsu && (
+                    hasRun ? (
                     <>
                       <button
                         type="button"
@@ -1651,6 +1739,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {creatingRunId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                       Create website run
                     </button>
+                  )
                   )}
                   <button
                     type="button"
@@ -1703,7 +1792,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
                     </button>
                   )}
-                  {clientOffers.length > 0 && (
+                  {!clientIsSsu && clientOffers.length > 0 && (
                     <span className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#FF5B00]/15 text-[#ff8a4d] text-[11px]">
                       <Tag size={12} />
                       {clientOffers.length} tilbud
@@ -1742,15 +1831,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     {expanded ? 'Hide details' : 'Details & tools'}
                   </button>
                   <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => promoteClient(client)}
-                      disabled={promotingId === client.id}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
-                    >
-                      {promotingId === client.id ? <Loader2 size={13} className="animate-spin" /> : null}
-                      Got the client
-                    </button>
+                    {!clientIsSsu && (
+                      <button
+                        type="button"
+                        onClick={() => promoteClient(client)}
+                        disabled={promotingId === client.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                      >
+                        {promotingId === client.id ? <Loader2 size={13} className="animate-spin" /> : null}
+                        Got the client
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => void markNotSold(client)}
@@ -1778,7 +1869,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
                       >
                         {statusBusyId === `secondary:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
-                        Ikke interresert i nettside
+                        {clientIsSsu ? 'Secondary' : 'Ikke interresert i nettside'}
                       </button>
                     )}
                   </div>
@@ -1803,15 +1894,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </ul>
                       </details>
                       <details open className="text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">Website, calendar & reminders</summary>
+                        <summary className="cursor-pointer text-white font-medium mb-2">
+                          {clientIsSsu ? 'Calendar & reminders' : 'Website, calendar & reminders'}
+                        </summary>
                         <ul className="space-y-1 text-gray-300">
-                          <li>Website domain: {client.websiteDomain || '—'}</li>
-                          <li>Maker run: {client.makerRun?.runId || '—'}</li>
-                          <li>Maker latest ready step: {client.makerRun?.latestReadyStep || '—'}</li>
-                          <li>Maker step status: {client.makerRun?.latestStepStatus || '—'}</li>
-                          <li>Maker export path: {client.makerRun?.exportPath || '—'}</li>
-                          <li>Import source run: {client.websiteImport?.sourceRunId || '—'}</li>
-                          <li>Import step: {client.websiteImport?.sourceStep || '—'}</li>
+                          {!clientIsSsu && <li>Website domain: {client.websiteDomain || '—'}</li>}
+                          {!clientIsSsu && <li>Maker run: {client.makerRun?.runId || '—'}</li>}
+                          {!clientIsSsu && <li>Maker latest ready step: {client.makerRun?.latestReadyStep || '—'}</li>}
+                          {!clientIsSsu && <li>Maker step status: {client.makerRun?.latestStepStatus || '—'}</li>}
+                          {!clientIsSsu && <li>Maker export path: {client.makerRun?.exportPath || '—'}</li>}
+                          {!clientIsSsu && <li>Import source run: {client.websiteImport?.sourceRunId || '—'}</li>}
+                          {!clientIsSsu && <li>Import step: {client.websiteImport?.sourceStep || '—'}</li>}
                           <li>Calendar event: {client.calendar?.eventId || '—'}</li>
                           <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
                           <li>Meet link: {client.calendar?.meetLink || '—'}</li>
@@ -1894,6 +1987,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       </details>
                     </div>
 
+                    {!clientIsSsu && (
+                    <>
                     <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
                       <div className="text-sm text-white font-medium">Sync website preview from Maker</div>
                       <div className="flex flex-wrap items-center gap-2">
@@ -2107,6 +2202,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </div>
                       )}
                     </div>
+                    </>
+                    )}
                   </div>
                 )}
                 </div>
@@ -2124,7 +2221,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 )
                 : (
                   <>
-                    No sales clients in active/secondary timeline right now. Click <strong className="text-white">Add client</strong> to start.
+                    No {isSsuBracket ? 'SSU' : 'website'} sales clients in active/secondary timeline right now. Click <strong className="text-white">Add client</strong> to start.
                   </>
                 )}
             </div>
@@ -2198,12 +2295,31 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           <div className="w-full max-w-3xl rounded-2xl bg-[#1f1f1f] border border-white/10 p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-xl font-semibold text-white mb-4">{editingId ? 'Edit sales client' : 'Add sales client'}</h3>
             <form onSubmit={saveForm} className="grid md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm text-gray-300 mb-1">Product</label>
+                <select
+                  value={form.product}
+                  onChange={(e) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      product: e.target.value === 'ssu' ? 'ssu' : 'asoldi',
+                      websiteDomain: e.target.value === 'ssu' ? '' : prev.websiteDomain,
+                    }))
+                  }
+                  className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white"
+                >
+                  <option value="asoldi">Websites (Asoldi)</option>
+                  <option value="ssu">SSU</option>
+                </select>
+              </div>
               <Field label="Business name" value={form.businessName} onChange={(value) => setForm((prev) => ({ ...prev, businessName: value }))} required />
               <Field label="Contact person" value={form.contactPerson} onChange={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))} required />
               <Field label="Email (optional)" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} />
               <Field label="Phone number" value={form.contactPhone} onChange={(value) => setForm((prev) => ({ ...prev, contactPhone: value }))} />
               <Field label="Industry" value={form.industry} onChange={(value) => setForm((prev) => ({ ...prev, industry: value }))} />
-              <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />
+              {form.product !== 'ssu' && (
+                <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />
+              )}
               <Field label="Instagram URL" value={form.instagramUrl} onChange={(value) => setForm((prev) => ({ ...prev, instagramUrl: value }))} />
               <Field label="Facebook URL" value={form.facebookUrl} onChange={(value) => setForm((prev) => ({ ...prev, facebookUrl: value }))} />
               <Field label="proff.no URL" value={form.proffUrl} onChange={(value) => setForm((prev) => ({ ...prev, proffUrl: value }))} />

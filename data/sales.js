@@ -4,7 +4,11 @@ import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './stora
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
 const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
+const SSU_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived'];
 const SALES_STATUSES = ['active', 'not-sold', 'secondary'];
+const SALES_PRODUCTS = ['asoldi', 'ssu'];
+/** Known MyPhoner SSU list id(s). Extra ids can be added via MYPHONER_SSU_LIST_IDS. */
+const DEFAULT_SSU_LIST_IDS = ['210172'];
 
 function ensureDataDir() {
   ensurePersistentDataDir();
@@ -30,6 +34,46 @@ function normalizeSalesStatus(value = '') {
   const raw = sanitizeText(value).toLowerCase();
   if (SALES_STATUSES.includes(raw)) return raw;
   return 'active';
+}
+
+function normalizeSalesProduct(value = '', { allowEmpty = false } = {}) {
+  const raw = sanitizeText(value).toLowerCase();
+  if (raw === 'website' || raw === 'asoldi-website' || raw === 'nettside') return 'asoldi';
+  if (SALES_PRODUCTS.includes(raw)) return raw;
+  if (allowEmpty) return '';
+  return 'asoldi';
+}
+
+export { normalizeSalesProduct };
+
+function getConfiguredSsuListIds() {
+  const fromEnv = String(process.env.MYPHONER_SSU_LIST_IDS || '')
+    .split(/[,;\s]+/)
+    .map((entry) => sanitizeText(entry))
+    .filter(Boolean);
+  return new Set([...DEFAULT_SSU_LIST_IDS, ...fromEnv]);
+}
+
+/**
+ * Resolve sales product bracket from MyPhoner list metadata.
+ * SSU winners land in their own bracket (no website Maker / domain / live flow).
+ */
+export function resolveSalesProductFromMyphoner({ listId = '', listName = '', product = '' } = {}) {
+  const explicit = normalizeSalesProduct(product, { allowEmpty: true });
+  if (explicit) return explicit;
+  const id = sanitizeText(listId);
+  const name = sanitizeText(listName);
+  if (id && getConfiguredSsuListIds().has(id)) return 'ssu';
+  if (/^ssu$/i.test(name) || /\bssu\b/i.test(name)) return 'ssu';
+  return 'asoldi';
+}
+
+export function isSsuSalesProduct(product = '') {
+  return normalizeSalesProduct(product) === 'ssu';
+}
+
+export function getProgressionKeysForProduct(product = '') {
+  return isSsuSalesProduct(product) ? [...SSU_PROGRESSION_KEYS] : [...PROGRESSION_KEYS];
 }
 
 function normalizeMeetingMode(value) {
@@ -195,10 +239,22 @@ function normalizeSalesClient(raw = {}) {
   const updatedAt = sanitizeText(raw.updatedAt) || createdAt;
   const status = normalizeSalesStatus(raw.status);
   const archive = normalizeArchive(raw.archive);
+  const myphoner = normalizeMyphoner(raw.myphoner);
+  const product = resolveSalesProductFromMyphoner({
+    product: raw.product,
+    listId: myphoner.listId,
+    listName: myphoner.listName,
+  });
+  const progression = normalizeProgression(raw.progression, agreedTime);
+  if (product === 'ssu') {
+    progression.domainConnected = false;
+    progression.live = false;
+  }
 
   return {
     id: sanitizeText(raw.id) || makeId(),
     ownerId: sanitizeText(raw.ownerId),
+    product,
     businessName: sanitizeText(raw.businessName),
     contactPerson: sanitizeText(raw.contactPerson),
     contactEmail: sanitizeText(raw.contactEmail),
@@ -209,14 +265,14 @@ function normalizeSalesClient(raw = {}) {
     meetingDurationMinutes: durationForMode(meetingMode),
     agreedTime,
     meetingAt,
-    websiteDomain: normalizeWebsiteDomain(raw.websiteDomain),
+    websiteDomain: product === 'ssu' ? '' : normalizeWebsiteDomain(raw.websiteDomain),
     details: normalizeSalesDetails(raw.details),
-    myphoner: normalizeMyphoner(raw.myphoner),
-    progression: normalizeProgression(raw.progression, agreedTime),
+    myphoner,
+    progression,
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
-    websiteImport: normalizeWebsiteImport(raw.websiteImport),
-    makerRun: normalizeMakerRun(raw.makerRun),
+    websiteImport: product === 'ssu' ? normalizeWebsiteImport() : normalizeWebsiteImport(raw.websiteImport),
+    makerRun: product === 'ssu' ? normalizeMakerRun() : normalizeMakerRun(raw.makerRun),
     status,
     archive: status === 'not-sold' || status === 'secondary' ? archive : normalizeArchive(),
     createdAt,
@@ -348,11 +404,46 @@ export function deleteSalesClient(id) {
 
 export function setSalesProgress(id, key, value) {
   if (!PROGRESSION_KEYS.includes(key)) return null;
+  const current = getSalesClientById(id);
+  if (!current) return null;
+  if (isSsuSalesProduct(current.product) && !SSU_PROGRESSION_KEYS.includes(key)) {
+    return current;
+  }
   return updateSalesClient(id, {
     progression: {
       [key]: Boolean(value),
     },
   });
+}
+
+/** Stamp product brackets from MyPhoner list metadata for existing rows. */
+export function backfillSalesClientProducts({ forceFromList = true } = {}) {
+  const state = readState();
+  let updated = 0;
+  const next = state.map((client) => {
+    const fromList = resolveSalesProductFromMyphoner({
+      listId: client.myphoner?.listId,
+      listName: client.myphoner?.listName,
+    });
+    const previous = normalizeSalesProduct(client.product);
+    const product = forceFromList
+      ? fromList
+      : previous || fromList;
+    if (product === previous && client.product === product) return client;
+    updated += 1;
+    return normalizeSalesClient({
+      ...client,
+      product,
+      updatedAt: nowIso(),
+    });
+  });
+  writeState(next);
+  return {
+    total: next.length,
+    updated,
+    ssu: next.filter((entry) => entry.product === 'ssu').length,
+    asoldi: next.filter((entry) => entry.product === 'asoldi').length,
+  };
 }
 
 export function setSalesCalendar(id, calendarPatch = {}) {

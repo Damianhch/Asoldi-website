@@ -1488,6 +1488,11 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
   const meetingAt = agreedTime ? sanitizeText(source.meetingAt ?? existing?.meetingAt) : '';
   const meetingPlaceRaw = sanitizeText(source.meetingPlace ?? existing?.meetingPlace);
 
+  const product = (() => {
+    const requested = sanitizeText(source.product ?? existing?.product);
+    if (requested) return sales.normalizeSalesProduct(requested);
+    return sales.normalizeSalesProduct(existing?.product || 'asoldi');
+  })();
   const payload = {
     businessName: sanitizeText(source.businessName ?? existing?.businessName),
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
@@ -1498,7 +1503,9 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     meetingMode: mode,
     agreedTime,
     meetingAt,
-    websiteDomain: sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
+    product,
+    websiteDomain:
+      product === 'ssu' ? '' : sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
     details: normalizeSalesDetailLinks(source.details, existing?.details),
   };
 
@@ -5210,8 +5217,13 @@ async function upsertSalesClientFromMyphonerLead({
   let client;
   if (existing) {
     const mergedInput = mergeMyphonerSalesInput(existing, incomingInput);
+    const product = sales.resolveSalesProductFromMyphoner({
+      listId: myphonerPatch.listId || existing?.myphoner?.listId,
+      listName: myphonerPatch.listName || existing?.myphoner?.listName,
+    });
     client = sales.updateSalesClient(existing.id, {
       ...mergedInput,
+      product,
       ownerId: resolvedOwnerId || existing.ownerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
       myphoner: {
         ...(existing.myphoner || {}),
@@ -5220,8 +5232,13 @@ async function upsertSalesClientFromMyphonerLead({
       },
     });
   } else {
+    const product = sales.resolveSalesProductFromMyphoner({
+      listId: myphonerPatch.listId,
+      listName: myphonerPatch.listName,
+    });
     const createPayload = {
       ...incomingInput,
+      product,
       ownerId: resolvedOwnerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
       myphoner: {
         ...myphonerPatch,
@@ -5890,7 +5907,8 @@ async function reconcileMyphonerWebhooks() {
     const existing = myphonerIntegration.getListWinnerWebhook(listId);
     const targetChanged = sanitizeText(existing?.targetUrl) !== winnerTargetUrl;
     const eventChanged = sanitizeText(existing?.event).toLowerCase() !== 'winner';
-    if (existing && !targetChanged && !eventChanged) {
+    const missingWebhookId = !sanitizeText(existing?.webhookId);
+    if (existing && !targetChanged && !eventChanged && !missingWebhookId) {
       summary.reusedListWebhooks += 1;
       continue;
     }
@@ -9097,14 +9115,32 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
 
 app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
-  const clients = req.salesUser.isAdmin
+  const productFilter = sanitizeText(req.query?.product).toLowerCase();
+  const owned = req.salesUser.isAdmin
     ? all
     : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+  const clients =
+    productFilter === 'asoldi' || productFilter === 'ssu'
+      ? owned.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
+      : owned;
   const calendar = await ensureSharedCalendarTokens(req.salesUser.accountKey);
   res.json({
     clients,
     calendar,
+    products: {
+      asoldi: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'asoldi').length,
+      ssu: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'ssu').length,
+    },
   });
+});
+
+app.post('/api/admin/sales/backfill-products', salesAuth, (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can backfill sales products.' });
+  }
+  const forceFromList = parseBoolean(req.body?.forceFromList, true);
+  const summary = sales.backfillSalesClientProducts({ forceFromList });
+  return res.json({ ok: true, ...summary });
 });
 
 app.get('/api/admin/sales/email-audit', salesAuth, (req, res) => {
@@ -10044,6 +10080,11 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (sales.isSsuSalesProduct(client.product)) {
+    return res.status(400).json({
+      message: 'SSU leads are not website clients. Mark contract/payment instead of “Got the client”.',
+    });
+  }
 
   const site = hub.createSite({
     name: client.businessName || 'New client',
