@@ -418,6 +418,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [emailActionFeedback, setEmailActionFeedback] = useState<{
+    clientId: string;
+    tone: 'ok' | 'err';
+    text: string;
+  } | null>(null);
   const [clientSearchInput, setClientSearchInput] = useState('');
   const [clientSearchQuery, setClientSearchQuery] = useState('');
   const [showForm, setShowForm] = useState(false);
@@ -552,8 +557,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       ...init,
       headers,
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.message || data.error || 'Request failed');
+    const data = await response.json().catch(() => ({} as Record<string, unknown>));
+    if (!response.ok) {
+      const message = String(
+        (data as { message?: string; error?: string })?.message
+        || (data as { message?: string; error?: string })?.error
+        || `Request failed (${response.status})`
+      ).trim();
+      throw new Error(message || `Request failed (${response.status})`);
+    }
     return data;
   }
 
@@ -574,9 +586,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function loadSales() {
-    setLoading(true);
-    setError('');
+  async function loadSales(options: { clearMessages?: boolean; showLoading?: boolean } = {}) {
+    const clearMessages = options.clearMessages !== false;
+    const showLoading = options.showLoading !== false;
+    if (showLoading) setLoading(true);
+    if (clearMessages) {
+      setError('');
+      setNotice('');
+    }
     try {
       const data = await request('/admin/sales');
       setClients(Array.isArray(data.clients) ? data.clients : []);
@@ -585,7 +602,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load sales clients');
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }
 
@@ -1034,17 +1051,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setSendingWelcomeId(client.id);
     setError('');
     setNotice('');
+    setEmailActionFeedback(null);
     try {
-      const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
-      await loadSales();
-      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
-      if (warnings.length) {
-        setNotice(`Welcome email sent to ${client.contactEmail}. Warning: ${warnings.join(' | ')}`);
-      } else {
-        setNotice(`Welcome email sent to ${client.contactEmail}`);
+      if (!client.contactEmail) throw new Error('Client contact email is missing.');
+      if (!client.agreedTime || !client.meetingAt) {
+        throw new Error('Meeting date/time must be set before sending this email.');
       }
+      const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
+      await loadSales({ clearMessages: false, showLoading: false });
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      const text = warnings.length
+        ? `Welcome email sent to ${client.contactEmail}. Warning: ${warnings.join(' | ')}`
+        : `Welcome email sent to ${client.contactEmail}`;
+      setNotice(text);
+      setEmailActionFeedback({ clientId: client.id, tone: 'ok', text });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed sending welcome email');
+      const text = err instanceof Error ? err.message : 'Failed sending welcome email';
+      setError(text);
+      setEmailActionFeedback({ clientId: client.id, tone: 'err', text });
     } finally {
       setSendingWelcomeId(null);
     }
@@ -1054,15 +1078,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setSendingReminderId(client.id);
     setError('');
     setNotice('');
+    setEmailActionFeedback(null);
     try {
+      if (!client.contactEmail) throw new Error('Client contact email is missing.');
+      if (!client.agreedTime || !client.meetingAt) {
+        throw new Error('Meeting date/time must be set before sending this email.');
+      }
       await request(`/admin/sales/${client.id}/send-reminder`, {
         method: 'POST',
         body: JSON.stringify({ kind: '24h' }),
       });
-      await loadSales();
-      setNotice(`Reminder email sent to ${client.contactEmail}`);
+      await loadSales({ clearMessages: false, showLoading: false });
+      const text = `Reminder email sent to ${client.contactEmail}`;
+      setNotice(text);
+      setEmailActionFeedback({ clientId: client.id, tone: 'ok', text });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed sending reminder email');
+      const text = err instanceof Error ? err.message : 'Failed sending reminder email';
+      setError(text);
+      setEmailActionFeedback({ clientId: client.id, tone: 'err', text });
     } finally {
       setSendingReminderId(null);
     }
@@ -1403,8 +1436,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         </div>
       </div>
 
-      {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3">{error}</div>}
-      {notice && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-200 px-4 py-3">{notice}</div>}
+      {(error || notice) && (
+        <div className="sticky top-2 z-20 space-y-2">
+          {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 text-red-300 px-4 py-3 shadow-lg shadow-black/30">{error}</div>}
+          {notice && <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-200 px-4 py-3 shadow-lg shadow-black/30">{notice}</div>}
+        </div>
+      )}
 
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -1612,9 +1649,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   <button
                     type="button"
                     onClick={() => void sendWelcomeEmail(client)}
-                    disabled={sendingWelcomeId === client.id || !client.contactEmail || !client.agreedTime}
+                    disabled={sendingWelcomeId === client.id || !client.contactEmail || !client.agreedTime || !client.meetingAt}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={!client.agreedTime ? 'Set agreed meeting time first' : 'Send welcome email manually'}
+                    title={!client.agreedTime || !client.meetingAt ? 'Set agreed meeting time first' : 'Send welcome email manually'}
                   >
                     {sendingWelcomeId === client.id ? <Loader2 size={13} className="animate-spin" /> : <MailPlus size={13} />}
                     Send welcome email
@@ -1622,13 +1659,22 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   <button
                     type="button"
                     onClick={() => void sendReminderEmail(client)}
-                    disabled={sendingReminderId === client.id || !client.contactEmail || !client.agreedTime}
+                    disabled={sendingReminderId === client.id || !client.contactEmail || !client.agreedTime || !client.meetingAt}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={!client.agreedTime ? 'Set agreed meeting time first' : 'Send reminder email manually'}
+                    title={!client.agreedTime || !client.meetingAt ? 'Set agreed meeting time first' : 'Send reminder email manually'}
                   >
                     {sendingReminderId === client.id ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
                     Send reminder
                   </button>
+                  {emailActionFeedback?.clientId === client.id && (
+                    <p
+                      className={`w-full text-xs mt-1 ${
+                        emailActionFeedback.tone === 'ok' ? 'text-emerald-300' : 'text-red-300'
+                      }`}
+                    >
+                      {emailActionFeedback.text}
+                    </p>
+                  )}
                   {client.meetingMode === 'online' && client.calendar?.meetLink && (
                     <button
                       type="button"

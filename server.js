@@ -6820,9 +6820,27 @@ async function sendSalesReminderNow(client, kind = '24h') {
 function salesEmailFailureMessage(reason = '') {
   if (reason === 'meeting-not-scheduled') return 'Meeting date/time must be set before sending this email.';
   if (reason === 'missing-email') return 'Client contact email is missing.';
-  if (reason === 'smtp-not-configured') return 'SMTP is not configured.';
+  if (reason === 'smtp-not-configured') {
+    return 'SMTP is not configured on the server (set SMTP_HOST, SMTP_USER, SMTP_PASS).';
+  }
   if (reason === 'already-sent') return 'Email was already sent.';
   return 'Could not send email.';
+}
+
+function formatSmtpSendError(error) {
+  const raw = String(error?.message || error || '').trim();
+  const lower = raw.toLowerCase();
+  if (lower.includes('535') || lower.includes('authentication failed') || lower.includes('invalid login')) {
+    return (
+      'SMTP login failed (535). Check production SMTP_USER/SMTP_PASS for contact@asoldi.com '
+      + '(no extra quotes/spaces), then restart the app. '
+      + (raw ? `Details: ${raw}` : '')
+    ).trim();
+  }
+  if (lower.includes('disabled by user from hpanel')) {
+    return 'SMTP sending is disabled in Hostinger hPanel for this mailbox. Enable outgoing email, then retry.';
+  }
+  return raw || 'Failed sending welcome email.';
 }
 
 async function sendDueSalesReminders() {
@@ -9569,7 +9587,7 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
       warnings: syncResult.warnings || [],
     });
   } catch (error) {
-    return res.status(500).json({ message: error.message || 'Failed sending welcome email.' });
+    return res.status(500).json({ message: formatSmtpSendError(error) });
   }
 });
 
@@ -9600,7 +9618,7 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
       warnings: syncWarnings,
     });
   } catch (error) {
-    return res.status(500).json({ message: error.message || 'Failed sending reminder email.' });
+    return res.status(500).json({ message: formatSmtpSendError(error) });
   }
 });
 
