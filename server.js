@@ -6738,11 +6738,16 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
 async function backfillMissingSalesCalendarEvents({
   dryRun = true,
   limit = 0,
+  actorAccountKey = '',
+  productFilter = '',
 } = {}) {
   const allClients = sales.getSalesClients();
-  const scopedClients = Number(limit) > 0
-    ? allClients.slice(0, Math.max(1, Math.trunc(Number(limit))))
+  const productScoped = productFilter
+    ? allClients.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
     : allClients;
+  const scopedClients = Number(limit) > 0
+    ? productScoped.slice(0, Math.max(1, Math.trunc(Number(limit))))
+    : productScoped;
   const summary = {
     scanned: scopedClients.length,
     scheduled: 0,
@@ -6788,8 +6793,8 @@ async function backfillMissingSalesCalendarEvents({
 
     const syncResult = await maybeSyncCalendar(client, client, {
       notifyAttendees: false,
-      actorAccountKey: '',
-      fallbackAccountKeys: await resolveCalendarFallbackAccountKeys(client?.ownerId || '', ''),
+      actorAccountKey,
+      fallbackAccountKeys: await resolveCalendarFallbackAccountKeys(client?.ownerId || '', actorAccountKey),
     });
     const syncedClient = syncResult.client || client;
     const warnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
@@ -9218,14 +9223,20 @@ app.post('/api/admin/sales/backfill-calendar', salesAuth, async (req, res) => {
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
       ? Math.max(1, Math.min(5000, Math.trunc(requestedLimit)))
       : 0;
+    const productFilter = sanitizeText(req.body?.product).toLowerCase();
+    const actorAccountKey = sanitizeText(req.salesUser.accountKey);
     const result = await backfillMissingSalesCalendarEvents({
       dryRun,
       limit,
+      actorAccountKey,
+      productFilter: productFilter === 'asoldi' || productFilter === 'ssu' ? productFilter : '',
     });
     return res.json({
       ok: true,
       dryRun,
       limit,
+      productFilter: productFilter || null,
+      actorAccountKey,
       ...result,
     });
   } catch (error) {
