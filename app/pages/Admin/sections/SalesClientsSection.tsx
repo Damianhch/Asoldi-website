@@ -1060,9 +1060,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
       await loadSales({ clearMessages: false, showLoading: false });
       const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
-      const text = warnings.length
-        ? `Welcome email sent to ${client.contactEmail}. Warning: ${warnings.join(' | ')}`
-        : `Welcome email sent to ${client.contactEmail}`;
+      const meetLink = String(data?.meetLink || data?.client?.calendar?.meetLink || '').trim();
+      const parts = [`Welcome email sent to ${client.contactEmail}`];
+      if (meetLink) parts.push(`Meet: ${meetLink}`);
+      else if (client.meetingMode === 'online') parts.push('Meet link: not created yet (connect Google Calendar / sync meeting)');
+      if (warnings.length) parts.push(`Warning: ${warnings.join(' | ')}`);
+      const text = parts.join(' · ');
       setNotice(text);
       setEmailActionFeedback({ clientId: client.id, tone: 'ok', text });
     } catch (err) {
@@ -1084,12 +1087,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       if (!client.agreedTime || !client.meetingAt) {
         throw new Error('Meeting date/time must be set before sending this email.');
       }
-      await request(`/admin/sales/${client.id}/send-reminder`, {
+      const data = await request(`/admin/sales/${client.id}/send-reminder`, {
         method: 'POST',
         body: JSON.stringify({ kind: '24h' }),
       });
       await loadSales({ clearMessages: false, showLoading: false });
-      const text = `Reminder email sent to ${client.contactEmail}`;
+      const meetLink = String(data?.meetLink || data?.client?.calendar?.meetLink || '').trim();
+      const parts = [`Reminder email sent to ${client.contactEmail}`];
+      if (meetLink) parts.push(`Meet: ${meetLink}`);
+      const text = parts.join(' · ');
       setNotice(text);
       setEmailActionFeedback({ clientId: client.id, tone: 'ok', text });
     } catch (err) {

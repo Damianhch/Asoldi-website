@@ -6788,8 +6788,10 @@ async function sendSalesThankYou(client, { force = false } = {}) {
   // Always send the Asoldi template over SMTP. Online meetings include an .ics
   // attachment clients can Accept — Google Calendar notify emails are not a substitute.
   const message = buildSalesThankYouEmail(client, client.calendar || {});
+  const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
     to: client.contactEmail,
+    bcc: salesEmailCopyBcc(client.contactEmail),
     subject: message.subject,
     text: message.text,
     html: message.html,
@@ -6798,7 +6800,13 @@ async function sendSalesThankYou(client, { force = false } = {}) {
     icalEvent: message.icalEvent,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
-  return { sent: true, client: updated || client, channel: 'email' };
+  return {
+    sent: true,
+    client: updated || client,
+    channel: 'email',
+    meetLink,
+    copyTo: salesEmailCopyBcc(client.contactEmail),
+  };
 }
 
 async function sendSalesReminderNow(client, kind = '24h') {
@@ -6807,14 +6815,39 @@ async function sendSalesReminderNow(client, kind = '24h') {
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   const reminderKind = kind === '1h' ? '1h' : '24h';
   const message = buildSalesReminderEmail(client, client.calendar || {}, reminderKind);
+  const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
     to: client.contactEmail,
+    bcc: salesEmailCopyBcc(client.contactEmail),
     subject: message.subject,
     text: message.text,
     html: message.html,
   });
   const updated = sales.markSalesReminderSent(client.id, reminderKind);
-  return { sent: true, client: updated || client, kind: reminderKind };
+  return {
+    sent: true,
+    client: updated || client,
+    kind: reminderKind,
+    meetLink,
+    copyTo: salesEmailCopyBcc(client.contactEmail),
+  };
+}
+
+function resolveSalesCopyRecipients() {
+  const configured = sanitizeText(process.env.SALES_EMAIL_COPY_TO || process.env.SMTP_BCC);
+  const defaults = ['daracha777@gmail.com'];
+  const merged = `${configured},${defaults.join(',')}`
+    .split(',')
+    .map((value) => sanitizeText(value).toLowerCase())
+    .filter(Boolean);
+  return [...new Set(merged)];
+}
+
+function salesEmailCopyBcc(clientEmail = '') {
+  const client = sanitizeText(clientEmail).toLowerCase();
+  return resolveSalesCopyRecipients()
+    .filter((email) => email !== client)
+    .join(', ');
 }
 
 function salesEmailFailureMessage(reason = '') {
@@ -6863,6 +6896,7 @@ async function sendDueSalesReminders() {
         const message = buildSalesReminderEmail(client, client.calendar || {}, '24h');
         await emailLib.sendEmail({
           to: client.contactEmail,
+          bcc: salesEmailCopyBcc(client.contactEmail),
           subject: message.subject,
           text: message.text,
           html: message.html,
@@ -6874,6 +6908,7 @@ async function sendDueSalesReminders() {
         const message = buildSalesReminderEmail(client, client.calendar || {}, '1h');
         await emailLib.sendEmail({
           to: client.contactEmail,
+          bcc: salesEmailCopyBcc(client.contactEmail),
           subject: message.subject,
           text: message.text,
           html: message.html,
@@ -9583,6 +9618,8 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
       ok: true,
       sent: true,
       channel: sentResult.channel || 'email',
+      meetLink: sentResult.meetLink || client?.calendar?.meetLink || '',
+      copyTo: sentResult.copyTo || '',
       client,
       warnings: syncResult.warnings || [],
     });
@@ -9614,6 +9651,8 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
       ok: true,
       sent: true,
       kind: reminderKind,
+      meetLink: sentResult.meetLink || client?.calendar?.meetLink || '',
+      copyTo: sentResult.copyTo || '',
       client,
       warnings: syncWarnings,
     });
