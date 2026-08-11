@@ -337,15 +337,21 @@ function resolveOpenInMakerUrl({
   const stored = String(storedDashboardUrl || '').trim();
   const status = String(intakeStatus || '').trim().toLowerCase();
   const storedLooksLikeIntake = /\/run-v2(?:\?|$)/i.test(stored) && /[?&]draftRunId=/i.test(stored);
+  const storedLooksLikeRun = /\/run\/[^/?#]+/i.test(stored) && !storedLooksLikeIntake;
   const hasReadyStep = Boolean(String(latestReadyStep || '').trim());
-  // Sales drafts stay on /run-v2 until a template is chosen / a step is ready.
-  const intakePending =
-    status === 'pending' ||
-    storedLooksLikeIntake ||
-    (!hasReadyStep && status !== 'configured');
-  // Always open against the CURRENT Website Maker URL field (tunnel or localhost:3000).
-  // Never trust a stale stored host like localhost:4000 from an old create-run.
-  if (intakePending) return buildMakerRunUrl(base, id, 'intake');
+  // Prefer explicit intake status from Maker. Do NOT trap forever on a stale
+  // stored draft URL once intake is configured / a pipeline step is ready.
+  if (status === 'configured' || hasReadyStep || storedLooksLikeRun) {
+    if (storedLooksLikeRun) {
+      const remapped = remapMakerUrlToBase(base, stored);
+      if (remapped) return normalizeMakerDashboardDraftUrl(remapped);
+    }
+    return buildMakerRunUrl(base, id, 'dashboard');
+  }
+  if (status === 'pending' || storedLooksLikeIntake) {
+    return buildMakerRunUrl(base, id, 'intake');
+  }
+  // Unknown status: keep path semantics from stored URL when present.
   if (stored) {
     const remapped = remapMakerUrlToBase(base, stored);
     if (remapped) return normalizeMakerDashboardDraftUrl(remapped);
@@ -424,6 +430,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -976,6 +983,52 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function openInMaker(client: SalesClient) {
+    const makerRunId = String(client.makerRun?.runId || '').trim();
+    if (!makerRunId) {
+      setError('No Website Maker run is linked to this client yet.');
+      return;
+    }
+    setOpeningMakerId(client.id);
+    setError('');
+    const fallbackUrl = resolveOpenInMakerUrl({
+      baseUrl: websiteMakerBaseUrl,
+      runId: makerRunId,
+      storedDashboardUrl: normalizeMakerDashboardDraftUrl(String(client.makerRun?.dashboardUrl || '').trim()),
+      intakeStatus: String(client.makerRun?.intakeStatus || ''),
+      latestReadyStep: String(client.makerRun?.latestReadyStep || ''),
+    });
+    try {
+      const data = await request(`/admin/sales/${client.id}/refresh-maker-handoff`, {
+        method: 'POST',
+        body: JSON.stringify({
+          websiteMakerBaseUrl,
+          runId: makerRunId,
+        }),
+      });
+      const resolvedBase = normalizeHttpBaseUrl(data?.websiteMakerBaseUrl || '');
+      if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
+      const refreshedUrl = resolveOpenInMakerUrl({
+        baseUrl: resolvedBase || websiteMakerBaseUrl,
+        runId: makerRunId,
+        storedDashboardUrl: normalizeMakerDashboardDraftUrl(String(data?.dashboardUrl || data?.client?.makerRun?.dashboardUrl || '').trim()),
+        intakeStatus: String(data?.intakeStatus || data?.client?.makerRun?.intakeStatus || ''),
+        latestReadyStep: String(data?.client?.makerRun?.latestReadyStep || client.makerRun?.latestReadyStep || ''),
+      });
+      const target = refreshedUrl || fallbackUrl;
+      if (!target) throw new Error('Could not resolve Website Maker URL for this client.');
+      window.open(target, '_blank');
+      await loadSales();
+    } catch (err) {
+      if (fallbackUrl) {
+        window.open(fallbackUrl, '_blank');
+      }
+      setError(err instanceof Error ? err.message : 'Failed opening Website Maker');
+    } finally {
+      setOpeningMakerId(null);
+    }
+  }
+
   async function sendWelcomeEmail(client: SalesClient) {
     setSendingWelcomeId(client.id);
     setError('');
@@ -1507,11 +1560,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     <>
                       <button
                         type="button"
-                        onClick={() => window.open(makerDashboardUrl, '_blank')}
-                        disabled={!makerDashboardUrl}
+                        onClick={() => void openInMaker(client)}
+                        disabled={!makerDashboardUrl || openingMakerId === client.id}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
                       >
-                        <ExternalLink size={13} />
+                        {openingMakerId === client.id ? <Loader2 size={13} className="animate-spin" /> : <ExternalLink size={13} />}
                         Open in maker
                       </button>
                       <button

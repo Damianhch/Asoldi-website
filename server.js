@@ -6179,14 +6179,29 @@ function normalizeMakerDashboardPath(pathOrUrl = '') {
   }
 }
 
+function parseHandoffNeedsIntake(handoff = {}, dashboardPath = '') {
+  const payload = handoff && typeof handoff === 'object' ? handoff : {};
+  if (typeof payload.needsIntakeSetup === 'boolean') return payload.needsIntakeSetup;
+  const rawNeed = payload.needsIntakeSetup;
+  if (rawNeed === true || rawNeed === 1 || /^true|1|yes$/i.test(String(rawNeed || '').trim())) return true;
+  if (rawNeed === false || rawNeed === 0 || /^false|0|no$/i.test(String(rawNeed || '').trim())) return false;
+
+  const status = sanitizeText(payload.intakeStatus).toLowerCase();
+  if (status === 'configured') return false;
+  if (status === 'pending') return true;
+
+  const path = sanitizeText(dashboardPath) || normalizeMakerDashboardPath(payload.dashboardPath);
+  if (/\/run-v2(?:\?|$)/i.test(path) && /[?&]draftRunId=/i.test(path)) return true;
+  if (/^\/run\//i.test(path)) return false;
+  // Unknown: prefer intake for Sales drafts until Maker reports configured.
+  return true;
+}
+
 function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
   const encodedRunId = encodeURIComponent(runId);
   const intakePath = sanitizeText(handoff.intakePath) || `/run-v2?draftRunId=${encodedRunId}`;
   const handoffDashboardPath = normalizeMakerDashboardPath(handoff.dashboardPath);
-  const wantsIntake =
-    /\/run-v2/i.test(handoffDashboardPath) ||
-    /pending/i.test(sanitizeText(handoff.intakeStatus)) ||
-    Boolean(sanitizeText(handoff.needsIntakeSetup));
+  const wantsIntake = parseHandoffNeedsIntake(handoff, handoffDashboardPath);
   const fallbackDashboardPath = wantsIntake ? intakePath : `/run/${encodedRunId}`;
   const fallbackPreviewPath = `/preview/${encodedRunId}/step/3/view?route=/`;
   const dashboardPath = handoffDashboardPath || fallbackDashboardPath;
@@ -6203,7 +6218,7 @@ function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
   if (latestReadyStep) links.latestReadyStep = latestReadyStep;
   if (latestStepStatus) links.latestStepStatus = latestStepStatus;
   if (resolvedExportPath) links.exportPath = resolvedExportPath;
-  if (latestReadyStep || latestStepStatus || resolvedExportPath) {
+  if (latestReadyStep || latestStepStatus || resolvedExportPath || links.intakeStatus) {
     links.statusUpdatedAt = new Date().toISOString();
   }
   return links;
@@ -8996,6 +9011,7 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   if (sanitizeText(linked.latestReadyStep)) patch.latestReadyStep = linked.latestReadyStep;
   if (sanitizeText(linked.latestStepStatus)) patch.latestStepStatus = linked.latestStepStatus;
   else if (callbackStatus) patch.latestStepStatus = callbackStatus;
+  if (sanitizeText(linked.intakeStatus)) patch.intakeStatus = linked.intakeStatus;
 
   const updated = sales.setSalesMakerRun(client.id, patch);
   return res.json({ ok: true, event, client: updated });
@@ -9706,6 +9722,53 @@ app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
   }
 });
 
+// Refresh stored Maker dashboard/preview links from live Website Maker state so
+// "Open in maker" resumes draft vs run correctly after the operator closes the tab.
+app.post('/api/admin/sales/:id/refresh-maker-handoff', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+
+  const runId = sanitizeText(req.body?.runId || client.makerRun?.runId);
+  if (!runId) {
+    return res.status(400).json({ message: 'No Website Maker run is linked to this sales client.' });
+  }
+
+  const websiteMakerBaseUrl = resolveWebsiteMakerBaseUrl(req.body?.websiteMakerBaseUrl, client);
+  if (!websiteMakerBaseUrl) {
+    return res.status(400).json({ message: 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).' });
+  }
+
+  try {
+    const run = await fetchMakerRunRecord({ websiteMakerBaseUrl, runId });
+    const runHandoff = run?.salesHandoff && typeof run.salesHandoff === 'object' ? run.salesHandoff : {};
+    const makerLinks = buildMakerRunLinks(websiteMakerBaseUrl, runId, runHandoff);
+    const updated = sales.setSalesMakerRun(client.id, {
+      runId,
+      ...makerLinks,
+      industry:
+        sanitizeText(client.makerRun?.industry) ||
+        sanitizeText(client.industry) ||
+        sanitizeText(run?.answers?.industry),
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+    });
+    if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+    return res.json({
+      ok: true,
+      client: updated,
+      websiteMakerBaseUrl,
+      dashboardUrl: sanitizeText(makerLinks.dashboardUrl),
+      previewUrl: sanitizeText(makerLinks.previewUrl),
+      intakeStatus: sanitizeText(makerLinks.intakeStatus),
+      handoff: runHandoff,
+    });
+  } catch (error) {
+    return res
+      .status(httpStatusFromError(error, 502))
+      .json({ message: error.message || 'Failed refreshing Website Maker handoff.' });
+  }
+});
+
 // Auto-create a run in the Website Maker (server-to-server) pre-filled with the
 // client's business name + industry, then store the runId + maker links so the
 // rep can "Open in maker" and "Preview" without manual export/import.
@@ -9813,11 +9876,24 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
         makerPayload = data && typeof data === 'object' ? data : {};
         break;
       } catch (error) {
-        lastMakerError = error?.message || 'Failed reaching the Website Maker.';
+        const raw = String(error?.message || 'Failed reaching the Website Maker.');
+        if (/ENOTFOUND|getaddrinfo|Could not resolve|EAI_AGAIN/i.test(raw) || /ENOTFOUND|getaddrinfo/i.test(String(error?.cause || ''))) {
+          lastMakerError =
+            `Website Maker host could not be resolved (${candidateBase}). ` +
+            'Update the Website Maker URL in Sales (or WEBSITE_MAKER_BASE_URL) to a live tunnel/deploy hostname — DNS NXDOMAIN means create-run cannot reach Maker.';
+        } else if (/ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(raw)) {
+          lastMakerError =
+            `Website Maker is unreachable at ${candidateBase} (${raw}). Confirm the Maker app is running and the tunnel/URL is current.`;
+        } else {
+          lastMakerError = raw;
+        }
       }
     }
     if (!base || !runId) {
-      return res.status(502).json({ message: lastMakerError || 'Failed reaching the Website Maker.' });
+      return res.status(502).json({
+        message: lastMakerError || 'Failed reaching the Website Maker.',
+        triedBases: baseCandidates,
+      });
     }
 
     let runHandoff = makerPayload?.handoff && typeof makerPayload.handoff === 'object' ? makerPayload.handoff : {};
