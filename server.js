@@ -874,15 +874,27 @@ async function geocodeMeetingPlace(place = '') {
   }
 }
 
+function healStaleLocalMakerPort(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  // Maker always listens on :3000 locally. Remap any legacy :4000 origin so
+  // Sales create-run / import never tries the dead port again.
+  return raw.replace(
+    /^(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):4000(?=$|[/?#])/i,
+    '$1:3000'
+  );
+}
+
 function normalizeHttpBaseUrl(value = '') {
-  const raw = sanitizeText(value);
+  const raw = sanitizeText(healStaleLocalMakerPort(value));
   if (!raw) return '';
   const withProtocol = /^[a-zA-Z][a-zA-Z\d+\-.]*:\/\//.test(raw) ? raw : `https://${raw}`;
   try {
     const parsed = new URL(withProtocol);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return '';
     const cleanPath = String(parsed.pathname || '').replace(/\/+$/, '');
-    return `${parsed.protocol}//${parsed.host}${cleanPath}`;
+    const originAndPath = `${parsed.protocol}//${parsed.host}${cleanPath}`;
+    return healStaleLocalMakerPort(originAndPath);
   } catch {
     return '';
   }
@@ -893,7 +905,7 @@ function normalizeHttpOrigin(value = '') {
   if (!normalized) return '';
   try {
     const parsed = new URL(normalized);
-    return `${parsed.protocol}//${parsed.host}`;
+    return healStaleLocalMakerPort(`${parsed.protocol}//${parsed.host}`);
   } catch {
     return '';
   }
@@ -9908,6 +9920,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
 
   // Prefer the URL the operator typed in the Sales UI (typically a tunnel URL).
   // Only fall back to localhost when no non-local URL is configured.
+  // normalizeHttpOrigin remaps legacy local :4000 → :3000.
   const requestedBase = normalizeHttpOrigin(req.body?.websiteMakerBaseUrl || '');
   const envBase = normalizeHttpOrigin(process.env.WEBSITE_MAKER_BASE_URL || '');
   const localBase = normalizeHttpOrigin(DEFAULT_MAKER_LOCAL_URL);

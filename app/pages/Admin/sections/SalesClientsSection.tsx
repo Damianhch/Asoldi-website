@@ -307,11 +307,11 @@ function normalizeHttpBaseUrl(value = '') {
 function healStaleLocalMakerBase(value = '') {
   const normalized = normalizeHttpBaseUrl(value);
   if (!normalized) return '';
-  // Historical localStorage/UI mistakes pointed at :4000 while Maker runs on :3000.
-  if (/^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0):4000$/i.test(normalized)) {
-    return 'http://localhost:3000';
-  }
-  return normalized;
+  // Maker local port is always :3000 — remap any legacy wrong local port.
+  return normalized.replace(
+    /^(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):(?:4000|3001|5173)(?=$)/i,
+    '$1:3000'
+  );
 }
 
 function buildMakerRunUrl(
@@ -1018,14 +1018,19 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingRunId(client.id);
     setError('');
     try {
+      const makerBase =
+        healStaleLocalMakerBase(websiteMakerBaseUrl) ||
+        normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
+        'http://localhost:3000';
+      if (makerBase !== websiteMakerBaseUrl) setWebsiteMakerBaseUrl(makerBase);
       const data = await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
         body: JSON.stringify({
-          websiteMakerBaseUrl,
+          websiteMakerBaseUrl: makerBase,
           forceNewRun,
         }),
       });
-      const resolvedBase = normalizeHttpBaseUrl(data?.websiteMakerBaseUrl || '');
+      const resolvedBase = healStaleLocalMakerBase(data?.websiteMakerBaseUrl || '') || normalizeHttpBaseUrl(data?.websiteMakerBaseUrl || '');
       if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
       await loadSales();
     } catch (err) {
@@ -1286,7 +1291,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const popupUrl = new URL('/local-tunnel', localOrigin);
       popupUrl.searchParams.set('returnOrigin', window.location.origin);
       popupUrl.searchParams.set('targetUrl', localTarget);
-      popupUrl.searchParams.set('forceRestart', '1');
+      popupUrl.searchParams.set('forceRestart', '0');
+      // Reuse a healthy Maker tunnel when possible. Forcing a brand-new hostname
+      // every click routinely exceeds the production popup timeout on low-RAM PCs.
 
       const popup = window.open(
         popupUrl.toString(),
@@ -1314,11 +1321,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           finish(() =>
             reject(
               new Error(
-                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again (first start can take up to ~2 minutes while health checks warm the app).'
+                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again (first start can take a few minutes while the tunnel + health checks finish).'
               )
             )
           );
-        }, 120_000);
+        }, 300_000);
         const closeWatcherId = window.setInterval(() => {
           if (!popup.closed) return;
           finish(() =>
@@ -1486,8 +1493,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               Maker must be reachable at this URL. Use <code>http://localhost:3000</code> locally, or click
-              &quot;New tunnel URL&quot; for asoldi.com → Maker. Stale <code>:4000</code> bases are auto-corrected to
-              <code>:3000</code>.
+              &quot;New tunnel URL&quot; for asoldi.com → Maker.
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
