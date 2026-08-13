@@ -41,6 +41,20 @@ Users-only (legacy):
 PROD_ADMIN_PASSWORD='your-admin-password' node scripts/sync-prod-users.mjs --out C:\hosted\asoldi-data\users.json
 ```
 
+## 3) Publishing a tested website to production
+
+Creating a Website Maker run on LAN **does not** update asoldi.com. That is the CRM safety net.
+
+When a run is good enough to show on the live sales page, use **Publish website to asoldi.com** on the LAN client card. That copies **only** `makerRun` (run id, preview URL, dashboard URL). Name, status, MyPhoner, and other CRM fields on production are left alone.
+
+Requirements:
+
+1. Deploy this Asoldi-website change to asoldi.com first (so production has `POST /api/admin/sales/:id/set-maker-run`).
+2. LAN env: `PROD_ADMIN_URL=https://asoldi.com` and `PROD_ADMIN_PASSWORD` (same as `/admin`).
+3. If people off the office network should open the preview from asoldi.com, start a Maker **tunnel URL** before publishing. A `http://192.168.68.92:3000` preview only works on the LAN.
+
+Republish after you improve the run; it overwrites the previous production maker links for that client only.
+
 ## Why the counts diverged
 
 A workstation `~/.asoldi-website-data` folder (March 2026, ~45 clients) was copied onto LAN. Production had kept receiving MyPhoner winners (68 clients at last sync: 53 Asoldi + 15 SSU). Those are independent JSON files, not git.

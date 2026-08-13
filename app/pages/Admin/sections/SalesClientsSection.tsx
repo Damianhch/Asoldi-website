@@ -16,6 +16,7 @@ import {
   Tag,
   Trash2,
   Undo2,
+  Upload,
   UserRound,
   Volume2,
   Wand2,
@@ -55,6 +56,7 @@ const OFFER_TIERS = [
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
+const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
 const MAKER_TUNNEL_TARGET_URL = 'http://localhost:3000';
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
 const SALES_MAP_DEFAULT_ZOOM = 5;
@@ -444,6 +446,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -1033,6 +1036,33 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       setError(err instanceof Error ? err.message : 'Failed creating website run');
     } finally {
       setCreatingRunId(null);
+    }
+  }
+
+  async function publishMakerRunToProd(client: SalesClient) {
+    const makerRunId = String(client.makerRun?.runId || '').trim();
+    if (!makerRunId) {
+      setError('Create or link a Website Maker run on this LAN client first.');
+      return;
+    }
+    const confirmed = window.confirm(
+      'Publish only this website run (preview/dashboard links) to asoldi.com?\n\nClient name, status, MyPhoner data, and other CRM fields on production will not change.'
+    );
+    if (!confirmed) return;
+    setPublishingMakerId(client.id);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/publish-maker-run-to-prod`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      const extra = typeof data?.warning === 'string' && data.warning ? ` ${data.warning}` : '';
+      setNotice(`Website run ${makerRunId} is now on asoldi.com/sales.${extra}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed publishing website run to asoldi.com');
+    } finally {
+      setPublishingMakerId(null);
     }
   }
 
@@ -1735,6 +1765,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         {creatingRunId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                         Create new run
                       </button>
+                      {IS_LAN_SALES_HOST ? (
+                      <button
+                        type="button"
+                        onClick={() => void publishMakerRunToProd(client)}
+                        disabled={publishingMakerId === client.id}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-600 disabled:opacity-50"
+                        title="Copy only this website run onto asoldi.com/sales. Does not change production CRM fields."
+                      >
+                        {publishingMakerId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+                        Publish website to asoldi.com
+                      </button>
+                      ) : null}
                     </>
                   ) : (
                     <button

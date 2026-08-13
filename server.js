@@ -9862,6 +9862,110 @@ app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
   }
 });
 
+function isPrivateMakerUrl(value = '') {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(String(value || ''));
+}
+
+function resolveProdAdminBaseUrl() {
+  const prod = normalizeHttpBaseUrl(process.env.PROD_ADMIN_URL || 'https://asoldi.com');
+  const self = normalizeHttpBaseUrl(process.env.APP_URL || '');
+  if (!prod) return '';
+  if (self && prod.replace(/\/$/, '') === self.replace(/\/$/, '')) return '';
+  return prod;
+}
+
+app.post('/api/admin/sales/:id/set-maker-run', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (sales.isSsuSalesProduct(client.product)) {
+    return res.status(400).json({ message: 'SSU clients do not use Website Maker runs.' });
+  }
+  const makerPatch = req.body?.makerRun && typeof req.body.makerRun === 'object' ? req.body.makerRun : req.body || {};
+  const runId = sanitizeText(makerPatch.runId);
+  if (!runId) {
+    return res.status(400).json({ message: 'makerRun.runId is required.' });
+  }
+  const updated = sales.setSalesMakerRun(client.id, makerPatch);
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  const previewUrl = sanitizeText(updated.makerRun?.previewUrl);
+  const dashboardUrl = sanitizeText(updated.makerRun?.dashboardUrl);
+  res.json({
+    ok: true,
+    client: updated,
+    lanOnlyPreview: isPrivateMakerUrl(previewUrl) || isPrivateMakerUrl(dashboardUrl),
+  });
+});
+
+app.post('/api/admin/sales/:id/publish-maker-run-to-prod', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const runId = sanitizeText(client.makerRun?.runId);
+  if (!runId) {
+    return res.status(400).json({ message: 'No Website Maker run is linked on this LAN client yet.' });
+  }
+  const prodBase = resolveProdAdminBaseUrl();
+  if (!prodBase) {
+    return res.status(400).json({
+      message: 'This instance is already production (or PROD_ADMIN_URL is unset). Maker runs stay on asoldi.com automatically.',
+    });
+  }
+  const username = sanitizeText(process.env.PROD_ADMIN_USERNAME || process.env.ADMIN_USERNAME) || 'asoldi.com';
+  const password = sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
+  if (!password) {
+    return res.status(503).json({ message: 'Set PROD_ADMIN_PASSWORD (asoldi.com/admin password) to publish a maker run.' });
+  }
+  try {
+    const loginRes = await fetch(`${prodBase}/api/admin/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const loginBody = await loginRes.json().catch(() => ({}));
+    if (!loginRes.ok || !loginBody.token) {
+      return res.status(502).json({ message: loginBody.message || 'Failed logging into asoldi.com/admin.' });
+    }
+    const publishRes = await fetch(`${prodBase}/api/admin/sales/${encodeURIComponent(client.id)}/set-maker-run`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${loginBody.token}`,
+      },
+      body: JSON.stringify({ makerRun: client.makerRun }),
+    });
+    const publishBody = await publishRes.json().catch(() => ({}));
+    if (publishRes.status === 404) {
+      return res.status(409).json({
+        message:
+          publishBody.message === 'Sales client not found.'
+            ? 'This client id is not on asoldi.com. Refresh LAN from production, then retry.'
+            : 'asoldi.com does not have the publish endpoint yet. Deploy this Asoldi-website change to production first, then retry.',
+      });
+    }
+    if (!publishRes.ok) {
+      return res.status(publishRes.status >= 400 && publishRes.status <= 599 ? publishRes.status : 502).json({
+        message: publishBody.message || `asoldi.com rejected the publish (${publishRes.status}).`,
+      });
+    }
+    const previewUrl = sanitizeText(client.makerRun?.previewUrl);
+    const dashboardUrl = sanitizeText(client.makerRun?.dashboardUrl);
+    const lanOnlyPreview = isPrivateMakerUrl(previewUrl) || isPrivateMakerUrl(dashboardUrl);
+    return res.json({
+      ok: true,
+      prodBase,
+      runId,
+      lanOnlyPreview,
+      warning: lanOnlyPreview
+        ? 'Published, but preview/dashboard URLs are on the office LAN. Off-network visitors need a Maker tunnel URL before this is publicly visible from asoldi.com.'
+        : '',
+      client: publishBody.client || null,
+    });
+  } catch (error) {
+    return res.status(502).json({ message: error.message || 'Failed publishing maker run to asoldi.com.' });
+  }
+});
+
 // Refresh stored Maker dashboard/preview links from live Website Maker state so
 // "Open in maker" resumes draft vs run correctly after the operator closes the tab.
 app.post('/api/admin/sales/:id/refresh-maker-handoff', salesAuth, async (req, res) => {
