@@ -51,7 +51,7 @@ Requirements:
 
 1. Deploy this Asoldi-website change to asoldi.com first (so production has `POST /api/admin/sales/:id/set-maker-run`).
 2. LAN env: `PROD_ADMIN_URL=https://asoldi.com` and `PROD_ADMIN_PASSWORD` (same as `/admin`).
-3. If people off the office network should open the preview from asoldi.com, start a Maker **tunnel URL** before publishing. A `http://192.168.68.92:3000` preview only works on the LAN.
+3. If people off the office network should open the **preview** from asoldi.com, the stored Maker URL must be reachable from their browser. `http://192.168.68.92:3000` only works on the office LAN.
 
 Republish after you improve the run; it overwrites the previous production maker links for that client only.
 
