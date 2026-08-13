@@ -13,7 +13,8 @@
     "start": "node server.js",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "sync:prod-users": "node scripts/sync-prod-users.mjs"
+    "sync:prod-users": "node scripts/sync-prod-users.mjs",
+    "sync:prod-runtime": "node scripts/sync-prod-runtime.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.29.0",
