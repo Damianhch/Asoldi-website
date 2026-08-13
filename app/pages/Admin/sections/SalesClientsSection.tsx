@@ -76,6 +76,8 @@ type MeetingMapPin = {
   contactPerson: string;
   meetingPlace: string;
   meetingAt: string;
+  meetingMode?: 'online' | 'in-person';
+  status?: 'active' | 'not-sold' | 'secondary';
   latitude: number;
   longitude: number;
 };
@@ -270,6 +272,26 @@ function parseMeetingTimestamp(value = '') {
   const time = date.getTime();
   if (Number.isNaN(time)) return null;
   return time;
+}
+
+function pinStyleFor(pin: MeetingMapPin) {
+  if (pin.status === 'not-sold') {
+    return { color: '#9ca3af', fillColor: '#6b7280' };
+  }
+  if (pin.status === 'secondary') {
+    return { color: '#c084fc', fillColor: '#a855f7' };
+  }
+  if (pin.meetingMode === 'online') {
+    return { color: '#60a5fa', fillColor: '#3b82f6' };
+  }
+  return { color: '#ff7a2f', fillColor: '#FF5B00' };
+}
+
+function offsetOverlappingPin(lat: number, lng: number, indexAtCell: number): [number, number] {
+  if (indexAtCell <= 0) return [lat, lng];
+  const angle = indexAtCell * 2.399;
+  const radius = 0.00018 * Math.ceil(indexAtCell / 6);
+  return [lat + Math.cos(angle) * radius, lng + Math.sin(angle) * radius];
 }
 
 function escapeHtml(value = '') {
@@ -467,6 +489,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [meetingMapLoading, setMeetingMapLoading] = useState(false);
   const [meetingMapError, setMeetingMapError] = useState('');
   const [meetingMapUnresolvedCount, setMeetingMapUnresolvedCount] = useState(0);
+  const [meetingMapPendingCount, setMeetingMapPendingCount] = useState(0);
+  const [meetingMapMissingAddressCount, setMeetingMapMissingAddressCount] = useState(0);
   const [recordingBlobUrlByClient, setRecordingBlobUrlByClient] = useState<Record<string, string>>({});
   const [recordingOpenClientId, setRecordingOpenClientId] = useState<string | null>(null);
   const [recordingLoadingClientId, setRecordingLoadingClientId] = useState<string | null>(null);
@@ -598,20 +622,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     return data;
   }
 
-  async function loadMeetingMap() {
-    setMeetingMapLoading(true);
+  async function loadMeetingMap(options?: { quiet?: boolean }) {
+    const quiet = Boolean(options?.quiet);
+    if (!quiet) setMeetingMapLoading(true);
     setMeetingMapError('');
     try {
       const data = await request('/admin/sales/meeting-map');
       const pins = Array.isArray(data.pins) ? data.pins : [];
       setMeetingMapPins(pins as MeetingMapPin[]);
       setMeetingMapUnresolvedCount(Number.isFinite(Number(data.unresolvedCount)) ? Number(data.unresolvedCount) : 0);
+      setMeetingMapPendingCount(Number.isFinite(Number(data.pendingCount)) ? Number(data.pendingCount) : 0);
+      setMeetingMapMissingAddressCount(
+        Number.isFinite(Number(data.missingAddressCount)) ? Number(data.missingAddressCount) : 0
+      );
     } catch (err) {
-      setMeetingMapError(err instanceof Error ? err.message : 'Failed loading in-person visit map');
+      setMeetingMapError(err instanceof Error ? err.message : 'Failed loading client map');
       setMeetingMapPins([]);
       setMeetingMapUnresolvedCount(0);
+      setMeetingMapPendingCount(0);
+      setMeetingMapMissingAddressCount(0);
     } finally {
-      setMeetingMapLoading(false);
+      if (!quiet) setMeetingMapLoading(false);
     }
   }
 
@@ -665,6 +696,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     return () => window.clearInterval(timer);
   }, []);
 
+  const hasPendingMapGeocodes = meetingMapPendingCount > 0;
+  useEffect(() => {
+    if (!hasPendingMapGeocodes) return undefined;
+    const timer = window.setInterval(() => {
+      void loadMeetingMap({ quiet: true });
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [hasPendingMapGeocodes]);
+
   useEffect(() => {
     recordingBlobUrlsRef.current = recordingBlobUrlByClient;
   }, [recordingBlobUrlByClient]);
@@ -689,11 +729,18 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           // Keep page scrolling natural when cursor is over the map panel.
           scrollWheelZoom: false,
         });
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
           attribution: '&copy; OpenStreetMap contributors',
           maxZoom: 19,
         }).addTo(map);
         map.setView(SALES_MAP_DEFAULT_CENTER, SALES_MAP_DEFAULT_ZOOM);
+        window.setTimeout(() => {
+          try {
+            map.invalidateSize();
+          } catch {
+            // Map may already have been torn down.
+          }
+        }, 80);
         const mapContainer = map.getContainer?.();
         if (mapContainer) {
           mapContainer.style.position = 'relative';
@@ -722,28 +769,37 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       }
 
       const bounds = L.latLngBounds([]);
+      const occupancy = new Map<string, number>();
       for (const pin of visibleMeetingMapPins) {
         const lat = Number(pin.latitude);
         const lng = Number(pin.longitude);
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-        const marker = L.circleMarker([lat, lng], {
+        const cellKey = `${lat.toFixed(5)},${lng.toFixed(5)}`;
+        const overlapIndex = occupancy.get(cellKey) || 0;
+        occupancy.set(cellKey, overlapIndex + 1);
+        const [markerLat, markerLng] = offsetOverlappingPin(lat, lng, overlapIndex);
+        const style = pinStyleFor(pin);
+        const marker = L.circleMarker([markerLat, markerLng], {
           radius: 8,
-          color: '#ff7a2f',
+          color: style.color,
           weight: 2,
-          fillColor: '#FF5B00',
+          fillColor: style.fillColor,
           fillOpacity: 0.85,
         });
+        const modeLabel = pin.meetingMode === 'online' ? 'Online' : 'In person';
+        const statusLabel = pin.status === 'not-sold' ? 'Not sold' : pin.status === 'secondary' ? 'Secondary' : 'Active';
         const popupHtml = [
           `<div style="min-width:180px;line-height:1.35;font-size:12px;">`,
           `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(pin.businessName || 'Client')}</div>`,
           pin.contactPerson ? `<div style="margin-bottom:2px;">${escapeHtml(pin.contactPerson)}</div>` : '',
           `<div style="margin-bottom:2px;">${escapeHtml(pin.meetingPlace || '')}</div>`,
+          `<div style="margin-bottom:2px;color:#6b7280;">${escapeHtml(modeLabel)} · ${escapeHtml(statusLabel)}</div>`,
           pin.meetingAt ? `<div style="color:#6b7280;">${escapeHtml(formatWhen(pin.meetingAt))}</div>` : '',
           '</div>',
         ].join('');
         marker.bindPopup(popupHtml);
         marker.addTo(markerLayer);
-        bounds.extend([lat, lng]);
+        bounds.extend([markerLat, markerLng]);
       }
 
       if (bounds.isValid()) {
@@ -905,7 +961,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         contactPerson: form.contactPerson,
         contactEmail: form.contactEmail,
         contactPhone: form.contactPhone,
-        meetingPlace: form.meetingMode === 'in-person' ? form.meetingPlace : '',
+        meetingPlace: form.meetingPlace,
         industry: form.industry,
         meetingMode: form.meetingMode,
         agreedTime: form.agreedTime,
@@ -1660,14 +1716,20 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
           <div>
-            <h3 className="text-sm font-semibold text-white">In-person visit map (OpenStreetMap)</h3>
+            <h3 className="text-sm font-semibold text-white">Client map (OpenStreetMap)</h3>
             <p className="text-xs text-gray-400 mt-1">
-              Shows only clients with in-person meeting mode and a meeting place.
+              Shows every sales client with an address, including online meetings, in production and test.
             </p>
           </div>
           <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
             {visibleMeetingMapPins.length} pins
           </span>
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-gray-400">
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[#FF5B00]" /> In person</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[#3b82f6]" /> Online</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[#a855f7]" /> Secondary</span>
+          <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-[#6b7280]" /> Not sold</span>
         </div>
         {meetingMapError && (
           <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 text-red-300 px-3 py-2 text-xs">
@@ -1684,11 +1746,21 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           )}
         </div>
         {!meetingMapLoading && visibleMeetingMapPins.length === 0 && (
-          <p className="mt-2 text-xs text-gray-500">No in-person meeting places to show yet.</p>
+          <p className="mt-2 text-xs text-gray-500">No client addresses to show yet.</p>
+        )}
+        {meetingMapPendingCount > 0 && (
+          <p className="mt-2 text-xs text-sky-300">
+            {meetingMapPendingCount} address(es) still geocoding. Pins will appear automatically.
+          </p>
         )}
         {meetingMapUnresolvedCount > 0 && (
           <p className="mt-2 text-xs text-amber-300">
-            {meetingMapUnresolvedCount} in-person place(s) could not be geocoded automatically.
+            {meetingMapUnresolvedCount} address(es) could not be geocoded automatically.
+          </p>
+        )}
+        {meetingMapMissingAddressCount > 0 && (
+          <p className="mt-2 text-xs text-gray-500">
+            {meetingMapMissingAddressCount} client(s) have no address yet, so they are not on the map.
           </p>
         )}
       </div>
@@ -2026,11 +2098,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         <ul className="space-y-1 text-gray-300">
                           <li>Email: {client.contactEmail || '—'}</li>
                           <li>Phone: {client.contactPhone || '—'}</li>
-                          {client.meetingMode === 'in-person' ? (
-                            <li>Meeting place: {client.meetingPlace || '—'}</li>
-                          ) : (
-                            <li>Meeting place: Online (Google Meet)</li>
-                          )}
+                          <li>Meeting: {client.meetingMode === 'in-person' ? 'In person' : 'Online (Google Meet)'}</li>
+                          <li>Address: {client.meetingPlace || '—'}</li>
                           <li>Industry: {client.industry || '—'}</li>
                           <li>Duration: {durationForMode(client.meetingMode)} min</li>
                           <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
@@ -2480,7 +2549,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     setForm((prev) => ({
                       ...prev,
                       meetingMode: e.target.value as 'online' | 'in-person',
-                      meetingPlace: e.target.value === 'online' ? '' : prev.meetingPlace,
                     }))
                   }
                   className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white"
@@ -2490,13 +2558,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 </select>
               </div>
 
-              {form.meetingMode === 'in-person' ? (
-                <Field label="Place to meet" value={form.meetingPlace} onChange={(value) => setForm((prev) => ({ ...prev, meetingPlace: value }))} />
-              ) : (
-                <div className="rounded-lg border border-white/10 bg-[#161616] px-4 py-3 text-sm text-gray-400">
-                  Meeting place is hidden for online mode (Google Meet).
-                </div>
-              )}
+              <Field
+                label={form.meetingMode === 'in-person' ? 'Place to meet' : 'Business address (shown on map)'}
+                value={form.meetingPlace}
+                onChange={(value) => setForm((prev) => ({ ...prev, meetingPlace: value }))}
+              />
 
               <div className="flex items-center justify-between rounded-lg border border-white/10 bg-[#161616] px-4 py-3">
                 <span className="text-sm text-gray-300">Agreed time</span>

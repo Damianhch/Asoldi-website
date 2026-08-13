@@ -38,10 +38,19 @@ export default defineConfig(({ mode }) => {
       chunkSizeWarningLimit: 400,
     },
     server: {
+      host: true,
       hmr: process.env.DISABLE_HMR !== 'true',
+      // In Docker LAN preview, API runs in a sibling container (api:3001).
+      // Locally without Docker, keep the default localhost:3001.
       proxy: {
-        '/api': { target: 'http://localhost:3001', changeOrigin: true },
-        '/sales-preview': { target: 'http://localhost:3001', changeOrigin: true },
+        '/api': {
+          target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
+          changeOrigin: true,
+        },
+        '/sales-preview': {
+          target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
+          changeOrigin: true,
+        },
       },
     },
   };
