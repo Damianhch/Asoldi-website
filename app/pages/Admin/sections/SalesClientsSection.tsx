@@ -57,7 +57,6 @@ const OFFER_TIERS = [
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
 const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
-const MAKER_TUNNEL_TARGET_URL = 'http://localhost:3000';
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
 const SALES_MAP_DEFAULT_ZOOM = 5;
 
@@ -316,16 +315,10 @@ function healStaleLocalMakerBase(value = '') {
     /^(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):(?:4000|3001|5173)(?=$)/i,
     '$1:3000'
   );
-  // Loopback is not reachable from other LAN machines (laptop/PC1).
+  // Loopback on this laptop is not the Docker Maker host.
   return remappedPort.replace(
     /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):3000(?=$)/i,
     LAN_MAKER_URL
-  );
-}
-
-function isPrivateMakerHost(value = '') {
-  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(
-    String(value || '')
   );
 }
 
@@ -454,7 +447,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
-  const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState(LAN_MAKER_URL);
@@ -1023,32 +1015,36 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingRunId(client.id);
     setError('');
     try {
-      let makerBase =
+      const makerBase =
         healStaleLocalMakerBase(websiteMakerBaseUrl) ||
         normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
         LAN_MAKER_URL;
-      // asoldi.com runs on Hostinger. It cannot fetch LAN/localhost Maker.
-      // Open the LAN tunnel popup from this browser, then create-run via https.
-      if (!IS_LAN_SALES_HOST && isPrivateMakerHost(makerBase)) {
-        setNotice(
-          'asoldi.com cannot reach LAN Maker. Starting a public tunnel from this computer — keep the popup open until it finishes.'
-        );
-        setStartingMakerTunnel(true);
-        try {
-          makerBase = await requestMakerTunnelUrl();
-        } finally {
-          setStartingMakerTunnel(false);
-        }
-      }
       if (makerBase !== websiteMakerBaseUrl) setWebsiteMakerBaseUrl(makerBase);
-      const data = await request(`/admin/sales/${client.id}/create-maker-run`, {
+      let data = await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
         body: JSON.stringify({
           websiteMakerBaseUrl: makerBase,
           forceNewRun,
         }),
       });
-      const resolvedBase = healStaleLocalMakerBase(data?.websiteMakerBaseUrl || '') || normalizeHttpBaseUrl(data?.websiteMakerBaseUrl || '');
+      if (data?.browserHandoff) {
+        const created = await createRunViaMakerPopup(
+          String(data.websiteMakerBaseUrl || makerBase),
+          data.requestBody && typeof data.requestBody === 'object'
+            ? (data.requestBody as Record<string, unknown>)
+            : {}
+        );
+        data = await request(`/admin/sales/${client.id}/create-maker-run`, {
+          method: 'POST',
+          body: JSON.stringify({
+            websiteMakerBaseUrl: makerBase,
+            forceNewRun,
+            browserCreated: created,
+          }),
+        });
+      }
+      const resolvedBase =
+        normalizeHttpBaseUrl(String(data?.websiteMakerBaseUrl || '')) || makerBase;
       if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
       await loadSales();
     } catch (err) {
@@ -1324,93 +1320,76 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function requestMakerTunnelUrl() {
-      // Popup always opens on the LAN Maker host. targetUrl stays loopback
-      // because cloudflared runs *inside* the Maker Docker container.
-      const popupUrl = new URL('/local-tunnel', LAN_MAKER_URL);
-      popupUrl.searchParams.set('returnOrigin', window.location.origin);
-      popupUrl.searchParams.set('targetUrl', MAKER_TUNNEL_TARGET_URL);
-      popupUrl.searchParams.set('forceRestart', '0');
-      // Reuse a healthy Maker tunnel when possible. Forcing a brand-new hostname
-      // every click routinely exceeds the production popup timeout on low-RAM PCs.
+  async function createRunViaMakerPopup(
+    makerBase: string,
+    requestBody: Record<string, unknown>
+  ): Promise<{ runId: string; handoff: Record<string, unknown> }> {
+    const makerOrigin = normalizeHttpBaseUrl(makerBase);
+    if (!makerOrigin) {
+      throw new Error('Website Maker URL is invalid.');
+    }
+    const popupUrl = new URL('/sales-create-run', makerOrigin);
+    popupUrl.searchParams.set('returnOrigin', window.location.origin);
+    const popup = window.open(popupUrl.toString(), 'asoldi-sales-create-run', 'width=520,height=420');
+    if (!popup) {
+      throw new Error('Popup blocked. Allow popups for this site and try Create run again.');
+    }
 
-      const popup = window.open(
-        popupUrl.toString(),
-        'asoldi-maker-local-tunnel',
-        'width=620,height=740'
-      );
-      if (!popup) {
-        throw new Error('Popup blocked. Please allow popups and try again.');
-      }
-
-      const tunnelUrl = await new Promise<string>((resolve, reject) => {
-        let settled = false;
-        const cleanup = () => {
-          window.removeEventListener('message', onMessage);
-          window.clearTimeout(timeoutId);
-          window.clearInterval(closeWatcherId);
-        };
-        const finish = (handler: () => void) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          handler();
-        };
-        const timeoutId = window.setTimeout(() => {
-          finish(() =>
-            reject(
-              new Error(
-                `Timed out waiting for tunnel setup. Ensure Website Maker is running at ${LAN_MAKER_URL} and try again (first start can take a few minutes while the tunnel + health checks finish).`
-              )
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        window.removeEventListener('message', onMessage);
+        window.clearTimeout(timeoutId);
+        window.clearInterval(closeWatcherId);
+      };
+      const finish = (handler: () => void) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        handler();
+      };
+      const timeoutId = window.setTimeout(() => {
+        finish(() =>
+          reject(
+            new Error(
+              `Timed out creating the run at ${makerOrigin}. Confirm Website Maker is open in this browser and try again.`
             )
-          );
-        }, 300_000);
-        const closeWatcherId = window.setInterval(() => {
-          if (!popup.closed) return;
-          finish(() =>
-            reject(
-              new Error(
-                'Tunnel popup was closed before completion. Re-open it with "New tunnel URL" and let it finish.'
-              )
-            )
-          );
-        }, 450);
+          )
+        );
+      }, 90_000);
+      const closeWatcherId = window.setInterval(() => {
+        if (!popup.closed) return;
+        finish(() => reject(new Error('The Website Maker popup was closed before the run was created.')));
+      }, 450);
 
-        const onMessage = (event: MessageEvent) => {
-          if (event.origin !== LAN_MAKER_URL) return;
-          const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
-          if (!payload) return;
-          if (payload.type === 'asoldi-maker-tunnel-error') {
-            const message = String(payload.message || 'Failed starting local tunnel.');
-            finish(() => reject(new Error(message)));
+      const onMessage = (event: MessageEvent) => {
+        if (event.origin !== makerOrigin) return;
+        const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
+        if (!payload) return;
+        if (payload.type === 'asoldi-sales-create-run-listening') {
+          popup.postMessage({ type: 'asoldi-sales-create-run', requestBody }, makerOrigin);
+          return;
+        }
+        if (payload.type === 'asoldi-sales-create-run-error') {
+          finish(() => reject(new Error(String(payload.message || 'Failed creating website run.'))));
+          return;
+        }
+        if (payload.type === 'asoldi-sales-create-run-ready') {
+          const runId = String(payload.runId || '').trim();
+          if (!runId) {
+            finish(() => reject(new Error('Website Maker did not return a runId.')));
             return;
           }
-          if (payload.type === 'asoldi-maker-tunnel-ready') {
-            const next = normalizeHttpBaseUrl(String(payload.tunnelUrl || ''));
-            if (!next) {
-              finish(() => reject(new Error('Local tunnel returned an invalid URL.')));
-              return;
-            }
-            finish(() => resolve(next));
-          }
-        };
+          const handoff =
+            payload.handoff && typeof payload.handoff === 'object'
+              ? (payload.handoff as Record<string, unknown>)
+              : {};
+          finish(() => resolve({ runId, handoff }));
+        }
+      };
 
-        window.addEventListener('message', onMessage);
-      });
-      setWebsiteMakerBaseUrl(tunnelUrl);
-      return tunnelUrl;
-  }
-
-  async function startMakerTunnel() {
-    setStartingMakerTunnel(true);
-    setError('');
-    try {
-      await requestMakerTunnelUrl();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start Website Maker tunnel');
-    } finally {
-      setStartingMakerTunnel(false);
-    }
+      window.addEventListener('message', onMessage);
+    });
   }
 
   function applyClientNameSearch(e?: React.FormEvent) {
@@ -1531,26 +1510,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 type="button"
                 onClick={() => setWebsiteMakerBaseUrl(LAN_MAKER_URL)}
                 className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
-                title={`Use LAN Maker at ${LAN_MAKER_URL} without starting a tunnel`}
+                title={`Fill ${LAN_MAKER_URL}`}
               >
-                Use LAN URL
-              </button>
-              <button
-                type="button"
-                onClick={() => void startMakerTunnel()}
-                disabled={startingMakerTunnel}
-                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
-                title="Start a new local cloudflared tunnel and auto-fill this URL"
-              >
-                <RefreshCw size={14} className={startingMakerTunnel ? 'animate-spin' : ''} />
-                New tunnel URL
+                Use Docker Maker
               </button>
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
-              LAN Docker sales can use <code>{LAN_MAKER_URL}</code> directly. On{' '}
-              <code>asoldi.com</code>, create-run must use a public https tunnel — click
-              &quot;New tunnel URL&quot; (or Create run will open that popup) from the office
-              network. localhost/LAN URLs are not reachable from Hostinger.
+              Create run uses whatever URL is in this field. Default is the office Docker Maker at{' '}
+              <code>{LAN_MAKER_URL}</code>.
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">

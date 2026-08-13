@@ -10040,22 +10040,12 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   const envBase = normalizeHttpOrigin(process.env.WEBSITE_MAKER_BASE_URL || '');
   const localBase = normalizeHttpOrigin(DEFAULT_MAKER_LOCAL_URL);
   const isLocalBase = (value = '') => /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(String(value || ''));
-  const publicInternetHost = requestIsPublicInternetHost(req);
   const shouldAllowLocalFallback =
-    !publicInternetHost &&
-    (!requestedBase || isLocalBase(requestedBase)) &&
-    (!envBase || isLocalBase(envBase));
-  let baseCandidates = [requestedBase, envBase, shouldAllowLocalFallback ? localBase : '']
+    (!requestedBase || isLocalBase(requestedBase)) && (!envBase || isLocalBase(envBase));
+  const baseCandidates = [requestedBase, envBase, shouldAllowLocalFallback ? localBase : '']
     .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
-  if (publicInternetHost) {
-    baseCandidates = baseCandidates.filter((candidate) => !isPrivateMakerUrl(candidate));
-  }
   if (!baseCandidates.length) {
-    return res.status(503).json({
-      message: publicInternetHost
-        ? 'asoldi.com cannot reach localhost or the office LAN Maker. Click "New tunnel URL" on this Sales page (from the office network) so create-run uses a public https tunnel, then try again.'
-        : 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).',
-    });
+    return res.status(503).json({ message: 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).' });
   }
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
@@ -10107,12 +10097,51 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       salesOrderId: sanitizeText(req.body?.salesOrderId || ''),
       salesCallbackUrl,
       salesCallbackToken,
-      // Keep Sales "create run" responsive and deterministic; avoid browser-driven
-      // enrichment during this click flow.
       skipSalesAddressEnrichment: true,
       answers: answersPatch,
       quickFillLinks,
     };
+
+    const browserCreated = req.body?.browserCreated && typeof req.body.browserCreated === 'object' ? req.body.browserCreated : null;
+    const browserCreatedRunId = sanitizeText(browserCreated?.runId);
+    if (browserCreatedRunId) {
+      const base = requestedBase || envBase || localBase;
+      if (!base) {
+        return res.status(400).json({ message: 'Website Maker URL is missing.' });
+      }
+      const runHandoff = browserCreated.handoff && typeof browserCreated.handoff === 'object' ? browserCreated.handoff : {};
+      const makerLinks = buildMakerRunLinks(base, browserCreatedRunId, runHandoff);
+      const updated = sales.setSalesMakerRun(client.id, {
+        runId: browserCreatedRunId,
+        ...makerLinks,
+        industry: client.industry || '',
+        createdAt:
+          forceNewRun || !sanitizeText(client.makerRun?.createdAt)
+            ? new Date().toISOString()
+            : sanitizeText(client.makerRun?.createdAt),
+      });
+      return res.json({
+        ok: true,
+        client: updated,
+        websiteMakerBaseUrl: base,
+        alreadyExists: Boolean(previousRunId),
+        replacedRunId: forceNewRun ? previousRunId : '',
+        replacedRunDeleted: false,
+        handoff: runHandoff,
+      });
+    }
+
+    // asoldi.com (Hostinger) cannot fetch a LAN Maker URL. The sales browser can,
+    // so return the payload and let the UI create the run at the pasted Maker URL.
+    if (requestedBase && isPrivateMakerUrl(requestedBase) && requestIsPublicInternetHost(req)) {
+      return res.json({
+        ok: true,
+        browserHandoff: true,
+        websiteMakerBaseUrl: requestedBase,
+        requestBody,
+      });
+    }
+
     let base = '';
     let runId = '';
     let makerPayload = {};
@@ -10146,16 +10175,24 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
         if (/ENOTFOUND|getaddrinfo|Could not resolve|EAI_AGAIN/i.test(raw) || /ENOTFOUND|getaddrinfo/i.test(String(error?.cause || ''))) {
           lastMakerError =
             `Website Maker host could not be resolved (${candidateBase}). ` +
-            'Update the Website Maker URL in Sales (or WEBSITE_MAKER_BASE_URL) to a live tunnel/deploy hostname — DNS NXDOMAIN means create-run cannot reach Maker.';
+            'Check the Website Maker URL in the Sales field.';
         } else if (/ECONNREFUSED|ETIMEDOUT|fetch failed/i.test(raw)) {
           lastMakerError =
-            `Website Maker is unreachable at ${candidateBase} (${raw}). Confirm the Maker app is running and the tunnel/URL is current.`;
+            `Website Maker is unreachable at ${candidateBase} (${raw}). Confirm Maker is running at that URL.`;
         } else {
           lastMakerError = raw;
         }
       }
     }
     if (!base || !runId) {
+      if (requestedBase && requestIsPublicInternetHost(req)) {
+        return res.json({
+          ok: true,
+          browserHandoff: true,
+          websiteMakerBaseUrl: requestedBase,
+          requestBody,
+        });
+      }
       return res.status(502).json({
         message: lastMakerError || 'Failed reaching the Website Maker.',
         triedBases: baseCandidates,
