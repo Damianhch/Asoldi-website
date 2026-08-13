@@ -323,6 +323,12 @@ function healStaleLocalMakerBase(value = '') {
   );
 }
 
+function isPrivateMakerHost(value = '') {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(
+    String(value || '')
+  );
+}
+
 function buildMakerRunUrl(
   baseUrl = '',
   runId = '',
@@ -1017,10 +1023,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setCreatingRunId(client.id);
     setError('');
     try {
-      const makerBase =
+      let makerBase =
         healStaleLocalMakerBase(websiteMakerBaseUrl) ||
         normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
         LAN_MAKER_URL;
+      // asoldi.com runs on Hostinger. It cannot fetch LAN/localhost Maker.
+      // Open the LAN tunnel popup from this browser, then create-run via https.
+      if (!IS_LAN_SALES_HOST && isPrivateMakerHost(makerBase)) {
+        setNotice(
+          'asoldi.com cannot reach LAN Maker. Starting a public tunnel from this computer — keep the popup open until it finishes.'
+        );
+        setStartingMakerTunnel(true);
+        try {
+          makerBase = await requestMakerTunnelUrl();
+        } finally {
+          setStartingMakerTunnel(false);
+        }
+      }
       if (makerBase !== websiteMakerBaseUrl) setWebsiteMakerBaseUrl(makerBase);
       const data = await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
@@ -1305,10 +1324,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function startMakerTunnel() {
-    setStartingMakerTunnel(true);
-    setError('');
-    try {
+  async function requestMakerTunnelUrl() {
       // Popup always opens on the LAN Maker host. targetUrl stays loopback
       // because cloudflared runs *inside* the Maker Docker container.
       const popupUrl = new URL('/local-tunnel', LAN_MAKER_URL);
@@ -1382,6 +1398,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         window.addEventListener('message', onMessage);
       });
       setWebsiteMakerBaseUrl(tunnelUrl);
+      return tunnelUrl;
+  }
+
+  async function startMakerTunnel() {
+    setStartingMakerTunnel(true);
+    setError('');
+    try {
+      await requestMakerTunnelUrl();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start Website Maker tunnel');
     } finally {
@@ -1523,8 +1547,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               </button>
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
-              On LAN, use <code>{LAN_MAKER_URL}</code> directly. Click &quot;New tunnel URL&quot; only for
-              off-LAN / public access (asoldi.com → Maker).
+              LAN Docker sales can use <code>{LAN_MAKER_URL}</code> directly. On{' '}
+              <code>asoldi.com</code>, create-run must use a public https tunnel — click
+              &quot;New tunnel URL&quot; (or Create run will open that popup) from the office
+              network. localhost/LAN URLs are not reachable from Hostinger.
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">

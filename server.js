@@ -9866,6 +9866,17 @@ function isPrivateMakerUrl(value = '') {
   return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(String(value || ''));
 }
 
+function requestIsPublicInternetHost(req) {
+  const host = String(req.get('host') || '').split(':')[0];
+  let appHost = '';
+  try {
+    appHost = new URL(String(process.env.APP_URL || '').trim()).hostname;
+  } catch {
+    appHost = '';
+  }
+  return /(^|\.)asoldi\.com$/i.test(host) || /(^|\.)asoldi\.com$/i.test(appHost);
+}
+
 function resolveProdAdminBaseUrl() {
   const prod = normalizeHttpBaseUrl(process.env.PROD_ADMIN_URL || 'https://asoldi.com');
   const self = normalizeHttpBaseUrl(process.env.APP_URL || '');
@@ -10029,12 +10040,22 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   const envBase = normalizeHttpOrigin(process.env.WEBSITE_MAKER_BASE_URL || '');
   const localBase = normalizeHttpOrigin(DEFAULT_MAKER_LOCAL_URL);
   const isLocalBase = (value = '') => /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(String(value || ''));
+  const publicInternetHost = requestIsPublicInternetHost(req);
   const shouldAllowLocalFallback =
-    (!requestedBase || isLocalBase(requestedBase)) && (!envBase || isLocalBase(envBase));
-  const baseCandidates = [requestedBase, envBase, shouldAllowLocalFallback ? localBase : '']
+    !publicInternetHost &&
+    (!requestedBase || isLocalBase(requestedBase)) &&
+    (!envBase || isLocalBase(envBase));
+  let baseCandidates = [requestedBase, envBase, shouldAllowLocalFallback ? localBase : '']
     .filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+  if (publicInternetHost) {
+    baseCandidates = baseCandidates.filter((candidate) => !isPrivateMakerUrl(candidate));
+  }
   if (!baseCandidates.length) {
-    return res.status(503).json({ message: 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).' });
+    return res.status(503).json({
+      message: publicInternetHost
+        ? 'asoldi.com cannot reach localhost or the office LAN Maker. Click "New tunnel URL" on this Sales page (from the office network) so create-run uses a public https tunnel, then try again.'
+        : 'Website Maker is not configured (set the Website Maker URL or WEBSITE_MAKER_BASE_URL).',
+    });
   }
   const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
 
