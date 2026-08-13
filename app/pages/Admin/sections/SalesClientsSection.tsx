@@ -56,6 +56,7 @@ const OFFER_TIERS = [
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
+const LOCAL_MAKER_URL = 'http://localhost:3000';
 const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
 const SALES_MAP_DEFAULT_ZOOM = 5;
@@ -311,15 +312,24 @@ function healStaleLocalMakerBase(value = '') {
   const normalized = normalizeHttpBaseUrl(value);
   if (!normalized) return '';
   // Maker local port is always :3000 — remap any legacy wrong local port.
-  const remappedPort = normalized.replace(
+  // Do not rewrite localhost to the office Docker host: away from home, Maker
+  // runs on this computer and needs a tunnel from localhost:3000.
+  return normalized.replace(
     /^(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):(?:4000|3001|5173)(?=$)/i,
     '$1:3000'
   );
-  // Loopback on this laptop is not the Docker Maker host.
-  return remappedPort.replace(
-    /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):3000(?=$)/i,
-    LAN_MAKER_URL
+}
+
+function isPrivateMakerHost(value = '') {
+  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(
+    String(value || '')
   );
+}
+
+function tunnelPopupMakerOrigin(fieldUrl = '') {
+  const origin = normalizeHttpBaseUrl(fieldUrl);
+  if (!origin) return LOCAL_MAKER_URL;
+  return isPrivateMakerHost(origin) ? origin : LOCAL_MAKER_URL;
 }
 
 function buildMakerRunUrl(
@@ -447,6 +457,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
+  const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState(LAN_MAKER_URL);
@@ -1330,6 +1341,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
     const popupUrl = new URL('/sales-create-run', makerOrigin);
     popupUrl.searchParams.set('returnOrigin', window.location.origin);
+    try {
+      const encoded = encodeURIComponent(JSON.stringify(requestBody || {}));
+      if (encoded.length < 50000) popupUrl.hash = `p=${encoded}`;
+    } catch {
+      // Fall back to postMessage if the payload cannot be hashed.
+    }
     const popup = window.open(popupUrl.toString(), 'asoldi-sales-create-run', 'width=520,height=420');
     if (!popup) {
       throw new Error('Popup blocked. Allow popups for this site and try Create run again.');
@@ -1390,6 +1407,72 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
       window.addEventListener('message', onMessage);
     });
+  }
+
+  async function startMakerTunnel() {
+    setStartingMakerTunnel(true);
+    setError('');
+    try {
+      const tunnelHost = tunnelPopupMakerOrigin(websiteMakerBaseUrl);
+      const popupUrl = new URL('/local-tunnel', tunnelHost);
+      popupUrl.searchParams.set('returnOrigin', window.location.origin);
+      popupUrl.searchParams.set('targetUrl', LOCAL_MAKER_URL);
+      popupUrl.searchParams.set('forceRestart', '0');
+      const popup = window.open(popupUrl.toString(), 'asoldi-maker-local-tunnel', 'width=620,height=740');
+      if (!popup) {
+        throw new Error('Popup blocked. Allow popups and try again.');
+      }
+      const tunnelUrl = await new Promise<string>((resolve, reject) => {
+        let settled = false;
+        const cleanup = () => {
+          window.removeEventListener('message', onMessage);
+          window.clearTimeout(timeoutId);
+          window.clearInterval(closeWatcherId);
+        };
+        const finish = (handler: () => void) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          handler();
+        };
+        const timeoutId = window.setTimeout(() => {
+          finish(() =>
+            reject(
+              new Error(
+                `Timed out waiting for tunnel setup. Start Website Maker on this computer (${LOCAL_MAKER_URL}) or on the office Docker host (${LAN_MAKER_URL}), then try again.`
+              )
+            )
+          );
+        }, 300_000);
+        const closeWatcherId = window.setInterval(() => {
+          if (!popup.closed) return;
+          finish(() => reject(new Error('Tunnel popup was closed before completion.')));
+        }, 450);
+        const onMessage = (event: MessageEvent) => {
+          if (event.origin !== tunnelHost) return;
+          const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
+          if (!payload) return;
+          if (payload.type === 'asoldi-maker-tunnel-error') {
+            finish(() => reject(new Error(String(payload.message || 'Failed starting local tunnel.'))));
+            return;
+          }
+          if (payload.type === 'asoldi-maker-tunnel-ready') {
+            const next = normalizeHttpBaseUrl(String(payload.tunnelUrl || ''));
+            if (!next) {
+              finish(() => reject(new Error('Local tunnel returned an invalid URL.')));
+              return;
+            }
+            finish(() => resolve(next));
+          }
+        };
+        window.addEventListener('message', onMessage);
+      });
+      setWebsiteMakerBaseUrl(tunnelUrl);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Website Maker tunnel');
+    } finally {
+      setStartingMakerTunnel(false);
+    }
   }
 
   function applyClientNameSearch(e?: React.FormEvent) {
@@ -1514,10 +1597,28 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               >
                 Use Docker Maker
               </button>
+              <button
+                type="button"
+                onClick={() => setWebsiteMakerBaseUrl(LOCAL_MAKER_URL)}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                title={`Fill ${LOCAL_MAKER_URL}`}
+              >
+                Use localhost
+              </button>
+              <button
+                type="button"
+                onClick={() => void startMakerTunnel()}
+                disabled={startingMakerTunnel}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+                title="Generate a public tunnel from the Maker in this field (localhost when you are not on the office LAN)"
+              >
+                <RefreshCw size={14} className={startingMakerTunnel ? 'animate-spin' : ''} />
+                New tunnel URL
+              </button>
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
-              Create run uses whatever URL is in this field. Default is the office Docker Maker at{' '}
-              <code>{LAN_MAKER_URL}</code>.
+              At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
+              then New tunnel URL, then Create run.
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
