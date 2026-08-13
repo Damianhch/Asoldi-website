@@ -54,6 +54,8 @@ const OFFER_TIERS = [
   { id: 'tier-3-ecommerce', name: 'Tier 3: Nettbutikk', price: '1 999,-/mnd' },
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
+const LAN_MAKER_URL = 'http://192.168.68.92:3000';
+const MAKER_TUNNEL_TARGET_URL = 'http://localhost:3000';
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
 const SALES_MAP_DEFAULT_ZOOM = 5;
 
@@ -308,9 +310,14 @@ function healStaleLocalMakerBase(value = '') {
   const normalized = normalizeHttpBaseUrl(value);
   if (!normalized) return '';
   // Maker local port is always :3000 — remap any legacy wrong local port.
-  return normalized.replace(
+  const remappedPort = normalized.replace(
     /^(https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0)):(?:4000|3001|5173)(?=$)/i,
     '$1:3000'
+  );
+  // Loopback is not reachable from other LAN machines (laptop/PC1).
+  return remappedPort.replace(
+    /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):3000(?=$)/i,
+    LAN_MAKER_URL
   );
 }
 
@@ -342,7 +349,7 @@ function resolveOpenInMakerUrl({
   latestReadyStep?: string;
 }) {
   const id = String(runId || '').trim();
-  const base = healStaleLocalMakerBase(baseUrl) || 'http://localhost:3000';
+  const base = healStaleLocalMakerBase(baseUrl) || LAN_MAKER_URL;
   if (!id) return '';
   const stored = String(storedDashboardUrl || '').trim();
   const status = String(intakeStatus || '').trim().toLowerCase();
@@ -410,17 +417,6 @@ function normalizeMakerDashboardDraftUrl(value = '') {
   }
 }
 
-function toOrigin(baseUrl = '') {
-  const normalized = normalizeHttpBaseUrl(baseUrl);
-  if (!normalized) return '';
-  try {
-    const parsed = new URL(normalized);
-    return `${parsed.protocol}//${parsed.host}`;
-  } catch {
-    return '';
-  }
-}
-
 export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [clients, setClients] = useState<SalesClient[]>([]);
   const [productCounts, setProductCounts] = useState<{ asoldi: number; ssu: number }>({ asoldi: 0, ssu: 0 });
@@ -452,7 +448,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
-  const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState('http://localhost:3000');
+  const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState(LAN_MAKER_URL);
   const [runIdByClient, setRunIdByClient] = useState<Record<string, string>>({});
   const [meetingNowMs, setMeetingNowMs] = useState(() => Date.now());
   const [meetingMapPins, setMeetingMapPins] = useState<MeetingMapPin[]>([]);
@@ -1021,7 +1017,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       const makerBase =
         healStaleLocalMakerBase(websiteMakerBaseUrl) ||
         normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
-        'http://localhost:3000';
+        LAN_MAKER_URL;
       if (makerBase !== websiteMakerBaseUrl) setWebsiteMakerBaseUrl(makerBase);
       const data = await request(`/admin/sales/${client.id}/create-maker-run`, {
         method: 'POST',
@@ -1283,14 +1279,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setStartingMakerTunnel(true);
     setError('');
     try {
-      const normalizedCurrent = normalizeHttpBaseUrl(websiteMakerBaseUrl);
-      const localTarget = normalizedCurrent && /localhost|127\.0\.0\.1|0\.0\.0\.0/i.test(normalizedCurrent)
-        ? normalizedCurrent
-        : 'http://localhost:3000';
-      const localOrigin = toOrigin(localTarget) || 'http://localhost:3000';
-      const popupUrl = new URL('/local-tunnel', localOrigin);
+      // Popup always opens on the LAN Maker host. targetUrl stays loopback
+      // because cloudflared runs *inside* the Maker Docker container.
+      const popupUrl = new URL('/local-tunnel', LAN_MAKER_URL);
       popupUrl.searchParams.set('returnOrigin', window.location.origin);
-      popupUrl.searchParams.set('targetUrl', localTarget);
+      popupUrl.searchParams.set('targetUrl', MAKER_TUNNEL_TARGET_URL);
       popupUrl.searchParams.set('forceRestart', '0');
       // Reuse a healthy Maker tunnel when possible. Forcing a brand-new hostname
       // every click routinely exceeds the production popup timeout on low-RAM PCs.
@@ -1321,7 +1314,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           finish(() =>
             reject(
               new Error(
-                'Timed out waiting for local tunnel setup. Ensure Website Maker is running locally on localhost:3000 and try again (first start can take a few minutes while the tunnel + health checks finish).'
+                `Timed out waiting for tunnel setup. Ensure Website Maker is running at ${LAN_MAKER_URL} and try again (first start can take a few minutes while the tunnel + health checks finish).`
               )
             )
           );
@@ -1338,7 +1331,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         }, 450);
 
         const onMessage = (event: MessageEvent) => {
-          if (event.origin !== localOrigin) return;
+          if (event.origin !== LAN_MAKER_URL) return;
           const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
           if (!payload) return;
           if (payload.type === 'asoldi-maker-tunnel-error') {
@@ -1478,8 +1471,16 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 value={websiteMakerBaseUrl}
                 onChange={(e) => setWebsiteMakerBaseUrl(e.target.value)}
                 className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white"
-                placeholder="http://localhost:3000"
+                placeholder={LAN_MAKER_URL}
               />
+              <button
+                type="button"
+                onClick={() => setWebsiteMakerBaseUrl(LAN_MAKER_URL)}
+                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                title={`Use LAN Maker at ${LAN_MAKER_URL} without starting a tunnel`}
+              >
+                Use LAN URL
+              </button>
               <button
                 type="button"
                 onClick={() => void startMakerTunnel()}
@@ -1492,8 +1493,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               </button>
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
-              Maker must be reachable at this URL. Use <code>http://localhost:3000</code> locally, or click
-              &quot;New tunnel URL&quot; for asoldi.com → Maker.
+              On LAN, use <code>{LAN_MAKER_URL}</code> directly. Click &quot;New tunnel URL&quot; only for
+              off-LAN / public access (asoldi.com → Maker).
             </p>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">

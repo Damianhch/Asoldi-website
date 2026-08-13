@@ -133,7 +133,7 @@ function adminAuth(req, res, next) {
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
 const SALES_EMAIL_AUTOSEND_ENABLED = String(process.env.SALES_EMAIL_AUTOSEND || '0') === '1';
-const DEFAULT_MAKER_LOCAL_URL = String(process.env.WEBSITE_MAKER_LOCAL_URL || 'http://localhost:3000').trim() || 'http://localhost:3000';
+const DEFAULT_MAKER_LOCAL_URL = String(process.env.WEBSITE_MAKER_LOCAL_URL || 'http://192.168.68.92:3000').trim() || 'http://192.168.68.92:3000';
 const CLOUDFLARED_WINDOWS_CANDIDATES = [
   'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
   'C:\\Program Files\\cloudflared\\cloudflared.exe',
@@ -1932,7 +1932,7 @@ function resolveWebsiteMakerBaseUrl(value = '', client = null) {
     value,
     process.env.WEBSITE_MAKER_BASE_URL,
     inferWebsiteMakerBaseUrlFromClient(client),
-    'http://localhost:3000',
+    DEFAULT_MAKER_LOCAL_URL,
   ];
   for (const candidate of candidates) {
     // Accept pasted deep links (e.g. .../run/<id>) but always resolve the
