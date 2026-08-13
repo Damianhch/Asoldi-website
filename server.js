@@ -10033,8 +10033,8 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   const forceNewRun = parseBoolean(req.body?.forceNewRun, false);
 
-  // Prefer the URL the operator typed in the Sales UI (typically a tunnel URL).
-  // Only fall back to localhost when no non-local URL is configured.
+  // Prefer the URL the operator typed in the Sales UI.
+  // Only fall back to the Docker Maker host when no URL is configured.
   // normalizeHttpOrigin remaps legacy local :4000 → :3000.
   const requestedBase = normalizeHttpOrigin(req.body?.websiteMakerBaseUrl || '');
   const envBase = normalizeHttpOrigin(process.env.WEBSITE_MAKER_BASE_URL || '');
