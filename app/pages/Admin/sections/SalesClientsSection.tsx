@@ -75,6 +75,7 @@ type MeetingMapPin = {
   businessName: string;
   contactPerson: string;
   meetingPlace: string;
+  locationSource?: 'address' | 'businessName';
   meetingAt: string;
   meetingMode?: 'online' | 'in-person';
   status?: 'active' | 'not-sold' | 'secondary';
@@ -627,7 +628,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     if (!quiet) setMeetingMapLoading(true);
     setMeetingMapError('');
     try {
-      const data = await request('/admin/sales/meeting-map');
+      const data = await request(`/admin/sales/meeting-map?product=${encodeURIComponent(productBracket)}`);
       const pins = Array.isArray(data.pins) ? data.pins : [];
       setMeetingMapPins(pins as MeetingMapPin[]);
       setMeetingMapUnresolvedCount(Number.isFinite(Number(data.unresolvedCount)) ? Number(data.unresolvedCount) : 0);
@@ -701,9 +702,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     if (!hasPendingMapGeocodes) return undefined;
     const timer = window.setInterval(() => {
       void loadMeetingMap({ quiet: true });
-    }, 2500);
+    }, 1500);
     return () => window.clearInterval(timer);
   }, [hasPendingMapGeocodes]);
+
+  useEffect(() => {
+    void loadMeetingMap({ quiet: true });
+  }, [productBracket]);
 
   useEffect(() => {
     recordingBlobUrlsRef.current = recordingBlobUrlByClient;
@@ -788,12 +793,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         });
         const modeLabel = pin.meetingMode === 'online' ? 'Online' : 'In person';
         const statusLabel = pin.status === 'not-sold' ? 'Not sold' : pin.status === 'secondary' ? 'Secondary' : 'Active';
+        const sourceLabel = pin.locationSource === 'businessName' ? 'Mapped from business name' : 'Address';
         const popupHtml = [
           `<div style="min-width:180px;line-height:1.35;font-size:12px;">`,
           `<div style="font-weight:600;margin-bottom:4px;">${escapeHtml(pin.businessName || 'Client')}</div>`,
           pin.contactPerson ? `<div style="margin-bottom:2px;">${escapeHtml(pin.contactPerson)}</div>` : '',
           `<div style="margin-bottom:2px;">${escapeHtml(pin.meetingPlace || '')}</div>`,
           `<div style="margin-bottom:2px;color:#6b7280;">${escapeHtml(modeLabel)} · ${escapeHtml(statusLabel)}</div>`,
+          `<div style="margin-bottom:2px;color:#6b7280;">${escapeHtml(sourceLabel)}</div>`,
           pin.meetingAt ? `<div style="color:#6b7280;">${escapeHtml(formatWhen(pin.meetingAt))}</div>` : '',
           '</div>',
         ].join('');
@@ -1718,7 +1725,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           <div>
             <h3 className="text-sm font-semibold text-white">Client map (OpenStreetMap)</h3>
             <p className="text-xs text-gray-400 mt-1">
-              Shows every sales client with an address, including online meetings, in production and test.
+              Shows every sales client in this list, including online, secondary, and not sold.
             </p>
           </div>
           <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
@@ -1750,17 +1757,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         )}
         {meetingMapPendingCount > 0 && (
           <p className="mt-2 text-xs text-sky-300">
-            {meetingMapPendingCount} address(es) still geocoding. Pins will appear automatically.
+            {meetingMapPendingCount} client(s) still geocoding. Pins will appear automatically.
           </p>
         )}
         {meetingMapUnresolvedCount > 0 && (
           <p className="mt-2 text-xs text-amber-300">
-            {meetingMapUnresolvedCount} address(es) could not be geocoded automatically.
+            {meetingMapUnresolvedCount} client(s) could not be placed automatically.
           </p>
         )}
         {meetingMapMissingAddressCount > 0 && (
           <p className="mt-2 text-xs text-gray-500">
-            {meetingMapMissingAddressCount} client(s) have no address yet, so they are not on the map.
+            {meetingMapMissingAddressCount} client(s) have no stored street address yet. They are still mapped by business name while Brønnøysund fills the official address.
           </p>
         )}
       </div>

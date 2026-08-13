@@ -148,7 +148,7 @@ let makerTunnelStartedAt = '';
 const SALES_MEETING_GEOCODE_MIN_INTERVAL_MS = Number(process.env.SALES_MEETING_GEOCODE_MIN_INTERVAL_MS || 1100);
 const SALES_MEETING_GEOCODE_MAX_PER_REQUEST = Math.max(
   0,
-  Number(process.env.SALES_MEETING_GEOCODE_MAX_PER_REQUEST || 8)
+  Number(process.env.SALES_MEETING_GEOCODE_MAX_PER_REQUEST || 0)
 );
 const SALES_MEETING_GEOCODE_NEGATIVE_TTL_MS = Number(
   process.env.SALES_MEETING_GEOCODE_NEGATIVE_TTL_MS || 24 * 60 * 60 * 1000
@@ -160,6 +160,7 @@ let salesMeetingGeocodePersistTimer = null;
 let salesMeetingGeocodeLastRequestAt = 0;
 let salesGeocodeWarmupRunning = false;
 let salesGeocodeWarmupInterval = null;
+const salesAddressBackfillTried = new Set();
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
 const MYPHONER_WEBHOOK_SECRET = String(process.env.MYPHONER_WEBHOOK_SECRET || '').trim();
 const MYPHONER_WEBHOOK_REPLAY_WINDOW_MS = Number(process.env.MYPHONER_WEBHOOK_REPLAY_WINDOW_MS || 120_000);
@@ -917,6 +918,138 @@ function storeCachedGeocode(cacheKey = '', value) {
   schedulePersistSalesGeocodeCache();
 }
 
+function compactMapLocationText(value = '') {
+  const raw = sanitizeText(value).replace(/\uFFFD/g, '');
+  if (!raw) return '';
+  const lowered = raw.toLowerCase();
+  if (
+    lowered === 'online' ||
+    lowered === 'google meet' ||
+    lowered === 'zoom' ||
+    lowered === 'teams' ||
+    lowered === 'meet' ||
+    lowered === 'n/a' ||
+    lowered === 'na' ||
+    lowered === 'none' ||
+    lowered === 'null' ||
+    lowered === 'unknown' ||
+    lowered === 'not found'
+  ) {
+    return '';
+  }
+  if (/^(https?:\/\/)?(meet\.google|zoom\.us|teams\.microsoft)/i.test(raw)) return '';
+  return raw;
+}
+
+function resolveSalesClientMapQuery(client = {}) {
+  const address = compactMapLocationText(client?.meetingPlace);
+  if (address) {
+    return { query: address, label: address, source: 'address' };
+  }
+  const name = sanitizeText(client?.businessName);
+  if (!name) return null;
+  return { query: `${name}, Norge`, label: name, source: 'businessName' };
+}
+
+async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 6000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 6000));
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json().catch(() => null);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function coordsFromPayload(latitude, longitude, displayName, query) {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return {
+    latitude: lat,
+    longitude: lon,
+    displayName: sanitizeText(displayName) || sanitizeText(query),
+    updatedAt: nowIso(),
+  };
+}
+
+async function geocodeViaKartverket(query = '') {
+  const q = sanitizeText(query);
+  if (!q) return null;
+  const params = new URLSearchParams({
+    sok: q,
+    fuzzy: 'true',
+    treffPerSide: '1',
+  });
+  const payload = await fetchJsonWithTimeout(`https://ws.geonorge.no/adresser/v1/sok?${params.toString()}`, {
+    timeoutMs: 5000,
+    headers: { Accept: 'application/json' },
+  });
+  const first = Array.isArray(payload?.adresser) ? payload.adresser[0] : null;
+  const point = first?.representasjonspunkt || {};
+  const label = [sanitizeText(first?.adressetekst), sanitizeText(first?.postnummer), sanitizeText(first?.poststed)]
+    .filter(Boolean)
+    .join(', ');
+  return coordsFromPayload(point.lat, point.lon, label, q);
+}
+
+async function geocodeViaNominatim(query = '', { countrycodes = '' } = {}) {
+  const q = sanitizeText(query);
+  if (!q) return null;
+  const minInterval = Math.max(0, SALES_MEETING_GEOCODE_MIN_INTERVAL_MS);
+  const elapsedSinceLast = Date.now() - salesMeetingGeocodeLastRequestAt;
+  if (elapsedSinceLast < minInterval) {
+    await waitMs(minInterval - elapsedSinceLast);
+  }
+  salesMeetingGeocodeLastRequestAt = Date.now();
+  const params = new URLSearchParams({
+    q,
+    format: 'jsonv2',
+    limit: '1',
+    addressdetails: '0',
+  });
+  if (countrycodes) params.set('countrycodes', countrycodes);
+  const payload = await fetchJsonWithTimeout(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    timeoutMs: 6000,
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'nb',
+      'User-Agent': 'AsoldiSalesMap/1.0 (+https://asoldi.com)',
+    },
+  });
+  const first = Array.isArray(payload) ? payload[0] : null;
+  return coordsFromPayload(first?.lat, first?.lon, first?.display_name, q);
+}
+
+async function geocodeViaPhoton(query = '') {
+  const q = sanitizeText(query);
+  if (!q) return null;
+  const params = new URLSearchParams({
+    q,
+    limit: '1',
+    lang: 'en',
+  });
+  const payload = await fetchJsonWithTimeout(`https://photon.komoot.io/api/?${params.toString()}`, {
+    timeoutMs: 6000,
+    headers: { Accept: 'application/json' },
+  });
+  const first = Array.isArray(payload?.features) ? payload.features[0] : null;
+  const coords = Array.isArray(first?.geometry?.coordinates) ? first.geometry.coordinates : [];
+  const lon = coords[0];
+  const lat = coords[1];
+  const props = first?.properties && typeof first.properties === 'object' ? first.properties : {};
+  const label = [props.name, props.street, props.postcode, props.city, props.country].filter(Boolean).join(', ');
+  return coordsFromPayload(lat, lon, label, q);
+}
+
 async function geocodeMeetingPlace(place = '', { allowNetwork = true } = {}) {
   const meetingPlace = sanitizeText(place);
   if (!meetingPlace) return null;
@@ -926,60 +1059,66 @@ async function geocodeMeetingPlace(place = '', { allowNetwork = true } = {}) {
   if (cached.status === 'failed') return null;
   if (!allowNetwork) return undefined;
 
-  const minInterval = Math.max(0, SALES_MEETING_GEOCODE_MIN_INTERVAL_MS);
-  const elapsedSinceLast = Date.now() - salesMeetingGeocodeLastRequestAt;
-  if (elapsedSinceLast < minInterval) {
-    await waitMs(minInterval - elapsedSinceLast);
+  const attempts = [];
+  if (/\d/.test(meetingPlace)) {
+    attempts.push(() => geocodeViaKartverket(meetingPlace));
   }
-  salesMeetingGeocodeLastRequestAt = Date.now();
-
-  try {
-    const params = new URLSearchParams({
-      q: meetingPlace,
-      format: 'jsonv2',
-      limit: '1',
-      addressdetails: '0',
-      countrycodes: 'no',
-    });
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        'Accept-Language': 'nb',
-        'User-Agent': 'AsoldiSalesMap/1.0 (+https://asoldi.com)',
-      },
-    });
-    if (!response.ok) return undefined;
-    const payload = await response.json().catch(() => []);
-    const first = Array.isArray(payload) ? payload[0] : null;
-    const latitude = Number(first?.lat);
-    const longitude = Number(first?.lon);
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      storeCachedGeocode(cacheKey, { failed: true, updatedAt: nowIso() });
-      return null;
+  attempts.push(() => geocodeViaNominatim(meetingPlace, { countrycodes: 'no' }));
+  attempts.push(() => geocodeViaNominatim(`${meetingPlace}, Norge`, { countrycodes: 'no' }));
+  attempts.push(() => geocodeViaPhoton(meetingPlace));
+  let networkFailed = false;
+  for (const attempt of attempts) {
+    try {
+      const geocoded = await attempt();
+      if (geocoded) {
+        storeCachedGeocode(cacheKey, geocoded);
+        return geocoded;
+      }
+    } catch {
+      networkFailed = true;
     }
-    const geocoded = {
-      latitude,
-      longitude,
-      displayName: sanitizeText(first?.display_name) || meetingPlace,
-      updatedAt: nowIso(),
-    };
-    storeCachedGeocode(cacheKey, geocoded);
-    return geocoded;
-  } catch {
-    return undefined;
   }
+  if (networkFailed) return undefined;
+  storeCachedGeocode(cacheKey, { failed: true, updatedAt: nowIso() });
+  return null;
 }
 
 function collectUniqueSalesMapPlaces(clients = []) {
   const uniquePlaces = new Map();
   for (const client of Array.isArray(clients) ? clients : []) {
-    const place = sanitizeText(client?.meetingPlace);
-    const key = normalizeMeetingPlaceKey(place);
+    const resolved = resolveSalesClientMapQuery(client);
+    if (!resolved?.query) continue;
+    const key = normalizeMeetingPlaceKey(resolved.query);
     if (!key || uniquePlaces.has(key)) continue;
-    uniquePlaces.set(key, place);
+    uniquePlaces.set(key, resolved.query);
   }
   return uniquePlaces;
+}
+
+async function backfillOneMissingSalesAddress() {
+  const clients = sales.getSalesClients();
+  const target = clients.find((client) => {
+    const id = sanitizeText(client?.id);
+    if (!id || salesAddressBackfillTried.has(id)) return false;
+    if (compactMapLocationText(client?.meetingPlace)) return false;
+    return Boolean(sanitizeText(client?.businessName));
+  });
+  if (!target) return false;
+  salesAddressBackfillTried.add(sanitizeText(target.id));
+  try {
+    const orgnr = extractOrganizationNumberFromClientRecord(target);
+    let entity = orgnr ? await lookupBrregEntityByOrganizationNumber(orgnr) : null;
+    if (!compactMapLocationText(entity?.address)) {
+      const candidates = await searchBrregBusinesses(target.businessName).catch(() => []);
+      entity = selectBrregCandidateByBusinessName(candidates, target.businessName, '') || entity;
+    }
+    const address = compactMapLocationText(entity?.address);
+    if (!address) return true;
+    sales.updateSalesClient(target.id, { meetingPlace: address });
+    return true;
+  } catch {
+    return true;
+  }
 }
 
 async function warmSalesGeocodeCache() {
@@ -987,11 +1126,14 @@ async function warmSalesGeocodeCache() {
   salesGeocodeWarmupRunning = true;
   try {
     const uniquePlaces = collectUniqueSalesMapPlaces(sales.getSalesClients());
+    let geocodedOne = false;
     for (const [key, place] of uniquePlaces.entries()) {
       if (readCachedGeocode(key).status !== 'miss') continue;
       await geocodeMeetingPlace(place, { allowNetwork: true });
+      geocodedOne = true;
       break;
     }
+    if (!geocodedOne) await backfillOneMissingSalesAddress();
   } catch {
     // Background geocoding should never take down the server.
   } finally {
@@ -1005,7 +1147,7 @@ function startSalesGeocodeWarmupLoop() {
   void warmSalesGeocodeCache();
   salesGeocodeWarmupInterval = setInterval(() => {
     void warmSalesGeocodeCache();
-  }, 2000);
+  }, 1200);
 }
 
 function healStaleLocalMakerPort(value = '') {
@@ -9431,9 +9573,12 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
     ? all
     : all.filter((client) => client.ownerId === req.salesUser.accountKey);
 
-  const mappableClients = visible.filter((client) => sanitizeText(client.meetingPlace));
-  const uniquePlaces = collectUniqueSalesMapPlaces(mappableClients);
+  const productFilter = sales.normalizeSalesProduct(req.query?.product, { allowEmpty: true });
+  const scoped = productFilter
+    ? visible.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
+    : visible;
 
+  const uniquePlaces = collectUniqueSalesMapPlaces(scoped);
   const geocodedByKey = new Map();
   const pendingKeys = [];
   for (const [key, place] of uniquePlaces.entries()) {
@@ -9464,10 +9609,17 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
 
   let unresolvedCount = 0;
   let pendingCount = 0;
+  let missingAddressCount = 0;
   const pins = [];
-  for (const client of mappableClients) {
-    const place = sanitizeText(client.meetingPlace);
-    const key = normalizeMeetingPlaceKey(place);
+  for (const client of scoped) {
+    const resolved = resolveSalesClientMapQuery(client);
+    if (!resolved?.query) {
+      unresolvedCount += 1;
+      missingAddressCount += 1;
+      continue;
+    }
+    if (resolved.source === 'businessName') missingAddressCount += 1;
+    const key = normalizeMeetingPlaceKey(resolved.query);
     const geocoded = geocodedByKey.get(key);
     if (!geocoded) {
       if (geocoded === null) unresolvedCount += 1;
@@ -9478,7 +9630,8 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
       clientId: client.id,
       businessName: sanitizeText(client.businessName),
       contactPerson: sanitizeText(client.contactPerson),
-      meetingPlace: place,
+      meetingPlace: resolved.label,
+      locationSource: resolved.source,
       meetingAt: sanitizeText(client.meetingAt),
       meetingMode: normalizeMeetingMode(client.meetingMode),
       status: sanitizeText(client.status) || 'active',
@@ -9504,12 +9657,14 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
     return aPast ? timeB - timeA : timeA - timeB;
   });
 
+  void warmSalesGeocodeCache();
+
   res.json({
     pins,
     unresolvedCount,
     pendingCount,
-    totalCandidates: mappableClients.length,
-    missingAddressCount: Math.max(0, visible.length - mappableClients.length),
+    totalCandidates: scoped.length,
+    missingAddressCount,
   });
 });
 
