@@ -66,7 +66,19 @@ PC1 → PC2 code sync:
 - `Asoldi-website` → `\\192.168.68.92\hosted\asoldi`
 - `Website-creator` → `\\192.168.68.92\hosted\website-creator`
 
-Never `/MIR` into `C:\hosted\asoldi-data`.
+Never `/MIR` into `C:\hosted\asoldi-data` or into `C:\hosted\website-creator\.generated-runs`.
+
+## 4) Website Maker client bundles / runs (also not in git)
+
+Sales clients on asoldi.com and **Maker client bundles** are different files.
+
+Maker stores bundles + uploads + generated sites in:
+
+`C:\hosted\website-creator\.generated-runs`
+
+That folder is gitignored (client media / PII, often hundreds of MB). Copy it from the laptop separately (skip `browser-profile`). Compose bind-mounts it into the Maker container. If you only sync the git tree, Maker shows `"clients":[]` and Sales **Open in maker** opens an empty draft.
+
+See Website Maker `docs/other-pc-setup-checklist.md` section 7.
 
 ## Password hashes
 
