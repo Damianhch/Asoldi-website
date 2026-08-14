@@ -164,6 +164,7 @@ function normalizeSsuWinsState(value = {}) {
     lastBackfillSummary: input.lastBackfillSummary && typeof input.lastBackfillSummary === 'object'
       ? input.lastBackfillSummary
       : null,
+    historicalBackfillVersion: sanitizeText(input.historicalBackfillVersion),
   };
 }
 
@@ -547,6 +548,9 @@ export function setSsuWinsBackfillState(payload = {}) {
   current.lastBackfillSummary = input.lastBackfillSummary && typeof input.lastBackfillSummary === 'object'
     ? input.lastBackfillSummary
     : current.lastBackfillSummary;
+  if (sanitizeText(input.historicalBackfillVersion)) {
+    current.historicalBackfillVersion = sanitizeText(input.historicalBackfillVersion);
+  }
   state.ssuWins = current;
   state.updatedAt = nowIso();
   writeStore(state);
