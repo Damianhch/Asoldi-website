@@ -450,23 +450,25 @@ function shouldOpenOfficePublisher(makerBase: string) {
 }
 
 function openDataPublisherWindow(): Window | null {
-  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(buildOfficePublisherHtml())}`;
-  let popup: Window | null = null;
+  const html = buildOfficePublisherHtml();
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+  // Chrome blocks window.open(data:) and leaves about:blank. Open blank first, then
+  // navigate that window to the data: helper so fetch() is not upgraded to HTTPS.
+  const popup = window.open('about:blank', 'asoldi-data-publish', 'width=520,height=460');
+  if (!popup) return null;
   try {
-    popup = window.open(dataUrl, 'asoldi-data-publish', 'width=520,height=460');
-  } catch {
-    popup = null;
-  }
-  try {
-    const linker = document.createElement('a');
-    linker.href = dataUrl;
-    linker.target = 'asoldi-data-publish';
-    linker.rel = 'opener';
-    document.body.appendChild(linker);
-    linker.click();
-    linker.remove();
+    popup.location.replace(dataUrl);
   } catch {
     // ignore
+  }
+  try {
+    popup.document.open();
+    popup.document.write(
+      `<!doctype html><html><body><script>location.replace(${JSON.stringify(dataUrl)});<\/script></body></html>`
+    );
+    popup.document.close();
+  } catch {
+    // Window already navigated to the data: helper.
   }
   return popup;
 }
@@ -511,7 +513,7 @@ function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
           finish(() =>
             reject(
               new Error(
-                'The publish helper did not start. Allow popups for asoldi.com (Firefox may block data: windows) and try Backfill again.'
+                'The publish helper did not start. Allow popups for asoldi.com and click Backfill again.'
               )
             )
           );
@@ -1345,6 +1347,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       }
     } catch (err) {
       publisher?.close();
+      setNotice('');
       setError(err instanceof Error ? err.message : 'Failed syncing website from maker');
     } finally {
       setSyncingId(null);
@@ -1444,6 +1447,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       setNotice(`Published ${list.length} public preview(s) to asoldi.com/sales-preview.`);
     } catch (err) {
       publisher?.close();
+      setNotice('');
       setError(err instanceof Error ? err.message : 'Failed backfilling public previews');
     } finally {
       setBackfillingPreviews(false);
