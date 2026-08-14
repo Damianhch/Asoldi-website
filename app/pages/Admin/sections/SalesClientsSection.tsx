@@ -392,6 +392,203 @@ function pickZipFile(): Promise<File> {
   });
 }
 
+function buildMakerPublisherScript(jobs: PreviewBridgeJob[]) {
+  return `(async function(){
+  try {
+    document.title = 'Publishing to asoldi.com';
+    if (document.body) document.body.textContent = 'Publishing website preview to asoldi.com from Website Maker…';
+  } catch (e) {}
+  if (window.opener) window.opener.postMessage({ type: 'asoldi-bridge-ready' }, '*');
+  var jobs = ${JSON.stringify(jobs)};
+  var results = [];
+  for (var i = 0; i < jobs.length; i++) {
+    var job = jobs[i];
+    try {
+      var zipRes = await fetch(job.exportUrl);
+      if (!zipRes.ok) throw new Error('Maker export failed (' + zipRes.status + ')');
+      var zip = await zipRes.blob();
+      var headers = Object.assign({
+        Authorization: 'Bearer ' + job.token,
+        'Content-Type': 'application/zip'
+      }, job.headers || {});
+      var up = await fetch(job.uploadUrl, { method: 'POST', headers: headers, body: zip });
+      var data = await up.json().catch(function(){ return {}; });
+      if (!up.ok) throw new Error(data.message || ('asoldi.com rejected the preview (' + up.status + ')'));
+      results.push({ ok: true, clientId: job.clientId, publicPreviewUrl: data.publicPreviewUrl || '' });
+    } catch (err) {
+      results.push({ ok: false, clientId: job.clientId, error: (err && err.message) ? err.message : String(err) });
+    }
+  }
+  var failed = results.filter(function(row){ return !row.ok; });
+  if (window.opener) {
+    window.opener.postMessage({
+      type: 'asoldi-bridge-done',
+      ok: failed.length === 0,
+      results: results,
+      error: (failed[0] && failed[0].error) || ''
+    }, '*');
+  }
+  try {
+    if (document.body) {
+      document.body.textContent = failed.length
+        ? ('Failed: ' + ((failed[0] && failed[0].error) || 'Could not publish'))
+        : 'Published to asoldi.com/sales-preview. You can close this window.';
+    }
+  } catch (e) {}
+})();void 0;`;
+}
+
+function publishViaMakerOrigin(makerOrigin: string, jobs: PreviewBridgeJob[]): Promise<{ ok: true }> {
+  const origin = normalizeHttpBaseUrl(makerOrigin);
+  if (!origin || !jobs.length) {
+    return Promise.reject(new Error('Website Maker URL is missing.'));
+  }
+  return new Promise((resolve, reject) => {
+    const popupUrl = new URL('/', origin);
+    const popup = window.open(popupUrl.toString(), 'asoldi-maker-publish', 'width=520,height=460');
+    if (!popup) {
+      reject(new Error('Popup blocked. Allow popups so Website Maker can publish the preview.'));
+      return;
+    }
+    let injected = false;
+    let ready = false;
+    const inject = (force = false) => {
+      if (ready) return;
+      if (injected && !force) return;
+      injected = true;
+      try {
+        const href = `javascript:${encodeURIComponent(buildMakerPublisherScript(jobs))}`;
+        popup.location.href = href;
+        const linker = document.createElement('a');
+        linker.href = href;
+        linker.target = 'asoldi-maker-publish';
+        linker.rel = 'opener';
+        document.body.appendChild(linker);
+        linker.click();
+        linker.remove();
+      } catch {
+        // Some browsers block javascript: navigation; the timeout handles that.
+      }
+    };
+    const injectTimer = window.setTimeout(() => inject(false), 700);
+    const retryTimer = window.setTimeout(() => inject(true), 1800);
+    const readyTimer = window.setTimeout(() => {
+      if (ready) return;
+      cleanup();
+      try {
+        popup.close();
+      } catch {
+        // ignore
+      }
+      reject(
+        new Error(
+          'Website Maker did not publish from the office Docker URL. Stay on home Wi-Fi, allow popups, and confirm Maker is open at ' +
+            origin +
+            '.'
+        )
+      );
+    }, 8000);
+    const doneTimer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Timed out publishing the preview from Website Maker.'));
+    }, 180_000);
+    const cleanup = () => {
+      window.clearTimeout(injectTimer);
+      window.clearTimeout(retryTimer);
+      window.clearTimeout(readyTimer);
+      window.clearTimeout(doneTimer);
+      window.removeEventListener('message', onMessage);
+    };
+    const onMessage = (event: MessageEvent) => {
+      const allowedOrigins = new Set([origin, window.location.origin, 'null']);
+      if (!allowedOrigins.has(event.origin)) return;
+      const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
+      if (!payload) return;
+      if (payload.type === 'asoldi-bridge-ready') {
+        ready = true;
+        window.clearTimeout(readyTimer);
+        return;
+      }
+      if (payload.type === 'asoldi-bridge-done') {
+        cleanup();
+        try {
+          popup.close();
+        } catch {
+          // ignore
+        }
+        if (payload.ok) {
+          resolve({ ok: true });
+          return;
+        }
+        reject(new Error(String(payload.error || 'Website Maker failed to publish the preview.')));
+      }
+    };
+    window.addEventListener('message', onMessage);
+  });
+}
+
+function publishViaDataPage(jobs: PreviewBridgeJob[]): Promise<{ ok: true }> {
+  if (!jobs.length) {
+    return Promise.reject(new Error('No preview jobs to publish.'));
+  }
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title></head><body><p>Publishing website preview to asoldi.com…</p><script>${buildMakerPublisherScript(jobs)}</script></body></html>`;
+  return new Promise((resolve, reject) => {
+    const popup = window.open(
+      `data:text/html;charset=utf-8,${encodeURIComponent(html)}`,
+      'asoldi-data-publish',
+      'width=520,height=460'
+    );
+    if (!popup) {
+      reject(new Error('Popup blocked. Allow popups so the preview can be published.'));
+      return;
+    }
+    let ready = false;
+    const readyTimer = window.setTimeout(() => {
+      if (ready) return;
+      cleanup();
+      try {
+        popup.close();
+      } catch {
+        // ignore
+      }
+      reject(new Error('Could not publish from a local helper page.'));
+    }, 8000);
+    const doneTimer = window.setTimeout(() => {
+      cleanup();
+      reject(new Error('Timed out publishing the preview.'));
+    }, 180_000);
+    const cleanup = () => {
+      window.clearTimeout(readyTimer);
+      window.clearTimeout(doneTimer);
+      window.removeEventListener('message', onMessage);
+    };
+    const onMessage = (event: MessageEvent) => {
+      if (event.origin !== 'null' && event.origin !== window.location.origin) return;
+      const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
+      if (!payload) return;
+      if (payload.type === 'asoldi-bridge-ready') {
+        ready = true;
+        window.clearTimeout(readyTimer);
+        return;
+      }
+      if (payload.type === 'asoldi-bridge-done') {
+        cleanup();
+        try {
+          popup.close();
+        } catch {
+          // ignore
+        }
+        if (payload.ok) {
+          resolve({ ok: true });
+          return;
+        }
+        reject(new Error(String(payload.error || 'Failed publishing the preview.')));
+      }
+    };
+    window.addEventListener('message', onMessage);
+  });
+}
+
 function publishViaLanBridge(lanOrigin: string, jobs: PreviewBridgeJob[]): Promise<{ ok: true }> {
   const origin = String(lanOrigin || '').replace(/\/$/, '');
   if (!origin || !jobs.length) {
@@ -1255,56 +1452,55 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       token,
       headers,
     };
+    const makerOrigin =
+      normalizeHttpBaseUrl(String(handoff.websiteMakerBaseUrl || '')) ||
+      healStaleLocalMakerBase(websiteMakerBaseUrl) ||
+      normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
+      LAN_MAKER_URL;
     const lanOrigin = String(
-      handoff.lanBridgeOrigin || lanAsoldiOriginFromMaker(String(handoff.websiteMakerBaseUrl || websiteMakerBaseUrl))
+      handoff.lanBridgeOrigin || lanAsoldiOriginFromMaker(makerOrigin)
     );
 
     try {
-      setNotice('Publishing preview via office Asoldi (port 3200)…');
-      await publishViaLanBridge(lanOrigin, [job]);
+      setNotice('Publishing preview from office Website Maker (same Docker as Maker preview)…');
+      await publishViaMakerOrigin(makerOrigin, [job]);
       return { publicPreviewUrl: String(handoff.publicPreviewUrl || getPublicPreviewHref(client.id)) };
     } catch {
-      // HTTPS asoldi.com cannot fetch LAN Maker. A public Maker tunnel lets Hostinger pull the ZIP.
+      // Fall through.
     }
 
     try {
-      setNotice('Office Asoldi bridge unavailable. Opening a Maker tunnel so asoldi.com can download the ZIP…');
-      const publicMaker = await ensureExportTunnel();
-      const retried = await request(`/admin/sales/${client.id}/import-website`, {
-        method: 'POST',
-        body: JSON.stringify({
-          runId: String(handoff.runId || client.makerRun?.runId || ''),
-          websiteMakerBaseUrl: publicMaker,
-          siteFolder: client.businessName || 'site',
-          step: 'latest',
-        }),
-      });
-      if (retried?.browserExportHandoff) {
-        throw new Error('asoldi.com still cannot reach Website Maker.');
-      }
-      return retried;
-    } catch (tunnelError) {
-      const proceed = window.confirm(
-        `${tunnelError instanceof Error ? tunnelError.message : 'Automatic publish failed.'}\n\nDownload the ZIP from Maker now, then select that file to upload to asoldi.com?`
-      );
-      if (!proceed) throw tunnelError;
-      if (job.exportUrl) window.open(job.exportUrl, '_blank');
-      const file = await pickZipFile();
-      const response = await fetch(`${API}/admin/sales/${client.id}/receive-preview-bundle`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/zip',
-          ...headers,
-        },
-        body: file,
-      });
-      const uploaded = await response.json().catch(() => ({} as Record<string, unknown>));
-      if (!response.ok) {
-        throw new Error(String((uploaded as { message?: string }).message || 'Failed uploading preview ZIP.'));
-      }
-      return uploaded;
+      await publishViaDataPage([job]);
+      return { publicPreviewUrl: String(handoff.publicPreviewUrl || getPublicPreviewHref(client.id)) };
+    } catch {
+      // Fall through to the office Asoldi :3200 bridge, then a ZIP file picker.
     }
+
+    try {
+      setNotice('Maker popup publish failed. Trying office Asoldi on port 3200…');
+      await publishViaLanBridge(lanOrigin, [job]);
+      return { publicPreviewUrl: String(handoff.publicPreviewUrl || getPublicPreviewHref(client.id)) };
+    } catch {
+      // Last resort: download the Maker ZIP in this browser, then upload it to asoldi.com.
+    }
+
+    setNotice('Select the ZIP that Website Maker just downloaded to publish it to asoldi.com.');
+    if (job.exportUrl) window.open(job.exportUrl, '_blank');
+    const file = await pickZipFile();
+    const response = await fetch(`${API}/admin/sales/${client.id}/receive-preview-bundle`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/zip',
+        ...headers,
+      },
+      body: file,
+    });
+    const uploaded = await response.json().catch(() => ({} as Record<string, unknown>));
+    if (!response.ok) {
+      throw new Error(String((uploaded as { message?: string }).message || 'Failed uploading preview ZIP.'));
+    }
+    return uploaded;
   }
 
   async function ensureExportTunnel() {
@@ -1352,7 +1548,25 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           'X-Site-Folder': entry.businessName || 'site',
         },
       }));
-      setNotice(`Publishing ${list.length} public preview(s). Stay on home Wi-Fi…`);
+      setNotice(`Publishing ${list.length} public preview(s) from office Website Maker. Stay on home Wi-Fi…`);
+      try {
+        await publishViaMakerOrigin(makerBase, jobs);
+        await loadSales();
+        await loadOffers();
+        setNotice(`Published ${list.length} public preview(s) to asoldi.com/sales-preview.`);
+        return;
+      } catch {
+        // Try a local helper page before office Asoldi :3200.
+      }
+      try {
+        await publishViaDataPage(jobs);
+        await loadSales();
+        await loadOffers();
+        setNotice(`Published ${list.length} public preview(s) to asoldi.com/sales-preview.`);
+        return;
+      } catch {
+        // Office Asoldi :3200 is optional; Maker Docker is the source of truth.
+      }
       try {
         await publishViaLanBridge(lanAsoldiOriginFromMaker(makerBase), jobs);
         await loadSales();
@@ -1360,26 +1574,31 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         setNotice(`Published ${list.length} public preview(s) to asoldi.com/sales-preview.`);
         return;
       } catch {
-        setNotice('Office Asoldi bridge unavailable. Opening a Maker tunnel, then publishing each snapshot…');
+        // File picker per client if the Maker popup helper is blocked.
       }
-      const publicMaker = await ensureExportTunnel();
       let ok = 0;
       const failed: string[] = [];
-      for (const entry of list) {
+      for (const job of jobs) {
         try {
-          const result = await request(`/admin/sales/${entry.id}/import-website`, {
+          setNotice(`Select the ZIP for ${job.headers?.['X-Source-Run-Id'] || job.clientId}…`);
+          if (job.exportUrl) window.open(job.exportUrl, '_blank');
+          const file = await pickZipFile();
+          const response = await fetch(`${API}/admin/sales/${job.clientId}/receive-preview-bundle`, {
             method: 'POST',
-            body: JSON.stringify({
-              runId: entry.runId,
-              websiteMakerBaseUrl: publicMaker,
-              siteFolder: entry.businessName || 'site',
-              step: 'latest',
-            }),
+            headers: {
+              Authorization: `Bearer ${token}`,
+              'Content-Type': 'application/zip',
+              ...(job.headers || {}),
+            },
+            body: file,
           });
-          if (result?.browserExportHandoff) failed.push(entry.businessName || entry.id);
-          else ok += 1;
+          if (!response.ok) {
+            const uploaded = await response.json().catch(() => ({} as { message?: string }));
+            throw new Error(String(uploaded.message || `Upload failed (${response.status})`));
+          }
+          ok += 1;
         } catch {
-          failed.push(entry.businessName || entry.id);
+          failed.push(job.clientId);
         }
       }
       await loadSales();
@@ -2045,8 +2264,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
-              then New tunnel URL, then Create run. asoldi.com cannot fetch Docker Maker itself — Sync on home
-              Wi-Fi publishes the ZIP to asoldi.com/sales-preview (office Asoldi port 3200, or a Maker tunnel).
+              then New tunnel URL, then Create run. Backfill / Sync uses that same Docker Maker — not a new
+              Cloudflare tunnel — and uploads the ZIP to asoldi.com/sales-preview.
             </p>
             <div className="mt-3">
               <button
