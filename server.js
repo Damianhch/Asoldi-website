@@ -27,8 +27,16 @@ import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-em
 import {
   PUBLIC_SALES_ORIGIN,
   buildLaptopPreviewEntry,
+  buildMakerExportUrl,
+  buildPreviewBundleUploadUrl,
   buildPublicSalesPreviewUrl,
   buildSalesPreviewPath,
+  clientNeedsPublicPreviewSnapshot,
+  injectPreviewBaseHref,
+  isAllowedPreviewBridgeExportUrl,
+  isAllowedPreviewBundleUploadUrl,
+  isPrivateMakerUrl,
+  lanAsoldiOriginFromMakerUrl,
   toPublicSalesPreviewUrl,
 } from './lib/laptop-preview.js';
 import {
@@ -6674,7 +6682,7 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
     importedAt: now,
     sourceRunId: sanitizeText(sourceRunId) || sanitizeText(targetClient.makerRun?.runId),
     sourceStep: sanitizeText(sourceStep) || 'latest',
-    sourceBaseUrl: sanitizeText(sourceBaseUrl) || `https://asoldi.com/${resolvedSiteFolder}`,
+    sourceBaseUrl: sanitizeText(sourceBaseUrl) || getPublicSalesPreviewUrl(targetClient.id),
     siteFolder: path.basename(siteRoot),
     importRoot: siteRoot,
     previewUrl: getSalesPreviewUrl(targetClient.id),
@@ -6797,6 +6805,7 @@ async function syncSalesClientFromMakerRun({
   siteFolder = '',
   baseUrl = '',
   websiteMakerBaseUrl = '',
+  publicHost = false,
 } = {}) {
   const targetClient = client && typeof client === 'object' ? client : null;
   if (!targetClient?.id) {
@@ -6810,13 +6819,44 @@ async function syncSalesClientFromMakerRun({
 
   const resolvedSiteFolder = sanitizeSegment(siteFolder || targetClient.businessName || 'site', 'site');
   const requestedStep = sanitizeText(step || 'latest') || 'latest';
-  const sourceBaseUrl = sanitizeText(baseUrl || `https://asoldi.com/${resolvedSiteFolder}`);
+  const sourceBaseUrl = sanitizeText(baseUrl) || getPublicSalesPreviewUrl(targetClient.id);
   const makerBaseUrl = resolveWebsiteMakerBaseUrl(websiteMakerBaseUrl, targetClient);
   if (!makerBaseUrl) {
     throw makeHttpError(400, 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).');
   }
 
-  const exportUrl = `${makerBaseUrl}/api/runs/${encodeURIComponent(resolvedRunId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(sourceBaseUrl)}&siteFolder=${encodeURIComponent(resolvedSiteFolder)}`;
+  const exportUrl =
+    buildMakerExportUrl({
+      makerBaseUrl,
+      runId: resolvedRunId,
+      step: requestedStep,
+      siteFolder: resolvedSiteFolder,
+      clientId: targetClient.id,
+    }) ||
+    `${makerBaseUrl}/api/runs/${encodeURIComponent(resolvedRunId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(sourceBaseUrl)}&siteFolder=${encodeURIComponent(resolvedSiteFolder)}`;
+
+  // Hostinger cannot fetch office-LAN Maker. Return a browser handoff so Sales
+  // can pull the ZIP on home Wi-Fi and POST it to asoldi.com.
+  if (isPrivateMakerUrl(makerBaseUrl) && publicHost) {
+    return {
+      browserExportHandoff: true,
+      runId: resolvedRunId,
+      sourceStep: requestedStep,
+      websiteMakerBaseUrl: makerBaseUrl,
+      exportUrl,
+      uploadUrl: buildPreviewBundleUploadUrl(targetClient.id, PUBLIC_SALES_ORIGIN),
+      lanBridgeOrigin: lanAsoldiOriginFromMakerUrl(makerBaseUrl),
+      headers: {
+        'X-Source-Run-Id': resolvedRunId,
+        'X-Source-Step': requestedStep,
+        'X-Site-Folder': resolvedSiteFolder,
+      },
+      publicPreviewUrl: getPublicSalesPreviewUrl(targetClient.id),
+      siteFolder: resolvedSiteFolder,
+      client: targetClient,
+    };
+  }
+
   const response = await fetch(exportUrl, {
     method: 'GET',
     headers: getWebsiteMakerAuthHeaders(),
@@ -9616,6 +9656,27 @@ app.get('/api/admin/sales/laptop-previews', salesAuth, (req, res) => {
   });
 });
 
+app.get('/api/admin/sales/preview-backfill', salesAuth, (req, res) => {
+  const all = sales.getSalesClients();
+  const owned = req.salesUser.isAdmin
+    ? all
+    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+  const clients = owned
+    .filter((client) => clientNeedsPublicPreviewSnapshot(client))
+    .map((client) => ({
+      id: client.id,
+      businessName: sanitizeText(client.businessName) || 'Unnamed business',
+      runId: sanitizeText(client.makerRun?.runId),
+      makerPreviewUrl: sanitizeText(client.makerRun?.previewUrl),
+      publicPreviewUrl: getPublicSalesPreviewUrl(client.id),
+    }));
+  res.json({
+    ok: true,
+    count: clients.length,
+    clients,
+  });
+});
+
 app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const productFilter = sanitizeText(req.query?.product).toLowerCase();
@@ -10271,7 +10332,14 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
       siteFolder: req.body?.siteFolder || client.businessName || 'site',
       baseUrl: req.body?.baseUrl,
       websiteMakerBaseUrl: req.body?.websiteMakerBaseUrl,
+      publicHost: requestIsPublicInternetHost(req),
     });
+    if (syncResult?.browserExportHandoff) {
+      return res.json({
+        ok: true,
+        ...syncResult,
+      });
+    }
     let publishWarning = '';
     let publishedToProd = !resolveProdAdminBaseUrl();
     let publicClient = syncResult.client;
@@ -10316,7 +10384,7 @@ app.get('/api/admin/sales/:id/maker-export', salesAuth, async (req, res) => {
 
   const step = sanitizeText(req.query?.step || 'latest') || 'latest';
   const siteFolder = sanitizeSegment(req.query?.siteFolder || client.businessName || 'site', 'site');
-  const baseUrl = sanitizeText(req.query?.baseUrl || `https://asoldi.com/${siteFolder}`);
+  const baseUrl = sanitizeText(req.query?.baseUrl) || getPublicSalesPreviewUrl(client.id);
   const exportUrl = `${websiteMakerBaseUrl}/api/runs/${encodeURIComponent(runId)}/export?step=${encodeURIComponent(step)}&baseUrl=${encodeURIComponent(baseUrl)}&siteFolder=${encodeURIComponent(siteFolder)}&persist=1`;
 
   try {
@@ -10392,10 +10460,6 @@ app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
   }
 });
 
-function isPrivateMakerUrl(value = '') {
-  return /localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\./i.test(String(value || ''));
-}
-
 function requestIsPublicInternetHost(req) {
   const host = String(req.get('host') || '').split(':')[0];
   let appHost = '';
@@ -10405,6 +10469,68 @@ function requestIsPublicInternetHost(req) {
     appHost = '';
   }
   return /(^|\.)asoldi\.com$/i.test(host) || /(^|\.)asoldi\.com$/i.test(appHost);
+}
+
+function setPreviewBundleCorsHeaders(req, res) {
+  const origin = sanitizeText(req.get('origin'));
+  res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  res.setHeader('Vary', 'Origin');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'Authorization, Content-Type, X-Source-Run-Id, X-Source-Step, X-Site-Folder'
+  );
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Max-Age', '86400');
+}
+
+async function publishPreviewBridgeJob(job = {}) {
+  const exportUrl = sanitizeText(job.exportUrl);
+  const uploadUrl = sanitizeText(job.uploadUrl);
+  const token = sanitizeText(job.token);
+  if (!isAllowedPreviewBridgeExportUrl(exportUrl)) {
+    throw makeHttpError(400, 'Export URL must be an office-LAN Website Maker /api/runs/:id/export link.');
+  }
+  if (!isAllowedPreviewBundleUploadUrl(uploadUrl)) {
+    throw makeHttpError(400, 'Upload URL must be asoldi.com receive-preview-bundle.');
+  }
+  if (!token) {
+    throw makeHttpError(400, 'Missing sales token for publishing the preview.');
+  }
+  const extraHeaders = job.headers && typeof job.headers === 'object' ? job.headers : {};
+  const exportRes = await fetch(exportUrl, {
+    method: 'GET',
+    headers: getWebsiteMakerAuthHeaders(),
+  });
+  const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+  if (!exportRes.ok) {
+    throw makeHttpError(
+      exportRes.status === 404 ? 404 : 502,
+      parseMakerErrorMessage(zipBuffer, `Website export failed (${exportRes.status})`)
+    );
+  }
+  const uploadRes = await fetch(uploadUrl, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/zip',
+      'X-Source-Run-Id': sanitizeText(extraHeaders['X-Source-Run-Id'] || extraHeaders['x-source-run-id']),
+      'X-Source-Step': sanitizeText(extraHeaders['X-Source-Step'] || extraHeaders['x-source-step']) || 'latest',
+      'X-Site-Folder': sanitizeText(extraHeaders['X-Site-Folder'] || extraHeaders['x-site-folder']) || 'site',
+    },
+    body: zipBuffer,
+  });
+  const uploadBody = await uploadRes.json().catch(() => ({}));
+  if (!uploadRes.ok) {
+    throw makeHttpError(
+      uploadRes.status >= 400 && uploadRes.status <= 599 ? uploadRes.status : 502,
+      uploadBody.message || `asoldi.com rejected the public preview (${uploadRes.status}).`
+    );
+  }
+  return {
+    ok: true,
+    publicPreviewUrl: sanitizeText(uploadBody.publicPreviewUrl),
+    clientId: sanitizeText(job.clientId),
+  };
 }
 
 function resolveProdAdminBaseUrl() {
@@ -10799,8 +10925,17 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
   }
 });
 
+app.options('/api/admin/sales/:id/receive-preview-bundle', (req, res) => {
+  setPreviewBundleCorsHeaders(req, res);
+  return res.status(204).end();
+});
+
 app.post(
   '/api/admin/sales/:id/receive-preview-bundle',
+  (req, res, next) => {
+    setPreviewBundleCorsHeaders(req, res);
+    next();
+  },
   express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '80mb' }),
   salesAuth,
   async (req, res) => {
@@ -10818,6 +10953,7 @@ app.post(
       const updated = await applyImportedWebsiteZip(client, zipBuffer, {
         sourceRunId: sanitizeText(req.get('x-source-run-id')),
         sourceStep: sanitizeText(req.get('x-source-step')) || 'latest',
+        sourceBaseUrl: getPublicSalesPreviewUrl(client.id),
         siteFolder: sanitizeText(req.get('x-site-folder')) || client.businessName || 'site',
         markPublic: true,
       });
@@ -10833,6 +10969,31 @@ app.post(
     }
   }
 );
+
+app.post('/api/preview-bridge/publish', async (req, res) => {
+  if (requestIsPublicInternetHost(req)) {
+    return res.status(404).json({ message: 'Not found' });
+  }
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const jobs = Array.isArray(payload.jobs) && payload.jobs.length ? payload.jobs : [payload];
+  const results = [];
+  for (const job of jobs) {
+    try {
+      results.push(await publishPreviewBridgeJob(job));
+    } catch (error) {
+      results.push({
+        ok: false,
+        clientId: sanitizeText(job?.clientId),
+        error: error.message || 'Failed publishing preview through the office bridge.',
+      });
+    }
+  }
+  const failed = results.filter((entry) => !entry.ok);
+  return res.status(failed.length === results.length ? 502 : 200).json({
+    ok: failed.length === 0,
+    results,
+  });
+});
 
 app.post('/api/admin/sales/:id/publish-preview-to-prod', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
@@ -10960,15 +11121,26 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
             siteFolder: body.siteFolder || salesClient.businessName || 'site',
             step: body.step || 'latest',
             baseUrl: body.baseUrl,
+            publicHost: requestIsPublicInternetHost(req),
           });
-          salesClient = syncResult.client;
-          previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
-          try {
-            const published = await publishPreviewBundleToProd(salesClient);
-            salesClient = published?.client || salesClient;
-            previewUrl = published?.publicPreviewUrl || previewUrl;
-          } catch {
-            // Keep the synced snapshot even if asoldi.com publish fails; URL rewrite still happens below.
+          if (syncResult?.browserExportHandoff) {
+            if (!existingImportedPreviewUrl) {
+              return res.status(400).json({
+                message:
+                  'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først (på hjemme-Wi-Fi).',
+              });
+            }
+            previewUrl = existingImportedPreviewUrl;
+          } else {
+            salesClient = syncResult.client;
+            previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+            try {
+              const published = await publishPreviewBundleToProd(salesClient);
+              salesClient = published?.client || salesClient;
+              previewUrl = published?.publicPreviewUrl || previewUrl;
+            } catch {
+              // Keep the synced snapshot even if asoldi.com publish fails; URL rewrite still happens below.
+            }
           }
         } catch (error) {
           if (!existingImportedPreviewUrl) {
@@ -11082,7 +11254,9 @@ ${message || '(Ingen melding)'}`;
 async function sendSalesPreviewFile(req, res, relativePath = '') {
   const client = sales.getSalesClientById(req.params.id);
   if (!client || !client.websiteImport?.importRoot) {
-    return res.status(404).send('Preview not available');
+    return res.status(404).send(
+      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
+    );
   }
 
   const root = path.resolve(client.websiteImport.importRoot);
@@ -11098,6 +11272,17 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
       const stats = await fs.stat(filePath);
       if (!stats.isFile()) return false;
       res.setHeader('Cache-Control', 'no-store');
+      const ext = path.extname(filePath).toLowerCase();
+      const looksHtml = ext === '.html' || ext === '.htm' || !ext;
+      if (looksHtml) {
+        const raw = await fs.readFile(filePath);
+        const text = raw.toString('utf8');
+        if (ext === '.html' || ext === '.htm' || /^\s*</.test(text)) {
+          res.setHeader('Content-Type', 'text/html; charset=utf-8');
+          res.send(injectPreviewBaseHref(text, client.id));
+          return true;
+        }
+      }
       res.sendFile(filePath);
       return true;
     } catch {

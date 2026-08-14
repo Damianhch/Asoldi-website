@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Asoldi public preview bridge</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #1a1a1a;
+        color: #eee;
+        padding: 24px;
+      }
+      h1 { font-size: 16px; margin: 0 0 8px; }
+      p { font-size: 13px; color: #bbb; line-height: 1.45; }
+      #status { margin-top: 16px; font-size: 13px; color: #f5c27a; white-space: pre-wrap; }
+      .ok { color: #86efac !important; }
+      .err { color: #fca5a5 !important; }
+    </style>
+  </head>
+  <body>
+    <h1>Publishing public preview</h1>
+    <p>
+      This office Asoldi page downloads the website from Maker on the LAN, then
+      uploads it to asoldi.com/sales-preview so the meeting laptop URL works off Wi‑Fi.
+    </p>
+    <p id="status">Waiting for Sales…</p>
+    <script>
+      const statusEl = document.getElementById('status');
+      function setStatus(text, cls) {
+        statusEl.textContent = text;
+        statusEl.className = cls || '';
+      }
+
+      const lanHost = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\.)/i.test(
+        location.hostname
+      );
+      if (!lanHost) {
+        setStatus(
+          'Open this bridge from office Asoldi (port 3200), not asoldi.com. asoldi.com cannot fetch the Docker Maker.',
+          'err'
+        );
+      } else if (window.opener) {
+        window.opener.postMessage({ type: 'asoldi-bridge-ready' }, '*');
+      } else {
+        setStatus('Open this page from asoldi.com/sales using Sync latest from Maker.', 'err');
+      }
+
+      window.addEventListener('message', async (event) => {
+        const payload = event.data && typeof event.data === 'object' ? event.data : null;
+        if (!payload || payload.type !== 'asoldi-publish-preview') return;
+        const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
+        if (!jobs.length) {
+          setStatus('No preview jobs received.', 'err');
+          event.source?.postMessage({ type: 'asoldi-bridge-done', ok: false, error: 'No preview jobs received.' }, event.origin);
+          return;
+        }
+        setStatus(`Publishing ${jobs.length} preview(s) to asoldi.com…`);
+        try {
+          const response = await fetch('/api/preview-bridge/publish', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jobs }),
+          });
+          const data = await response.json().catch(() => ({}));
+          const results = Array.isArray(data.results) ? data.results : [];
+          const failed = results.filter((row) => row && row.ok === false);
+          if (!response.ok || !results.length || failed.length === results.length) {
+            const firstError =
+              failed.find((row) => row && row.error)?.error ||
+              data.message ||
+              `Bridge failed (${response.status})`;
+            throw new Error(firstError);
+          }
+          setStatus(
+            failed.length
+              ? `Published ${results.length - failed.length} preview(s). ${failed.length} failed.`
+              : 'Published. You can close this window.',
+            failed.length ? '' : 'ok'
+          );
+          event.source?.postMessage(
+            { type: 'asoldi-bridge-done', ok: true, results, error: failed[0]?.error || '' },
+            event.origin
+          );
+          window.setTimeout(() => window.close(), 900);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed publishing preview.';
+          setStatus(message, 'err');
+          event.source?.postMessage({ type: 'asoldi-bridge-done', ok: false, error: message }, event.origin);
+        }
+      });
+    </script>
+  </body>
+</html>
