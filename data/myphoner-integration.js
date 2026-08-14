@@ -127,6 +127,46 @@ function normalizeSalesLinksBackfillState(value = {}) {
   };
 }
 
+const MAX_SSU_WINS_COPIES = 5000;
+
+function normalizeSsuWinsCopyEntry(value = {}, fallback = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const base = fallback && typeof fallback === 'object' ? fallback : {};
+  return {
+    targetLeadId: sanitizeText(input.targetLeadId ?? base.targetLeadId),
+    copiedAt: sanitizeText(input.copiedAt ?? base.copiedAt) || nowIso(),
+    phone: sanitizeText(input.phone ?? base.phone),
+    email: sanitizeText(input.email ?? base.email),
+  };
+}
+
+function normalizeSsuWinsCopiedMap(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const out = {};
+  for (const [key, payload] of Object.entries(input)) {
+    const sourceLeadId = sanitizeText(key);
+    if (!sourceLeadId) continue;
+    out[sourceLeadId] = normalizeSsuWinsCopyEntry(payload, { sourceLeadId });
+  }
+  const sorted = Object.entries(out).sort(
+    (a, b) => new Date(b[1]?.copiedAt || 0).getTime() - new Date(a[1]?.copiedAt || 0).getTime()
+  );
+  return Object.fromEntries(sorted.slice(0, MAX_SSU_WINS_COPIES));
+}
+
+function normalizeSsuWinsState(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  return {
+    sourceListId: sanitizeText(input.sourceListId),
+    targetListId: sanitizeText(input.targetListId),
+    copiedBySourceLeadId: normalizeSsuWinsCopiedMap(input.copiedBySourceLeadId),
+    lastBackfillAt: sanitizeText(input.lastBackfillAt),
+    lastBackfillSummary: input.lastBackfillSummary && typeof input.lastBackfillSummary === 'object'
+      ? input.lastBackfillSummary
+      : null,
+  };
+}
+
 function defaultState() {
   return {
     webhooks: {
@@ -144,6 +184,7 @@ function defaultState() {
     maintenance: {
       salesLinksBackfill: normalizeSalesLinksBackfillState(),
     },
+    ssuWins: normalizeSsuWinsState(),
     updatedAt: nowIso(),
   };
 }
@@ -178,6 +219,7 @@ function normalizeState(value = {}) {
   state.maintenance = {
     salesLinksBackfill: normalizeSalesLinksBackfillState(input?.maintenance?.salesLinksBackfill),
   };
+  state.ssuWins = normalizeSsuWinsState(input?.ssuWins);
   state.updatedAt = nowIso();
   return state;
 }
@@ -453,4 +495,60 @@ export function setSalesLinksBackfillState(payload = {}) {
   state.updatedAt = nowIso();
   writeStore(state);
   return state.maintenance.salesLinksBackfill;
+}
+
+export function getSsuWinsState() {
+  const state = readStore();
+  return normalizeSsuWinsState(state?.ssuWins);
+}
+
+export function getCopiedSsuWinner(sourceLeadId = '') {
+  const key = sanitizeText(sourceLeadId);
+  if (!key) return null;
+  const state = getSsuWinsState();
+  return state.copiedBySourceLeadId[key] || null;
+}
+
+export function clearCopiedSsuWinner(sourceLeadId = '') {
+  const key = sanitizeText(sourceLeadId);
+  if (!key) return false;
+  const state = readStore();
+  const current = normalizeSsuWinsState(state.ssuWins);
+  if (!current.copiedBySourceLeadId[key]) return false;
+  delete current.copiedBySourceLeadId[key];
+  state.ssuWins = current;
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return true;
+}
+
+export function markSsuWinnerCopied(sourceLeadId = '', payload = {}) {
+  const key = sanitizeText(sourceLeadId);
+  if (!key) return null;
+  const state = readStore();
+  const current = normalizeSsuWinsState(state.ssuWins);
+  current.copiedBySourceLeadId[key] = normalizeSsuWinsCopyEntry(payload, current.copiedBySourceLeadId[key] || {});
+  current.copiedBySourceLeadId = normalizeSsuWinsCopiedMap(current.copiedBySourceLeadId);
+  if (sanitizeText(payload.sourceListId)) current.sourceListId = sanitizeText(payload.sourceListId);
+  if (sanitizeText(payload.targetListId)) current.targetListId = sanitizeText(payload.targetListId);
+  state.ssuWins = current;
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return current.copiedBySourceLeadId[key];
+}
+
+export function setSsuWinsBackfillState(payload = {}) {
+  const input = payload && typeof payload === 'object' ? payload : {};
+  const state = readStore();
+  const current = normalizeSsuWinsState(state.ssuWins);
+  if (sanitizeText(input.sourceListId)) current.sourceListId = sanitizeText(input.sourceListId);
+  if (sanitizeText(input.targetListId)) current.targetListId = sanitizeText(input.targetListId);
+  current.lastBackfillAt = sanitizeText(input.lastBackfillAt) || nowIso();
+  current.lastBackfillSummary = input.lastBackfillSummary && typeof input.lastBackfillSummary === 'object'
+    ? input.lastBackfillSummary
+    : current.lastBackfillSummary;
+  state.ssuWins = current;
+  state.updatedAt = nowIso();
+  writeStore(state);
+  return state.ssuWins;
 }
