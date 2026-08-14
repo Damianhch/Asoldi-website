@@ -22,6 +22,7 @@ import * as employeeLuca from './lib/employee-luca.js';
 import * as employeeMyPhoner from './lib/employee-myphoner.js';
 import * as myphonerApi from './lib/myphoner-api.js';
 import * as myphonerIntegration from './data/myphoner-integration.js';
+import * as myphonerSsuWins from './lib/myphoner-ssu-wins.js';
 import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-email.js';
 import {
   createGoogleCalendarAuthUrl,
@@ -5564,7 +5565,9 @@ async function processMyphonerWinnerFromResource(resourcePath = '', { winnerCate
       leadResponse.error || 'Failed fetching Myphoner lead.'
     );
   }
-  const leadPayload = leadResponse.data && typeof leadResponse.data === 'object' ? leadResponse.data : {};
+  const leadPayload = myphonerApi.unwrapMyPhonerLead(
+    leadResponse.data && typeof leadResponse.data === 'object' ? leadResponse.data : {}
+  );
   const upserted = await upsertSalesClientFromMyphonerLead({
     lead: leadPayload,
     resourcePath: normalizedResource,
@@ -5589,6 +5592,22 @@ async function processMyphonerWinnerFromResource(resourcePath = '', { winnerCate
       { delayMs: recordingRetryDelayMs(0) }
     );
   }
+  let ssuWinsCopy = { skipped: 'not-attempted' };
+  try {
+    ssuWinsCopy = await myphonerSsuWins.copySsuWinnerToWinsList(leadPayload, {
+      assumeWinner: true,
+    });
+    if (ssuWinsCopy?.created) {
+      console.log(
+        `[myphoner ssu-wins] copied winner ${sanitizeText(ssuWinsCopy.leadId)} -> ${sanitizeText(ssuWinsCopy.targetLeadId)}`
+      );
+    } else if (!ssuWinsCopy?.ok) {
+      console.error(`[myphoner ssu-wins] copy failed: ${sanitizeText(ssuWinsCopy?.error) || 'unknown error'}`);
+    }
+  } catch (error) {
+    ssuWinsCopy = { ok: false, error: sanitizeText(error?.message) || 'copy-failed' };
+    console.error('[myphoner ssu-wins] copy crashed:', error?.message || error);
+  }
   return {
     ok: true,
     created: Boolean(upserted.created),
@@ -5597,6 +5616,7 @@ async function processMyphonerWinnerFromResource(resourcePath = '', { winnerCate
     recordingAttached: Boolean(recordingAttach.attached),
     recordingReason: sanitizeText(recordingAttach.reason),
     warnings: upserted.warnings || [],
+    ssuWinsCopy,
   };
 }
 
@@ -6185,6 +6205,10 @@ async function reconcileMyphonerWebhooks() {
   for (const list of lists) {
     const listId = sanitizeText(list?.id);
     if (!listId) continue;
+    // SSU wins is a copy destination, not a winner-intake source.
+    if (myphonerSsuWins.isSsuWinsList({ listId, listName: sanitizeText(list?.name) })) {
+      continue;
+    }
     listIds.add(listId);
     const winnerTargetUrl = buildMyphonerWebhookTargetUrl('winner', { listId });
     const existing = myphonerIntegration.getListWinnerWebhook(listId);
@@ -6397,6 +6421,14 @@ async function runMyphonerWebhookReconcileTick() {
       console.log(
         `[myphoner] pending recording retry: checked=${pendingResult.checked}, attached=${pendingResult.attached}, pending=${pendingResult.pending}, exhausted=${pendingResult.exhausted}, failed=${pendingResult.failed}`
       );
+    }
+    if (myphonerSsuWins.isSsuWinsSyncEnabled()) {
+      const ssuWinsResult = await myphonerSsuWins.maybeBackfillSsuWinners();
+      if (ssuWinsResult?.created || Number(ssuWinsResult?.failed || 0) > 0) {
+        console.log(
+          `[myphoner ssu-wins] catch-up: created=${Number(ssuWinsResult.created || 0)}, skipped=${Number(ssuWinsResult.skipped || 0)}, failed=${Number(ssuWinsResult.failed || 0)}, winners=${Number(ssuWinsResult.winners || 0)}`
+        );
+      }
     }
   } catch (error) {
     console.error('[myphoner] webhook reconcile failed:', error?.message || error);
@@ -7559,6 +7591,22 @@ app.post('/api/admin/integrations/myphoner/reconcile', adminAuth, async (_req, r
     return res.status(httpStatusFromError(error, 500)).json({
       ok: false,
       message: sanitizeText(error?.message) || 'Failed to reconcile Myphoner webhooks.',
+    });
+  }
+});
+
+app.post('/api/admin/integrations/myphoner/ssu-wins-backfill', adminAuth, async (req, res) => {
+  try {
+    const force = parseBoolean(req.body?.force, true);
+    const result = await myphonerSsuWins.backfillSsuWinnersToWinsList({ force });
+    if (!result?.ok && result?.error) {
+      return res.status(502).json({ ok: false, message: result.error, result });
+    }
+    return res.json({ ok: true, result });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      ok: false,
+      message: sanitizeText(error?.message) || 'Failed to backfill SSU winners into SSU wins.',
     });
   }
 });
@@ -10873,6 +10921,29 @@ async function runStartupSalesRecordingBackfill() {
   }
 }
 
+async function runStartupSsuWinsBackfill() {
+  if (!MYPHONER_WEBHOOK_RECONCILE_ENABLED) {
+    console.log('[myphoner ssu-wins] startup backfill skipped: webhook reconcile disabled');
+    return;
+  }
+  if (!myphonerSsuWins.isSsuWinsSyncEnabled()) {
+    console.log('[myphoner ssu-wins] startup backfill skipped: disabled');
+    return;
+  }
+  try {
+    const result = await myphonerSsuWins.maybeBackfillSsuWinners({ force: true });
+    if (result?.skipped) {
+      console.log(`[myphoner ssu-wins] startup backfill skipped: ${result.skipped}`);
+      return;
+    }
+    console.log(
+      `[myphoner ssu-wins] startup backfill: scanned=${Number(result?.scanned || 0)}, winners=${Number(result?.winners || 0)}, created=${Number(result?.created || 0)}, skipped=${Number(result?.skipped || 0)}, failed=${Number(result?.failed || 0)}`
+    );
+  } catch (error) {
+    console.error('[myphoner ssu-wins] startup backfill failed:', sanitizeText(error?.message) || error);
+  }
+}
+
 async function runStartupSalesLinkBackfill() {
   if (!SALES_LINK_BACKFILL_ENABLED) return;
   if (salesLinkBackfillRunning) return;
@@ -10936,6 +11007,9 @@ ensureData().then(() => {
     console.log(`Server running on port ${PORT}`);
     runStartupSalesLinkBackfill().catch((error) => {
       console.error('[sales] startup links backfill crashed:', sanitizeText(error?.message) || error);
+    });
+    runStartupSsuWinsBackfill().catch((error) => {
+      console.error('[myphoner ssu-wins] startup backfill crashed:', sanitizeText(error?.message) || error);
     });
   });
 }).catch((err) => {
