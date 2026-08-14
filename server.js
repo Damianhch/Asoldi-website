@@ -4,7 +4,7 @@ import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
 import * as store from './data/store.js';
@@ -146,8 +146,21 @@ let makerTunnelUrl = '';
 let makerTunnelTargetUrl = '';
 let makerTunnelStartedAt = '';
 const SALES_MEETING_GEOCODE_MIN_INTERVAL_MS = Number(process.env.SALES_MEETING_GEOCODE_MIN_INTERVAL_MS || 1100);
+const SALES_MEETING_GEOCODE_MAX_PER_REQUEST = Math.max(
+  0,
+  Number(process.env.SALES_MEETING_GEOCODE_MAX_PER_REQUEST || 0)
+);
+const SALES_MEETING_GEOCODE_NEGATIVE_TTL_MS = Number(
+  process.env.SALES_MEETING_GEOCODE_NEGATIVE_TTL_MS || 24 * 60 * 60 * 1000
+);
+const SALES_GEOCODE_CACHE_PATH = join(getPersistentDataDir(), 'sales-meeting-geocode-cache.json');
 const salesMeetingGeocodeCache = new Map();
+let salesMeetingGeocodeCacheLoaded = false;
+let salesMeetingGeocodePersistTimer = null;
 let salesMeetingGeocodeLastRequestAt = 0;
+let salesGeocodeWarmupRunning = false;
+let salesGeocodeWarmupInterval = null;
+const salesAddressBackfillTried = new Set();
 const CLIENT_SOCIAL_DEV_MODE = String(process.env.CLIENT_SOCIAL_DEV_MODE || '1') !== '0';
 const MYPHONER_WEBHOOK_SECRET = String(process.env.MYPHONER_WEBHOOK_SECRET || '').trim();
 const MYPHONER_WEBHOOK_REPLAY_WINDOW_MS = Number(process.env.MYPHONER_WEBHOOK_REPLAY_WINDOW_MS || 120_000);
@@ -823,55 +836,318 @@ function waitMs(ms = 0) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
-async function geocodeMeetingPlace(place = '') {
-  const meetingPlace = sanitizeText(place);
-  if (!meetingPlace) return null;
-  const cacheKey = normalizeMeetingPlaceKey(meetingPlace);
-  if (salesMeetingGeocodeCache.has(cacheKey)) {
-    return salesMeetingGeocodeCache.get(cacheKey);
+function persistSalesGeocodeCache() {
+  try {
+    const places = {};
+    for (const [key, value] of salesMeetingGeocodeCache.entries()) {
+      if (!key) continue;
+      places[key] = value;
+    }
+    writeFileSync(SALES_GEOCODE_CACHE_PATH, JSON.stringify({ places }, null, 2), 'utf8');
+  } catch {
+    // Cache persistence is best-effort; map pins still work from memory.
   }
+}
 
+function schedulePersistSalesGeocodeCache() {
+  if (salesMeetingGeocodePersistTimer) return;
+  salesMeetingGeocodePersistTimer = setTimeout(() => {
+    salesMeetingGeocodePersistTimer = null;
+    persistSalesGeocodeCache();
+  }, 400);
+}
+
+function ensureSalesGeocodeCacheLoaded() {
+  if (salesMeetingGeocodeCacheLoaded) return;
+  salesMeetingGeocodeCacheLoaded = true;
+  if (!existsSync(SALES_GEOCODE_CACHE_PATH)) return;
+  try {
+    const parsed = JSON.parse(readFileSync(SALES_GEOCODE_CACHE_PATH, 'utf8'));
+    const places = parsed?.places && typeof parsed.places === 'object' ? parsed.places : parsed;
+    if (!places || typeof places !== 'object') return;
+    for (const [key, value] of Object.entries(places)) {
+      const cacheKey = normalizeMeetingPlaceKey(key);
+      if (!cacheKey) continue;
+      if (value && value.failed) {
+        salesMeetingGeocodeCache.set(cacheKey, {
+          failed: true,
+          updatedAt: sanitizeText(value.updatedAt) || nowIso(),
+        });
+        continue;
+      }
+      const latitude = Number(value?.latitude);
+      const longitude = Number(value?.longitude);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) continue;
+      salesMeetingGeocodeCache.set(cacheKey, {
+        latitude,
+        longitude,
+        displayName: sanitizeText(value?.displayName) || cacheKey,
+        updatedAt: sanitizeText(value?.updatedAt) || nowIso(),
+      });
+    }
+  } catch {
+    // Ignore a corrupt cache file and rebuild from Nominatim.
+  }
+}
+
+function readCachedGeocode(cacheKey = '') {
+  ensureSalesGeocodeCacheLoaded();
+  const key = normalizeMeetingPlaceKey(cacheKey);
+  if (!key || !salesMeetingGeocodeCache.has(key)) return { status: 'miss' };
+  const entry = salesMeetingGeocodeCache.get(key);
+  if (entry?.failed) {
+    const failedAt = Date.parse(String(entry.updatedAt || ''));
+    const age = Number.isFinite(failedAt) ? Date.now() - failedAt : Number.POSITIVE_INFINITY;
+    if (age < SALES_MEETING_GEOCODE_NEGATIVE_TTL_MS) return { status: 'failed' };
+    salesMeetingGeocodeCache.delete(key);
+    return { status: 'miss' };
+  }
+  const latitude = Number(entry?.latitude);
+  const longitude = Number(entry?.longitude);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+    salesMeetingGeocodeCache.delete(key);
+    return { status: 'miss' };
+  }
+  return { status: 'ok', value: entry };
+}
+
+function storeCachedGeocode(cacheKey = '', value) {
+  const key = normalizeMeetingPlaceKey(cacheKey);
+  if (!key) return;
+  salesMeetingGeocodeCache.set(key, value);
+  schedulePersistSalesGeocodeCache();
+}
+
+function compactMapLocationText(value = '') {
+  const raw = sanitizeText(value).replace(/\uFFFD/g, '');
+  if (!raw) return '';
+  const lowered = raw.toLowerCase();
+  if (
+    lowered === 'online' ||
+    lowered === 'google meet' ||
+    lowered === 'zoom' ||
+    lowered === 'teams' ||
+    lowered === 'meet' ||
+    lowered === 'n/a' ||
+    lowered === 'na' ||
+    lowered === 'none' ||
+    lowered === 'null' ||
+    lowered === 'unknown' ||
+    lowered === 'not found'
+  ) {
+    return '';
+  }
+  if (/^(https?:\/\/)?(meet\.google|zoom\.us|teams\.microsoft)/i.test(raw)) return '';
+  return raw;
+}
+
+function resolveSalesClientMapQuery(client = {}) {
+  const address = compactMapLocationText(client?.meetingPlace);
+  if (address) {
+    return { query: address, label: address, source: 'address' };
+  }
+  const name = sanitizeText(client?.businessName);
+  if (!name) return null;
+  return { query: `${name}, Norge`, label: name, source: 'businessName' };
+}
+
+async function fetchJsonWithTimeout(url, { headers = {}, timeoutMs = 6000 } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 6000));
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    return await response.json().catch(() => null);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function coordsFromPayload(latitude, longitude, displayName, query) {
+  const lat = Number(latitude);
+  const lon = Number(longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return {
+    latitude: lat,
+    longitude: lon,
+    displayName: sanitizeText(displayName) || sanitizeText(query),
+    updatedAt: nowIso(),
+  };
+}
+
+async function geocodeViaKartverket(query = '') {
+  const q = sanitizeText(query);
+  if (!q) return null;
+  const params = new URLSearchParams({
+    sok: q,
+    fuzzy: 'true',
+    treffPerSide: '1',
+  });
+  const payload = await fetchJsonWithTimeout(`https://ws.geonorge.no/adresser/v1/sok?${params.toString()}`, {
+    timeoutMs: 5000,
+    headers: { Accept: 'application/json' },
+  });
+  const first = Array.isArray(payload?.adresser) ? payload.adresser[0] : null;
+  const point = first?.representasjonspunkt || {};
+  const label = [sanitizeText(first?.adressetekst), sanitizeText(first?.postnummer), sanitizeText(first?.poststed)]
+    .filter(Boolean)
+    .join(', ');
+  return coordsFromPayload(point.lat, point.lon, label, q);
+}
+
+async function geocodeViaNominatim(query = '', { countrycodes = '' } = {}) {
+  const q = sanitizeText(query);
+  if (!q) return null;
   const minInterval = Math.max(0, SALES_MEETING_GEOCODE_MIN_INTERVAL_MS);
   const elapsedSinceLast = Date.now() - salesMeetingGeocodeLastRequestAt;
   if (elapsedSinceLast < minInterval) {
     await waitMs(minInterval - elapsedSinceLast);
   }
   salesMeetingGeocodeLastRequestAt = Date.now();
+  const params = new URLSearchParams({
+    q,
+    format: 'jsonv2',
+    limit: '1',
+    addressdetails: '0',
+  });
+  if (countrycodes) params.set('countrycodes', countrycodes);
+  const payload = await fetchJsonWithTimeout(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    timeoutMs: 6000,
+    headers: {
+      Accept: 'application/json',
+      'Accept-Language': 'nb',
+      'User-Agent': 'AsoldiSalesMap/1.0 (+https://asoldi.com)',
+    },
+  });
+  const first = Array.isArray(payload) ? payload[0] : null;
+  return coordsFromPayload(first?.lat, first?.lon, first?.display_name, q);
+}
 
-  try {
-    const params = new URLSearchParams({
-      q: meetingPlace,
-      format: 'jsonv2',
-      limit: '1',
-      addressdetails: '0',
-    });
-    const response = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-        'Accept-Language': 'nb',
-        'User-Agent': 'AsoldiSalesMap/1.0 (+https://asoldi.com)',
-      },
-    });
-    if (!response.ok) return null;
-    const payload = await response.json().catch(() => []);
-    const first = Array.isArray(payload) ? payload[0] : null;
-    const latitude = Number(first?.lat);
-    const longitude = Number(first?.lon);
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      salesMeetingGeocodeCache.set(cacheKey, null);
-      return null;
-    }
-    const geocoded = {
-      latitude,
-      longitude,
-      displayName: sanitizeText(first?.display_name) || meetingPlace,
-    };
-    salesMeetingGeocodeCache.set(cacheKey, geocoded);
-    return geocoded;
-  } catch {
-    return null;
+async function geocodeViaPhoton(query = '') {
+  const q = sanitizeText(query);
+  if (!q) return null;
+  const params = new URLSearchParams({
+    q,
+    limit: '1',
+    lang: 'en',
+  });
+  const payload = await fetchJsonWithTimeout(`https://photon.komoot.io/api/?${params.toString()}`, {
+    timeoutMs: 6000,
+    headers: { Accept: 'application/json' },
+  });
+  const first = Array.isArray(payload?.features) ? payload.features[0] : null;
+  const coords = Array.isArray(first?.geometry?.coordinates) ? first.geometry.coordinates : [];
+  const lon = coords[0];
+  const lat = coords[1];
+  const props = first?.properties && typeof first.properties === 'object' ? first.properties : {};
+  const label = [props.name, props.street, props.postcode, props.city, props.country].filter(Boolean).join(', ');
+  return coordsFromPayload(lat, lon, label, q);
+}
+
+async function geocodeMeetingPlace(place = '', { allowNetwork = true } = {}) {
+  const meetingPlace = sanitizeText(place);
+  if (!meetingPlace) return null;
+  const cacheKey = normalizeMeetingPlaceKey(meetingPlace);
+  const cached = readCachedGeocode(cacheKey);
+  if (cached.status === 'ok') return cached.value;
+  if (cached.status === 'failed') return null;
+  if (!allowNetwork) return undefined;
+
+  const attempts = [];
+  if (/\d/.test(meetingPlace)) {
+    attempts.push(() => geocodeViaKartverket(meetingPlace));
   }
+  attempts.push(() => geocodeViaNominatim(meetingPlace, { countrycodes: 'no' }));
+  attempts.push(() => geocodeViaNominatim(`${meetingPlace}, Norge`, { countrycodes: 'no' }));
+  attempts.push(() => geocodeViaPhoton(meetingPlace));
+  let networkFailed = false;
+  for (const attempt of attempts) {
+    try {
+      const geocoded = await attempt();
+      if (geocoded) {
+        storeCachedGeocode(cacheKey, geocoded);
+        return geocoded;
+      }
+    } catch {
+      networkFailed = true;
+    }
+  }
+  if (networkFailed) return undefined;
+  storeCachedGeocode(cacheKey, { failed: true, updatedAt: nowIso() });
+  return null;
+}
+
+function collectUniqueSalesMapPlaces(clients = []) {
+  const uniquePlaces = new Map();
+  for (const client of Array.isArray(clients) ? clients : []) {
+    const resolved = resolveSalesClientMapQuery(client);
+    if (!resolved?.query) continue;
+    const key = normalizeMeetingPlaceKey(resolved.query);
+    if (!key || uniquePlaces.has(key)) continue;
+    uniquePlaces.set(key, resolved.query);
+  }
+  return uniquePlaces;
+}
+
+async function backfillOneMissingSalesAddress() {
+  const clients = sales.getSalesClients();
+  const target = clients.find((client) => {
+    const id = sanitizeText(client?.id);
+    if (!id || salesAddressBackfillTried.has(id)) return false;
+    if (compactMapLocationText(client?.meetingPlace)) return false;
+    return Boolean(sanitizeText(client?.businessName));
+  });
+  if (!target) return false;
+  salesAddressBackfillTried.add(sanitizeText(target.id));
+  try {
+    const orgnr = extractOrganizationNumberFromClientRecord(target);
+    let entity = orgnr ? await lookupBrregEntityByOrganizationNumber(orgnr) : null;
+    if (!compactMapLocationText(entity?.address)) {
+      const candidates = await searchBrregBusinesses(target.businessName).catch(() => []);
+      entity = selectBrregCandidateByBusinessName(candidates, target.businessName, '') || entity;
+    }
+    const address = compactMapLocationText(entity?.address);
+    if (!address) return true;
+    sales.updateSalesClient(target.id, { meetingPlace: address });
+    return true;
+  } catch {
+    return true;
+  }
+}
+
+async function warmSalesGeocodeCache() {
+  if (salesGeocodeWarmupRunning) return;
+  salesGeocodeWarmupRunning = true;
+  try {
+    const uniquePlaces = collectUniqueSalesMapPlaces(sales.getSalesClients());
+    let geocodedOne = false;
+    for (const [key, place] of uniquePlaces.entries()) {
+      if (readCachedGeocode(key).status !== 'miss') continue;
+      await geocodeMeetingPlace(place, { allowNetwork: true });
+      geocodedOne = true;
+      break;
+    }
+    if (!geocodedOne) await backfillOneMissingSalesAddress();
+  } catch {
+    // Background geocoding should never take down the server.
+  } finally {
+    salesGeocodeWarmupRunning = false;
+  }
+}
+
+function startSalesGeocodeWarmupLoop() {
+  if (salesGeocodeWarmupInterval) return;
+  ensureSalesGeocodeCacheLoaded();
+  void warmSalesGeocodeCache();
+  salesGeocodeWarmupInterval = setInterval(() => {
+    void warmSalesGeocodeCache();
+  }, 1200);
 }
 
 function healStaleLocalMakerPort(value = '') {
@@ -1510,7 +1786,7 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
     contactPhone: sanitizeText(source.contactPhone ?? existing?.contactPhone),
-    meetingPlace: mode === 'online' ? '' : meetingPlaceRaw,
+    meetingPlace: meetingPlaceRaw,
     industry: sanitizeText(source.industry ?? existing?.industry),
     meetingMode: mode,
     agreedTime,
@@ -1625,7 +1901,7 @@ function applyConfiguredSalesContactCorrections({ createMissing = true } = {}) {
         contactEmail: isValidEmail(correctionEmail) && !isLikelyTestEmail(correctionEmail) ? correctionEmail : '',
         contactPhone: correctionPhone,
         meetingMode: correctionMode || 'online',
-        meetingPlace: correctionMode === 'in-person' ? correctionPlace : '',
+        meetingPlace: correctionPlace,
         agreedTime: Boolean(correctionMeetingAt),
         meetingAt: correctionMeetingAt,
         myphoner: {
@@ -1657,11 +1933,6 @@ function applyConfiguredSalesContactCorrections({ createMissing = true } = {}) {
     }
     if (correctionMode && correctionMode !== normalizeMeetingMode(existing.meetingMode)) {
       patch.meetingMode = correctionMode;
-      if (correctionMode === 'online' && !parseBoolean(correction.forceMeetingPlace, false)) {
-        patch.meetingPlace = '';
-      } else if (correctionMode === 'in-person' && correctionPlace) {
-        patch.meetingPlace = correctionPlace;
-      }
     }
     if (
       correctionMeetingAt &&
@@ -4920,7 +5191,7 @@ function buildSalesInputFromMyphonerLead(lead = {}, resourcePath = '') {
           pickFirstNonEmpty([source.tertiary_identifier, source.destination_number])
         ),
       meetingMode,
-      meetingPlace: meetingMode === 'in-person' ? meetingPlaceRaw : '',
+      meetingPlace: meetingPlaceRaw,
       agreedTime: Boolean(meetingAt),
       meetingAt,
       industry: pickLeadDataValue(leadDataMap, ['industry', 'branche', 'bransje']),
@@ -4949,7 +5220,7 @@ function mergeMyphonerSalesInput(existing = {}, incoming = {}) {
       websiteDomain: sanitizeSalesWebsiteDomain(next.websiteDomain),
       details: normalizeSalesDetailLinks(next.details || {}, current.details || {}),
       meetingMode: mergedMeetingMode,
-      meetingPlace: mergedMeetingMode === 'in-person' ? next.meetingPlace || current.meetingPlace : '',
+      meetingPlace: next.meetingPlace || current.meetingPlace,
       agreedTime: incomingHasMeeting ? true : Boolean(current.agreedTime),
       meetingAt: incomingHasMeeting ? next.meetingAt : current.meetingAt,
     },
@@ -9302,43 +9573,68 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
     ? all
     : all.filter((client) => client.ownerId === req.salesUser.accountKey);
 
-  const inPersonClients = visible.filter(
-    (client) =>
-      client.status === 'active' &&
-      client.meetingMode === 'in-person' &&
-      sanitizeText(client.meetingPlace)
-  );
+  const productFilter = sales.normalizeSalesProduct(req.query?.product, { allowEmpty: true });
+  const scoped = productFilter
+    ? visible.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
+    : visible;
 
-  const uniquePlaces = new Map();
-  for (const client of inPersonClients) {
-    const place = sanitizeText(client.meetingPlace);
-    const key = normalizeMeetingPlaceKey(place);
-    if (!key || uniquePlaces.has(key)) continue;
-    uniquePlaces.set(key, place);
+  const uniquePlaces = collectUniqueSalesMapPlaces(scoped);
+  const geocodedByKey = new Map();
+  const pendingKeys = [];
+  for (const [key, place] of uniquePlaces.entries()) {
+    const cached = await geocodeMeetingPlace(place, { allowNetwork: false });
+    if (cached && Number.isFinite(Number(cached.latitude)) && Number.isFinite(Number(cached.longitude))) {
+      geocodedByKey.set(key, cached);
+      continue;
+    }
+    if (cached === null) {
+      geocodedByKey.set(key, null);
+      continue;
+    }
+    pendingKeys.push(key);
   }
 
-  const geocodedByKey = new Map();
-  for (const [key, place] of uniquePlaces.entries()) {
-    const geocoded = await geocodeMeetingPlace(place);
-    geocodedByKey.set(key, geocoded);
+  let networkLookups = 0;
+  for (const key of pendingKeys) {
+    if (networkLookups >= SALES_MEETING_GEOCODE_MAX_PER_REQUEST) break;
+    const place = uniquePlaces.get(key);
+    const geocoded = await geocodeMeetingPlace(place, { allowNetwork: true });
+    networkLookups += 1;
+    if (geocoded && Number.isFinite(Number(geocoded.latitude)) && Number.isFinite(Number(geocoded.longitude))) {
+      geocodedByKey.set(key, geocoded);
+    } else if (geocoded === null) {
+      geocodedByKey.set(key, null);
+    }
   }
 
   let unresolvedCount = 0;
+  let pendingCount = 0;
+  let missingAddressCount = 0;
   const pins = [];
-  for (const client of inPersonClients) {
-    const place = sanitizeText(client.meetingPlace);
-    const key = normalizeMeetingPlaceKey(place);
+  for (const client of scoped) {
+    const resolved = resolveSalesClientMapQuery(client);
+    if (!resolved?.query) {
+      unresolvedCount += 1;
+      missingAddressCount += 1;
+      continue;
+    }
+    if (resolved.source === 'businessName') missingAddressCount += 1;
+    const key = normalizeMeetingPlaceKey(resolved.query);
     const geocoded = geocodedByKey.get(key);
     if (!geocoded) {
-      unresolvedCount += 1;
+      if (geocoded === null) unresolvedCount += 1;
+      else pendingCount += 1;
       continue;
     }
     pins.push({
       clientId: client.id,
       businessName: sanitizeText(client.businessName),
       contactPerson: sanitizeText(client.contactPerson),
-      meetingPlace: place,
+      meetingPlace: resolved.label,
+      locationSource: resolved.source,
       meetingAt: sanitizeText(client.meetingAt),
+      meetingMode: normalizeMeetingMode(client.meetingMode),
+      status: sanitizeText(client.status) || 'active',
       latitude: geocoded.latitude,
       longitude: geocoded.longitude,
     });
@@ -9361,10 +9657,14 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
     return aPast ? timeB - timeA : timeA - timeB;
   });
 
+  void warmSalesGeocodeCache();
+
   res.json({
     pins,
     unresolvedCount,
-    totalCandidates: inPersonClients.length,
+    pendingCount,
+    totalCandidates: scoped.length,
+    missingAddressCount,
   });
 });
 
@@ -10630,6 +10930,7 @@ ensureData().then(() => {
   startSalesReminderLoop();
   startMyphonerWebhookReconcileLoop();
   startMyphonerRecordingRetryLoop();
+  startSalesGeocodeWarmupLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
