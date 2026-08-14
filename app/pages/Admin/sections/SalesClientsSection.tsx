@@ -383,93 +383,63 @@ type OfficePublisher = {
   close: () => void;
 };
 
-function buildOfficePublisherBootstrap() {
-  return `(function(){
-    if (window.__asoldiOfficePublisher) return;
-    window.__asoldiOfficePublisher = true;
-    var busy = false;
-    try {
-      document.title = 'Publishing to asoldi.com';
-      if (document.body) {
-        document.body.innerHTML = '<p style="font-family:sans-serif;padding:24px">Publishing website preview to asoldi.com from Website Maker. Leave this window open.</p>';
-      }
-    } catch (e) {}
-    function reply(target, origin, message) {
-      try {
-        if (target && target.postMessage) target.postMessage(message, origin || '*');
-        else if (window.opener) window.opener.postMessage(message, '*');
-      } catch (e) {}
+function buildOfficePublisherHtml() {
+  return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title>
+<style>body{margin:0;font-family:sans-serif;background:#1a1a1a;color:#eee;padding:24px}#s{color:#f5c27a;white-space:pre-wrap}.ok{color:#86efac}.err{color:#fca5a5}</style>
+</head><body>
+<h1 style="font-size:16px">Publishing public preview</h1>
+<p style="color:#bbb;font-size:13px">Copying the Website Maker site onto asoldi.com/sales-preview. Leave this window open.</p>
+<p id="s">Waiting for Sales…</p>
+<script>
+(function(){
+  var busy=false;
+  function set(t,c){var el=document.getElementById('s'); el.textContent=t; el.className=c||'';}
+  function reply(source,origin,msg){
+    try{if(source&&source.postMessage)source.postMessage(msg,origin||'*');}catch(e){}
+    try{if(window.opener)window.opener.postMessage(msg,'*');}catch(e){}
+  }
+  if(window.opener) window.opener.postMessage({type:'asoldi-bridge-ready'},'*');
+  window.addEventListener('message', async function(event){
+    var payload=event.data;
+    if(!payload||payload.type!=='asoldi-publish-preview') return;
+    if(busy) return;
+    var jobs=payload.jobs||[];
+    if(!jobs.length){
+      set('No preview jobs received.','err');
+      reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:false,error:'No preview jobs received.'});
+      return;
     }
-    window.addEventListener('message', async function (event) {
-      var payload = event.data;
-      if (!payload || payload.type !== 'asoldi-publish-preview') return;
-      if (busy) return;
-      busy = true;
-      reply(event.source, event.origin, { type: 'asoldi-bridge-accepted' });
-      var jobs = payload.jobs || [];
-      var results = [];
-      for (var i = 0; i < jobs.length; i++) {
-        var job = jobs[i];
-        try {
-          var zipRes = await fetch(job.exportUrl);
-          if (!zipRes.ok) throw new Error('Maker export failed (' + zipRes.status + ')');
-          var zip = await zipRes.blob();
-          var headers = Object.assign({
-            Authorization: 'Bearer ' + job.token,
-            'Content-Type': 'application/zip'
-          }, job.headers || {});
-          var up = await fetch(job.uploadUrl, { method: 'POST', headers: headers, body: zip });
-          var data = await up.json().catch(function () { return {}; });
-          if (!up.ok) throw new Error(data.message || ('asoldi.com rejected the preview (' + up.status + ')'));
-          results.push({ ok: true, clientId: job.clientId, publicPreviewUrl: data.publicPreviewUrl || '' });
-        } catch (err) {
-          results.push({ ok: false, clientId: job.clientId, error: (err && err.message) ? err.message : String(err) });
+    busy=true;
+    reply(event.source,event.origin,{type:'asoldi-bridge-accepted'});
+    var results=[];
+    for(var i=0;i<jobs.length;i++){
+      var job=jobs[i];
+      try{
+        set('Exporting '+(i+1)+'/'+jobs.length+' from Website Maker…');
+        var zipRes=await fetch(job.exportUrl,{mode:'cors',credentials:'omit'});
+        if(!zipRes.ok) throw new Error('Maker export failed ('+zipRes.status+')');
+        var zip=await zipRes.blob();
+        if(!zip||!zip.size) throw new Error('Maker export was empty.');
+        var headers=Object.assign({Authorization:'Bearer '+job.token,'Content-Type':'application/zip'}, job.headers||{});
+        set('Uploading '+(i+1)+'/'+jobs.length+' to asoldi.com…');
+        var up=await fetch(job.uploadUrl,{method:'POST',mode:'cors',headers:headers,body:zip});
+        var data=await up.json().catch(function(){return {};});
+        if(!up.ok) throw new Error(data.message||('asoldi.com rejected the preview ('+up.status+')'));
+        results.push({ok:true,clientId:job.clientId,publicPreviewUrl:data.publicPreviewUrl||''});
+      }catch(err){
+        var message=(err&&err.message)?err.message:String(err);
+        if(/failed to fetch|networkerror|load failed/i.test(message)){
+          message='Could not reach Website Maker at http://192.168.68.92:3000. Stay on home Wi-Fi with Maker running.';
         }
+        results.push({ok:false,clientId:job.clientId,error:message});
       }
-      var failed = results.filter(function (row) { return !row.ok; });
-      reply(event.source, event.origin, {
-        type: 'asoldi-bridge-done',
-        ok: failed.length === 0,
-        results: results,
-        error: (failed[0] && failed[0].error) || ''
-      });
-      try {
-        if (document.body) {
-          document.body.textContent = failed.length
-            ? ('Failed: ' + ((failed[0] && failed[0].error) || 'Could not publish'))
-            : 'Published to asoldi.com/sales-preview. You can close this window.';
-        }
-      } catch (e) {}
-    });
-    if (window.opener) window.opener.postMessage({ type: 'asoldi-bridge-ready' }, '*');
-  })();void 0;`;
-}
-
-function injectOfficePublisherScript(windowName: string, popup: Window | null) {
-  const href = `javascript:${encodeURIComponent(buildOfficePublisherBootstrap())}`;
-  try {
-    window.open(href, windowName);
-  } catch {
-    // Firefox may block javascript: window.open; location / <a> retries below.
-  }
-  if (popup) {
-    try {
-      popup.location.href = href;
-    } catch {
-      // Cross-origin assignment can throw; named window.open above is the real inject.
     }
-  }
-  try {
-    const linker = document.createElement('a');
-    linker.href = href;
-    linker.target = windowName;
-    linker.rel = 'opener';
-    document.body.appendChild(linker);
-    linker.click();
-    linker.remove();
-  } catch {
-    // ignore
-  }
+    var failed=results.filter(function(row){return !row.ok;});
+    set(failed.length?('Failed: '+(failed[0].error||'Could not publish')):'Published to asoldi.com/sales-preview. You can close this window.', failed.length?'err':'ok');
+    reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:failed.length===0,results:results,error:(failed[0]&&failed[0].error)||''});
+  });
+})();
+</script></body></html>`;
 }
 
 function shouldOpenOfficePublisher(makerBase: string) {
@@ -479,29 +449,38 @@ function shouldOpenOfficePublisher(makerBase: string) {
   return isPrivateMakerHost(origin);
 }
 
-function startOfficeMakerPublisher(makerBase: string): OfficePublisher {
-  const makerOrigin = normalizeHttpBaseUrl(makerBase) || LAN_MAKER_URL;
-  const lanOrigin = lanAsoldiOriginFromMaker(makerOrigin);
-  const createRunUrl = new URL('/sales-create-run', makerOrigin);
-  createRunUrl.searchParams.set('returnOrigin', window.location.origin);
-  createRunUrl.searchParams.set('asoldiPublish', '1');
+function openDataPublisherWindow(): Window | null {
+  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(buildOfficePublisherHtml())}`;
+  let popup: Window | null = null;
+  try {
+    popup = window.open(dataUrl, 'asoldi-data-publish', 'width=520,height=460');
+  } catch {
+    popup = null;
+  }
+  try {
+    const linker = document.createElement('a');
+    linker.href = dataUrl;
+    linker.target = 'asoldi-data-publish';
+    linker.rel = 'opener';
+    document.body.appendChild(linker);
+    linker.click();
+    linker.remove();
+  } catch {
+    // ignore
+  }
+  return popup;
+}
 
-  const makerPopup = window.open(createRunUrl.toString(), 'asoldi-maker-publish', 'width=520,height=460');
-  injectOfficePublisherScript('asoldi-maker-publish', makerPopup);
-  const lanPopup = window.open(`${lanOrigin}/preview-bridge.html`, 'asoldi-preview-bridge', 'width=420,height=360');
-  if (!makerPopup && !lanPopup) {
+function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
+  const popup = openDataPublisherWindow();
+  if (!popup) {
     throw new Error('Popup blocked. Allow popups for asoldi.com, then click Backfill again.');
   }
 
   return {
     close() {
       try {
-        makerPopup?.close();
-      } catch {
-        // ignore
-      }
-      try {
-        lanPopup?.close();
+        popup.close();
       } catch {
         // ignore
       }
@@ -522,12 +501,7 @@ function startOfficeMakerPublisher(makerBase: string): OfficePublisher {
         };
         const sendJobs = () => {
           try {
-            makerPopup?.postMessage({ type: 'asoldi-publish-preview', jobs }, makerOrigin);
-          } catch {
-            // ignore
-          }
-          try {
-            lanPopup?.postMessage({ type: 'asoldi-publish-preview', jobs }, lanOrigin);
+            popup.postMessage({ type: 'asoldi-publish-preview', jobs }, '*');
           } catch {
             // ignore
           }
@@ -537,17 +511,16 @@ function startOfficeMakerPublisher(makerBase: string): OfficePublisher {
           finish(() =>
             reject(
               new Error(
-                'Could not copy the Maker website onto asoldi.com. Stay on home Wi-Fi, allow popups, keep Website Maker running, and start office Asoldi Docker on port 3200 if the helper window cannot connect. This does not download ZIP files.'
+                'The publish helper did not start. Allow popups for asoldi.com (Firefox may block data: windows) and try Backfill again.'
               )
             )
           );
-        }, 45000);
+        }, 12000);
         const doneTimer = window.setTimeout(() => {
           finish(() => reject(new Error('Timed out publishing to asoldi.com/sales-preview.')));
         }, 180_000);
         const onMessage = (event: MessageEvent) => {
-          const allowed = new Set([makerOrigin, lanOrigin, window.location.origin, 'null']);
-          if (!allowed.has(event.origin)) return;
+          if (event.origin !== 'null' && event.origin !== window.location.origin) return;
           const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
           if (!payload) return;
           if (payload.type === 'asoldi-bridge-ready') {
@@ -562,12 +535,7 @@ function startOfficeMakerPublisher(makerBase: string): OfficePublisher {
           }
           if (payload.type === 'asoldi-bridge-done') {
             try {
-              makerPopup?.close();
-            } catch {
-              // ignore
-            }
-            try {
-              lanPopup?.close();
+              popup.close();
             } catch {
               // ignore
             }
@@ -2133,9 +2101,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
-              then New tunnel URL, then Create run. Backfill / Sync opens Website Maker (allow popups) and
-              copies the site onto asoldi.com/sales-preview. It does not download ZIP files and does not start
-              a Cloudflare tunnel.
+              then New tunnel URL, then Create run. Backfill / Sync opens a small helper window and copies
+              the Maker site onto asoldi.com/sales-preview. Allow popups. It does not download ZIP files and
+              does not start a Cloudflare tunnel.
             </p>
             <div className="mt-3">
               <button

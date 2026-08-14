@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Publishing to asoldi.com</title>
+    <style>
+      body {
+        margin: 0;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+        background: #1a1a1a;
+        color: #eee;
+        padding: 24px;
+      }
+      h1 { font-size: 16px; margin: 0 0 8px; }
+      p { font-size: 13px; color: #bbb; line-height: 1.45; }
+      #status { margin-top: 16px; font-size: 13px; color: #f5c27a; white-space: pre-wrap; }
+      .ok { color: #86efac !important; }
+      .err { color: #fca5a5 !important; }
+    </style>
+  </head>
+  <body>
+    <h1>Publishing public preview</h1>
+    <p>
+      This helper copies the Website Maker site onto asoldi.com/sales-preview.
+      Leave it open. It does not download ZIP files.
+    </p>
+    <p id="status">Waiting for Sales…</p>
+    <script>
+      (function () {
+        var statusEl = document.getElementById('status');
+        var busy = false;
+        function setStatus(text, cls) {
+          statusEl.textContent = text;
+          statusEl.className = cls || '';
+        }
+        function reply(source, origin, message) {
+          try {
+            if (source && source.postMessage) source.postMessage(message, origin || '*');
+          } catch (e) {}
+          try {
+            if (window.opener) window.opener.postMessage(message, '*');
+          } catch (e) {}
+        }
+        if (window.opener) {
+          window.opener.postMessage({ type: 'asoldi-bridge-ready' }, '*');
+        }
+        window.addEventListener('message', async function (event) {
+          var payload = event.data;
+          if (!payload || payload.type !== 'asoldi-publish-preview') return;
+          if (busy) return;
+          var jobs = payload.jobs || [];
+          if (!jobs.length) {
+            setStatus('No preview jobs received.', 'err');
+            reply(event.source, event.origin, { type: 'asoldi-bridge-done', ok: false, error: 'No preview jobs received.' });
+            return;
+          }
+          busy = true;
+          reply(event.source, event.origin, { type: 'asoldi-bridge-accepted' });
+          setStatus('Publishing ' + jobs.length + ' preview(s) to asoldi.com…');
+          var results = [];
+          for (var i = 0; i < jobs.length; i++) {
+            var job = jobs[i];
+            try {
+              setStatus('Exporting ' + (i + 1) + '/' + jobs.length + ' from Website Maker…');
+              var zipRes = await fetch(job.exportUrl, { mode: 'cors', credentials: 'omit' });
+              if (!zipRes.ok) throw new Error('Maker export failed (' + zipRes.status + ')');
+              var zip = await zipRes.blob();
+              if (!zip || !zip.size) throw new Error('Maker export was empty.');
+              var headers = Object.assign({
+                Authorization: 'Bearer ' + job.token,
+                'Content-Type': 'application/zip'
+              }, job.headers || {});
+              setStatus('Uploading ' + (i + 1) + '/' + jobs.length + ' to asoldi.com…');
+              var up = await fetch(job.uploadUrl, { method: 'POST', mode: 'cors', headers: headers, body: zip });
+              var data = await up.json().catch(function () { return {}; });
+              if (!up.ok) throw new Error(data.message || ('asoldi.com rejected the preview (' + up.status + ')'));
+              results.push({ ok: true, clientId: job.clientId, publicPreviewUrl: data.publicPreviewUrl || '' });
+            } catch (err) {
+              var message = (err && err.message) ? err.message : String(err);
+              if (/failed to fetch|networkerror|load failed/i.test(message)) {
+                message =
+                  'Could not reach Website Maker at the office Docker URL. Stay on home Wi-Fi with Maker running at http://192.168.68.92:3000.';
+              }
+              results.push({ ok: false, clientId: job.clientId, error: message });
+            }
+          }
+          var failed = results.filter(function (row) { return !row.ok; });
+          setStatus(
+            failed.length
+              ? ('Failed: ' + ((failed[0] && failed[0].error) || 'Could not publish'))
+              : 'Published to asoldi.com/sales-preview. You can close this window.',
+            failed.length ? 'err' : 'ok'
+          );
+          reply(event.source, event.origin, {
+            type: 'asoldi-bridge-done',
+            ok: failed.length === 0,
+            results: results,
+            error: (failed[0] && failed[0].error) || ''
+          });
+        });
+      })();
+    </script>
+  </body>
+</html>

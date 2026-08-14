@@ -109,6 +109,16 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), hand
 
 app.use(express.json());
 
+// Hostinger CDN injects upgrade-insecure-requests. Sending our own policy without
+// that directive lets Sales talk to office HTTP Maker when the CDN does not append.
+app.use((req, res, next) => {
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src * data: blob:; font-src *; frame-src *; worker-src *; media-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'"
+  );
+  next();
+});
+
 // Rate limit forgot-password (5 per IP per 15 min)
 const forgotPasswordAttempts = new Map();
 function rateLimitForgotPassword(ip) {
