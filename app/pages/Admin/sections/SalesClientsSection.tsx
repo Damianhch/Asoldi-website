@@ -385,7 +385,7 @@ type OfficePublisher = {
 
 function buildOfficePublisherHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title>
-<!-- asoldi-helper-v2 -->
+<!-- asoldi-helper-v3 -->
 <style>body{margin:0;font-family:sans-serif;background:#1a1a1a;color:#eee;padding:24px}#s{color:#f5c27a;white-space:pre-wrap}.ok{color:#86efac}.err{color:#fca5a5}</style>
 </head><body>
 <h1 style="font-size:16px">Publishing public preview</h1>
@@ -450,40 +450,24 @@ function shouldOpenOfficePublisher(makerBase: string) {
   return isPrivateMakerHost(origin);
 }
 
-function openDataPublisherWindow(): Window | null {
-  const html = buildOfficePublisherHtml();
-  const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
-  // Chrome blocks window.open(data:) and leaves about:blank. Open blank first, then
-  // navigate that window to the data: helper so fetch() is not upgraded to HTTPS.
-  const popup = window.open('about:blank', 'asoldi-data-publish', 'width=520,height=460');
-  if (!popup) return null;
-  try {
-    popup.location.replace(dataUrl);
-  } catch {
-    // ignore
-  }
-  try {
-    popup.document.open();
-    popup.document.write(
-      `<!doctype html><html><body><script>location.replace(${JSON.stringify(dataUrl)});<\/script></body></html>`
-    );
-    popup.document.close();
-  } catch {
-    // Window already navigated to the data: helper.
-  }
-  return popup;
-}
-
 function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
-  const popup = openDataPublisherWindow();
-  if (!popup) {
-    throw new Error('Popup blocked. Allow popups for asoldi.com, then click Backfill again.');
-  }
+  const html = buildOfficePublisherHtml();
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
+  iframe.setAttribute(
+    'csp',
+    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src *; style-src * 'unsafe-inline'"
+  );
+  iframe.srcdoc = html;
+  iframe.title = 'Publishing to asoldi.com';
+  iframe.style.cssText =
+    'position:fixed;right:16px;bottom:16px;width:380px;height:260px;border:1px solid #444;border-radius:12px;z-index:99999;background:#1a1a1a;box-shadow:0 12px 40px rgba(0,0,0,.45)';
+  document.body.appendChild(iframe);
 
   return {
     close() {
       try {
-        popup.close();
+        iframe.remove();
       } catch {
         // ignore
       }
@@ -504,7 +488,7 @@ function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
         };
         const sendJobs = () => {
           try {
-            popup.postMessage({ type: 'asoldi-publish-preview', jobs }, '*');
+            iframe.contentWindow?.postMessage({ type: 'asoldi-publish-preview', jobs }, '*');
           } catch {
             // ignore
           }
@@ -537,13 +521,16 @@ function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
             return;
           }
           if (payload.type === 'asoldi-bridge-done') {
-            try {
-              popup.close();
-            } catch {
-              // ignore
+            if (payload.ok) {
+              try {
+                iframe.remove();
+              } catch {
+                // ignore
+              }
+              finish(() => resolve());
+            } else {
+              finish(() => reject(new Error(String(payload.error || 'Publish failed.'))));
             }
-            if (payload.ok) finish(() => resolve());
-            else finish(() => reject(new Error(String(payload.error || 'Publish failed.'))));
           }
         };
         window.addEventListener('message', onMessage);
