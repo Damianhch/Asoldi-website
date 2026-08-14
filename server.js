@@ -25,6 +25,15 @@ import * as myphonerIntegration from './data/myphoner-integration.js';
 import * as myphonerSsuWins from './lib/myphoner-ssu-wins.js';
 import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-email.js';
 import {
+  LAN_ASOLDI_ORIGIN,
+  LAN_MAKER_ORIGIN,
+  buildLaptopPreviewEntry,
+  isLoopbackHostname,
+  isPublicInternetHostname,
+  pickLanAsoldiOrigin,
+  pickLanMakerOrigin,
+} from './lib/laptop-preview.js';
+import {
   createGoogleCalendarAuthUrl,
   deleteMeetingEvent,
   exchangeGoogleCalendarCode,
@@ -6468,6 +6477,30 @@ function startMyphonerRecordingRetryLoop() {
   }, MYPHONER_RECORDING_RETRY_TICK_MS);
 }
 
+function resolveLanMakerOrigin() {
+  return pickLanMakerOrigin([
+    process.env.WEBSITE_MAKER_LOCAL_URL,
+    DEFAULT_MAKER_LOCAL_URL,
+    LAN_MAKER_ORIGIN,
+  ]);
+}
+
+function resolveLanAsoldiOrigin(req) {
+  const host = sanitizeText(req?.get?.('host'));
+  const hostname = host.split(':')[0];
+  const requestLooksLikeLan =
+    host &&
+    !isPublicInternetHostname(hostname) &&
+    !isLoopbackHostname(hostname) &&
+    /^(192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(hostname);
+  const fromRequest = requestLooksLikeLan ? `http://${host}` : '';
+  return pickLanAsoldiOrigin([
+    fromRequest,
+    process.env.APP_URL,
+    LAN_ASOLDI_ORIGIN,
+  ]);
+}
+
 function joinMakerUrl(baseUrl = '', pathOrUrl = '') {
   const raw = sanitizeText(pathOrUrl);
   if (!raw) return '';
@@ -9449,6 +9482,27 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   return res.json({ ok: true, event, client: updated });
 });
 
+app.get('/api/admin/sales/laptop-previews', salesAuth, (req, res) => {
+  const all = sales.getSalesClients();
+  const owned = req.salesUser.isAdmin
+    ? all
+    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+  const lanMakerOrigin = resolveLanMakerOrigin();
+  const lanAsoldiOrigin = resolveLanAsoldiOrigin(req);
+  const items = owned
+    .filter((client) => !sales.isSsuSalesProduct(client.product))
+    .map((client) => buildLaptopPreviewEntry(client, { lanMakerOrigin, lanAsoldiOrigin }))
+    .filter(Boolean)
+    .sort((a, b) => String(a.businessName || '').localeCompare(String(b.businessName || ''), 'nb'));
+  res.json({
+    ok: true,
+    lanMakerOrigin,
+    lanAsoldiOrigin,
+    boardUrl: `${lanAsoldiOrigin}/previews`,
+    items,
+  });
+});
+
 app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const productFilter = sanitizeText(req.query?.product).toLowerCase();
@@ -10849,6 +10903,26 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   if (!path.extname(normalized) && await sendIfFile(path.join(root, 'index.html'))) return;
   return res.status(404).send('Preview file not found');
 }
+
+app.get('/live-preview/:id', (req, res) => {
+  if (requestIsPublicInternetHost(req)) {
+    return res.status(404).send('Laptop preview redirects are only available on the office LAN Docker host.');
+  }
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).send('Sales client not found.');
+  if (sales.isSsuSalesProduct(client.product)) {
+    return res.status(404).send('SSU clients do not have Website Maker previews.');
+  }
+  const entry = buildLaptopPreviewEntry(client, {
+    lanMakerOrigin: resolveLanMakerOrigin(),
+    lanAsoldiOrigin: resolveLanAsoldiOrigin(req),
+  });
+  if (!entry?.makerPreviewUrl) {
+    return res.status(404).send('No Website Maker run is linked for this client yet.');
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  return res.redirect(302, entry.makerPreviewUrl);
+});
 
 app.get('/sales-preview/:id', async (req, res) => {
   await sendSalesPreviewFile(req, res, '');

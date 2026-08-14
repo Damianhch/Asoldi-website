@@ -3,12 +3,15 @@ import {
   BellRing,
   ArchiveX,
   CalendarClock,
+  Check,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Gift,
   Link2,
   Loader2,
   MailPlus,
+  MonitorSmartphone,
   Pencil,
   Plus,
   RefreshCw,
@@ -56,6 +59,7 @@ const OFFER_TIERS = [
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
+const LAN_ASOLDI_URL = 'http://192.168.68.92:3200';
 const LOCAL_MAKER_URL = 'http://localhost:3000';
 const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
@@ -355,6 +359,19 @@ function tunnelPopupMakerOrigin(fieldUrl = '') {
   return isPrivateMakerHost(origin) ? origin : LOCAL_MAKER_URL;
 }
 
+function getLaptopPreviewHref(clientId = '') {
+  const id = String(clientId || '').trim();
+  if (!id) return '';
+  const path = `/live-preview/${encodeURIComponent(id)}`;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (/^(192\.168\.|10\.\d+\.|172\.(1[6-9]|2\d|3[0-1])\.)/.test(host)) {
+      return `${window.location.origin}${path}`;
+    }
+  }
+  return `${LAN_ASOLDI_URL}${path}`;
+}
+
 function buildMakerRunUrl(
   baseUrl = '',
   runId = '',
@@ -480,6 +497,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
+  const [copiedLaptopId, setCopiedLaptopId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -1163,6 +1181,24 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
+  async function copyLaptopPreviewLink(client: SalesClient) {
+    const url = getLaptopPreviewHref(client.id);
+    if (!url) {
+      setError('No laptop preview link for this client.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLaptopId(client.id);
+      setNotice(`Laptop preview link copied. On the office Wi-Fi open ${url}`);
+      window.setTimeout(() => {
+        setCopiedLaptopId((current) => (current === client.id ? null : current));
+      }, 2500);
+    } catch {
+      setError(`Could not copy. Paste this on the laptop: ${url}`);
+    }
+  }
+
   async function openInMaker(client: SalesClient) {
     const makerRunId = String(client.makerRun?.runId || '').trim();
     if (!makerRunId) {
@@ -1568,8 +1604,27 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 ? 'SSU partner leads from MyPhoner. Meeting time/type and contract/payment only — no website Maker flow.'
                 : 'Website leads: meetings, Google Calendar, Website Maker previews, and promote won clients to Clients.'}
             </p>
+            {!isSsuBracket && (
+              <p className="text-[11px] text-gray-500 mt-2">
+                Laptop preview (same Wi-Fi as PC2): bookmark{' '}
+                <a href="/previews" className="text-emerald-300 hover:underline">
+                  {IS_LAN_SALES_HOST ? `${window.location.origin}/previews` : `${LAN_ASOLDI_URL}/previews`}
+                </a>
+                . Copy laptop link on a client card after custom Maker changes.
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-3">
+            {!isSsuBracket && (
+              <a
+                href="/previews"
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                title="Open the laptop preview board"
+              >
+                <MonitorSmartphone size={16} />
+                Laptop previews
+              </a>
+            )}
             <button type="button" onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]">
               <Plus size={16} />
               Add client
@@ -1936,6 +1991,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       >
                         <ExternalLink size={13} />
                         Maker preview
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void copyLaptopPreviewLink(client)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={`Copy ${getLaptopPreviewHref(client.id)} for the office laptop. Rewrites localhost to the PC2 Docker Maker.`}
+                      >
+                        {copiedLaptopId === client.id ? <Check size={13} /> : <Copy size={13} />}
+                        {copiedLaptopId === client.id ? 'Copied laptop link' : 'Copy laptop link'}
                       </button>
                       <button
                         type="button"

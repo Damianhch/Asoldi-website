@@ -1,10 +1,18 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { ArrowLeft, Lock, Mail } from 'lucide-react';
 
+function safeNextPath(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw.startsWith('/')) return '';
+  if (raw.startsWith('//') || raw.includes('://')) return '';
+  return raw;
+}
+
 export const EmployeeLogin = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -27,7 +35,9 @@ export const EmployeeLogin = () => {
       }
       if (data.token) localStorage.setItem('employeeToken', data.token);
       window.dispatchEvent(new Event('employee-auth-changed'));
-      navigate(data?.user?.role === 'sales' ? '/sales' : '/ansatt', { replace: true });
+      const next = safeNextPath(searchParams.get('next') || '');
+      const defaultPath = data?.user?.role === 'sales' ? '/sales' : '/ansatt';
+      navigate(next || defaultPath, { replace: true });
     } catch {
       setError('Noe gikk galt. Prøv igjen.');
     } finally {

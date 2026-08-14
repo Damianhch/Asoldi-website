@@ -55,6 +55,18 @@ Requirements:
 
 Republish after you improve the run; it overwrites the previous production maker links for that client only.
 
+## 3b) Laptop preview of a live Maker run (PC2 Docker + PC1 agent + extra laptop)
+
+Custom changes in Website Maker live on **PC2**. They are not the Sales ZIP snapshot at `/sales-preview/:id`.
+
+On any laptop on the same Wi-Fi as PC2:
+
+1. Bookmark **[http://192.168.68.92:3200/previews](http://192.168.68.92:3200/previews)** and log in once (sales or admin).
+2. Tap **Open live website**. That is the current Maker preview (`:3000/preview/<runId>/...`), including custom edits.
+3. From Sales on PC1, **Copy laptop link** pastes `http://192.168.68.92:3200/live-preview/<client-id>`. That redirect always rewrites `localhost` to the PC2 Maker IP, so the laptop does not try to open Maker on itself.
+
+Off the office network, use **New tunnel URL** on Sales first; LAN preview links will not load.
+
 ## Why the counts diverged
 
 A workstation `~/.asoldi-website-data` folder (March 2026, ~45 clients) was copied onto LAN. Production had kept receiving MyPhoner winners (68 clients at last sync: 53 Asoldi + 15 SSU). Those are independent JSON files, not git.
