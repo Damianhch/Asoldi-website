@@ -454,7 +454,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
-  const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
@@ -1023,7 +1023,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       );
       if (!confirmed) return;
     }
-    setCreatingRunId(client.id);
+    setCreatingRunIds((prev) => {
+      const next = new Set(prev);
+      next.add(client.id);
+      return next;
+    });
     setError('');
     try {
       const makerBase =
@@ -1061,7 +1065,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed creating website run');
     } finally {
-      setCreatingRunId(null);
+      setCreatingRunIds((prev) => {
+        const next = new Set(prev);
+        next.delete(client.id);
+        return next;
+      });
     }
   }
 
@@ -1347,7 +1355,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     } catch {
       // Fall back to postMessage if the payload cannot be hashed.
     }
-    const popup = window.open(popupUrl.toString(), 'asoldi-sales-create-run', 'width=520,height=420');
+    const popupName = `asoldi-sales-create-run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const popup = window.open(popupUrl.toString(), popupName, 'width=520,height=420');
     if (!popup) {
       throw new Error('Popup blocked. Allow popups for this site and try Create run again.');
     }
@@ -1852,11 +1861,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       <button
                         type="button"
                         onClick={() => void createMakerRun(client, { forceNewRun: true })}
-                        disabled={creatingRunId === client.id}
+                        disabled={creatingRunIds.has(client.id)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
                         title="Create a fresh draft run from current Sales data"
                       >
-                        {creatingRunId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                        {creatingRunIds.has(client.id) ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                         Create new run
                       </button>
                       {IS_LAN_SALES_HOST ? (
@@ -1876,10 +1885,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     <button
                       type="button"
                       onClick={() => void createMakerRun(client)}
-                      disabled={creatingRunId === client.id}
+                      disabled={creatingRunIds.has(client.id)}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
                     >
-                      {creatingRunId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
+                      {creatingRunIds.has(client.id) ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                       Create website run
                     </button>
                   )
