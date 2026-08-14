@@ -385,6 +385,7 @@ type OfficePublisher = {
 
 function buildOfficePublisherHtml() {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title>
+<!-- asoldi-helper-v2 -->
 <style>body{margin:0;font-family:sans-serif;background:#1a1a1a;color:#eee;padding:24px}#s{color:#f5c27a;white-space:pre-wrap}.ok{color:#86efac}.err{color:#fca5a5}</style>
 </head><body>
 <h1 style="font-size:16px">Publishing public preview</h1>
