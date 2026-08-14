@@ -145,6 +145,26 @@ export function updateOffer(id, updates = {}) {
   return next;
 }
 
+export function updatePreviewUrlForSalesClient(salesClientId, previewUrl) {
+  const clientId = sanitizeText(salesClientId);
+  const nextPreview = sanitizeText(previewUrl);
+  if (!clientId || !nextPreview) return 0;
+  const state = readOffersFile().map(normalizeOffer);
+  let updated = 0;
+  const next = state.map((entry) => {
+    if (sanitizeText(entry.salesClientId) !== clientId) return entry;
+    if (sanitizeText(entry.previewUrl) === nextPreview) return entry;
+    updated += 1;
+    return normalizeOffer({
+      ...entry,
+      previewUrl: nextPreview,
+      updatedAt: nowIso(),
+    });
+  });
+  if (updated) writeOffersFile(next);
+  return updated;
+}
+
 export function deleteOffer(id) {
   const state = readOffersFile().map(normalizeOffer);
   const next = state.filter((entry) => entry.id !== sanitizeText(id));

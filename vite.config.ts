@@ -51,6 +51,10 @@ export default defineConfig(({ mode }) => {
           target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
           changeOrigin: true,
         },
+        '/live-preview': {
+          target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
+          changeOrigin: true,
+        },
       },
     },
   };

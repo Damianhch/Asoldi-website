@@ -3,12 +3,15 @@ import {
   BellRing,
   ArchiveX,
   CalendarClock,
+  Check,
   CheckCircle2,
+  Copy,
   ExternalLink,
   Gift,
   Link2,
   Loader2,
   MailPlus,
+  MonitorSmartphone,
   Pencil,
   Plus,
   RefreshCw,
@@ -56,6 +59,7 @@ const OFFER_TIERS = [
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
+const PUBLIC_SALES_URL = 'https://asoldi.com';
 const LOCAL_MAKER_URL = 'http://localhost:3000';
 const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
@@ -355,6 +359,12 @@ function tunnelPopupMakerOrigin(fieldUrl = '') {
   return isPrivateMakerHost(origin) ? origin : LOCAL_MAKER_URL;
 }
 
+function getPublicPreviewHref(clientId = '') {
+  const id = String(clientId || '').trim();
+  if (!id) return '';
+  return `${PUBLIC_SALES_URL}/sales-preview/${encodeURIComponent(id)}/`;
+}
+
 function buildMakerRunUrl(
   baseUrl = '',
   runId = '',
@@ -480,6 +490,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
+  const [copiedLaptopId, setCopiedLaptopId] = useState<string | null>(null);
+  const [publishingPreviewId, setPublishingPreviewId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -1035,7 +1047,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setSyncingId(client.id);
     setError('');
     try {
-      await request(`/admin/sales/${client.id}/import-website`, {
+      const data = await request(`/admin/sales/${client.id}/import-website`, {
         method: 'POST',
         body: JSON.stringify({
           runId,
@@ -1046,6 +1058,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       });
       await loadSales();
       await loadOffers();
+      const publicUrl = String(data?.publicPreviewUrl || getPublicPreviewHref(client.id));
+      if (data?.warning) {
+        setNotice(`Synced. Public preview may be stale: ${data.warning} ${publicUrl}`);
+      } else {
+        setNotice(`Public preview is ready (same URL as checkout): ${publicUrl}`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed syncing website from maker');
     } finally {
@@ -1160,6 +1178,44 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       setError(err instanceof Error ? err.message : 'Failed publishing website run to asoldi.com');
     } finally {
       setPublishingMakerId(null);
+    }
+  }
+
+  async function copyLaptopPreviewLink(client: SalesClient) {
+    const url = getPublicPreviewHref(client.id);
+    if (!url) {
+      setError('No public preview link for this client.');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedLaptopId(client.id);
+      setNotice(`Public preview copied. This is the same URL checkout uses: ${url}`);
+      window.setTimeout(() => {
+        setCopiedLaptopId((current) => (current === client.id ? null : current));
+      }, 2500);
+    } catch {
+      setError(`Could not copy. Paste this: ${url}`);
+    }
+  }
+
+  async function publishPublicPreview(client: SalesClient) {
+    setPublishingPreviewId(client.id);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/publish-preview-to-prod`, {
+        method: 'POST',
+        body: JSON.stringify({}),
+      });
+      await loadSales();
+      await loadOffers();
+      const publicUrl = String(data?.publicPreviewUrl || getPublicPreviewHref(client.id));
+      setNotice(`Public preview published: ${publicUrl}`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed publishing public preview to asoldi.com');
+    } finally {
+      setPublishingPreviewId(null);
     }
   }
 
@@ -1568,8 +1624,29 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 ? 'SSU partner leads from MyPhoner. Meeting time/type and contract/payment only — no website Maker flow.'
                 : 'Website leads: meetings, Google Calendar, Website Maker previews, and promote won clients to Clients.'}
             </p>
+            {!isSsuBracket && (
+              <p className="text-[11px] text-gray-500 mt-2">
+                Meeting laptop / client preview: bookmark{' '}
+                <a href="https://asoldi.com/previews" className="text-emerald-300 hover:underline">
+                  https://asoldi.com/previews
+                </a>
+                {' '}or copy the public <code>asoldi.com/sales-preview/…</code> link after Sync. Same URL as checkout.
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-3">
+            {!isSsuBracket && (
+              <a
+                href="https://asoldi.com/previews"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                title="Open the public asoldi.com preview board"
+              >
+                <MonitorSmartphone size={16} />
+                Public previews
+              </a>
+            )}
             <button type="button" onClick={openCreate} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200]">
               <Plus size={16} />
               Add client
@@ -1805,7 +1882,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   ] as { key: ProgressionKey; done: boolean }[])
                 : []),
             ];
-            const importedPreviewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
@@ -1936,6 +2012,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       >
                         <ExternalLink size={13} />
                         Maker preview
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void copyLaptopPreviewLink(client)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={`Copy ${getPublicPreviewHref(client.id)} — same URL as client checkout`}
+                      >
+                        {copiedLaptopId === client.id ? <Check size={13} /> : <Copy size={13} />}
+                        {copiedLaptopId === client.id ? 'Copied public preview' : 'Copy public preview'}
                       </button>
                       <button
                         type="button"
@@ -2246,16 +2331,26 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => window.open(importedPreviewUrl, '_blank')}
+                          onClick={() => window.open(getPublicPreviewHref(client.id), '_blank')}
                           disabled={!client.websiteImport?.previewUrl}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
                         >
                           <ExternalLink size={14} />
                           Preview website
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => void publishPublicPreview(client)}
+                          disabled={publishingPreviewId === client.id || !client.websiteImport?.previewUrl}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+                          title="Push the synced snapshot to asoldi.com/sales-preview so it works off the office Wi-Fi"
+                        >
+                          {publishingPreviewId === client.id ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                          Publish public preview
+                        </button>
                       </div>
                       <p className="text-[11px] text-gray-500">
-                        Sync is the preferred flow. ZIP export is only for manual hosting uploads when needed.
+                        Sync copies the current Maker site to asoldi.com/sales-preview. That is the temporary public URL Sales, checkout, and the meeting laptop all use. Re-sync after more custom changes.
                       </p>
                     </div>
 
@@ -2620,10 +2715,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       )}
     </div>
   );
-}
-
-function getSalesPreviewFallback(clientId: string) {
-  return `/sales-preview/${encodeURIComponent(clientId)}/`;
 }
 
 function Field({

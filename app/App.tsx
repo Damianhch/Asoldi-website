@@ -31,6 +31,7 @@ const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').the
 const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then((m) => ({ default: m.LoginResetPassword })));
 const Ansatt = lazy(() => import('./pages/Ansatt').then((m) => ({ default: m.Ansatt })));
 const SalesWorkspace = lazy(() => import('./pages/sales/SalesWorkspace').then((m) => ({ default: m.SalesWorkspace })));
+const LaptopPreviews = lazy(() => import('./pages/sales/LaptopPreviews').then((m) => ({ default: m.LaptopPreviews })));
 const ClientOnboarding = lazy(() => import('./pages/client/ClientOnboarding').then((m) => ({ default: m.ClientOnboarding })));
 const ClientHome = lazy(() => import('./pages/client/ClientHome').then((m) => ({ default: m.ClientHome })));
 const ClientServices = lazy(() => import('./pages/client/ClientServices').then((m) => ({ default: m.ClientServices })));
@@ -41,7 +42,7 @@ const ClientWebsiteCheckout = lazy(() => import('./pages/client/ClientWebsiteChe
 
 function AppLayout() {
   const location = useLocation();
-  const hideShell = /^\/(admin|superadmin|ansatt|sales|login|kunde)(\/|$)/.test(location.pathname);
+  const hideShell = /^\/(admin|superadmin|ansatt|sales|previews|login|kunde)(\/|$)/.test(location.pathname);
   const useLightShell = /^\/(login|kunde)(\/|$)/.test(location.pathname);
 
   useEffect(() => {
@@ -96,6 +97,7 @@ function AppLayout() {
           <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/sales" element={<SalesWorkspace />} />
+          <Route path="/previews" element={<LaptopPreviews />} />
           <Route path="/kunde" element={<ClientHome />} />
           <Route path="/kunde/hjem" element={<ClientHome />} />
           <Route path="/kunde/onboarding" element={<ClientOnboarding />} />

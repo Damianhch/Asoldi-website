@@ -5,8 +5,11 @@
 #   docker compose -f docker-compose.lan.yml up -d --build
 #
 # URLs (from any PC on the LAN):
-#   Site:  http://192.168.68.92:3200
-#   API:   http://192.168.68.92:3201
+#   Site:             http://192.168.68.92:3200
+#   API:              http://192.168.68.92:3201
+#   Public previews:  https://asoldi.com/previews
+#   Client preview:   https://asoldi.com/sales-preview/<sales-client-id>/
+#   Website Maker:    http://192.168.68.92:3000
 services:
   api:
     image: node:20-bookworm-slim
