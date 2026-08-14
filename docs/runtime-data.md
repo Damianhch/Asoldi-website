@@ -55,17 +55,21 @@ Requirements:
 
 Republish after you improve the run; it overwrites the previous production maker links for that client only.
 
-## 3b) Laptop preview of a live Maker run (PC2 Docker + PC1 agent + extra laptop)
+## 3b) Public meeting preview (asoldi.com, any network)
 
-Custom changes in Website Maker live on **PC2**. They are not the Sales ZIP snapshot at `/sales-preview/:id`.
+The URL clients see in checkout, and the URL you should open on a meeting laptop, is the Hostinger snapshot:
 
-On any laptop on the same Wi-Fi as PC2:
+`https://asoldi.com/sales-preview/<sales-client-id>/`
 
-1. Bookmark **[http://192.168.68.92:3200/previews](http://192.168.68.92:3200/previews)** and log in once (sales or admin).
-2. Tap **Open live website**. That is the current Maker preview (`:3000/preview/<runId>/...`), including custom edits.
-3. From Sales on PC1, **Copy laptop link** pastes `http://192.168.68.92:3200/live-preview/<client-id>`. That redirect always rewrites `localhost` to the PC2 Maker IP, so the laptop does not try to open Maker on itself.
+It is **not** the office LAN Maker (`192.168.68.92:3000`). After custom changes in Website Maker:
 
-Off the office network, use **New tunnel URL** on Sales first; LAN preview links will not load.
+1. On Sales click **Sync latest from Maker**. LAN Docker also pushes that snapshot to asoldi.com.
+2. **Copy public preview** or bookmark **https://asoldi.com/previews**.
+3. Open that link from any laptop / show the client. Offers created after sync attach the same URL.
+
+Re-sync after more Maker edits. This is a published snapshot, not a live tunnel into PC2.
+
+Off the office network, use **New tunnel URL** only if you need to *edit* in Maker. Preview/show uses asoldi.com.
 
 ## Why the counts diverged
 

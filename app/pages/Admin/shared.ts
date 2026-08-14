@@ -133,6 +133,7 @@ export type SalesWebsiteImportMeta = {
   siteFolder: string;
   importRoot: string;
   previewUrl: string;
+  publicPreviewPublishedAt?: string;
 };
 
 export type SalesMakerRunMeta = {

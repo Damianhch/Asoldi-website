@@ -9,13 +9,12 @@ type LaptopPreviewItem = {
   businessName: string;
   status: string;
   runId: string;
-  latestReadyStep: string;
-  makerPreviewUrl: string;
+  publicPreviewUrl: string;
   laptopUrl: string;
-  livePreviewPath: string;
+  importedAt: string;
 };
 
-const LAN_PREVIEWS_URL = 'http://192.168.68.92:3200/previews';
+const PUBLIC_PREVIEWS_URL = 'https://asoldi.com/previews';
 
 export const LaptopPreviews = () => {
   const navigate = useNavigate();
@@ -23,7 +22,7 @@ export const LaptopPreviews = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [query, setQuery] = useState('');
-  const [boardUrl, setBoardUrl] = useState(LAN_PREVIEWS_URL);
+  const [boardUrl, setBoardUrl] = useState(PUBLIC_PREVIEWS_URL);
   const [items, setItems] = useState<LaptopPreviewItem[]>([]);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [copiedBoard, setCopiedBoard] = useState(false);
@@ -47,7 +46,7 @@ export const LaptopPreviews = () => {
         }
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          setError(data.message || 'Could not load laptop previews.');
+          setError(data.message || 'Could not load public previews.');
           setStatus('ready');
           return;
         }
@@ -56,7 +55,7 @@ export const LaptopPreviews = () => {
         setStatus('ready');
       } catch {
         if (active) {
-          setError('Could not load laptop previews.');
+          setError('Could not load public previews.');
           setStatus('ready');
         }
       } finally {
@@ -100,7 +99,7 @@ export const LaptopPreviews = () => {
   if (status === 'checking') {
     return (
       <div className="min-h-screen bg-[#1a1a1a] flex items-center justify-center text-gray-300">
-        <Loader2 className="animate-spin mr-2" size={20} /> Loading laptop previews…
+        <Loader2 className="animate-spin mr-2" size={20} /> Loading public previews…
       </div>
     );
   }
@@ -110,7 +109,7 @@ export const LaptopPreviews = () => {
       <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center gap-4 text-gray-300 px-6 text-center">
         <h1 className="text-xl font-semibold text-white">No access</h1>
         <p className="max-w-md text-sm text-gray-400">
-          This page lists live Website Maker previews. Sign in with a sales or admin account.
+          This page lists the same asoldi.com website previews clients see in checkout. Sign in with a sales or admin account.
         </p>
         <button type="button" onClick={logout} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white hover:bg-[#e55200]">
           Back to login
@@ -122,7 +121,7 @@ export const LaptopPreviews = () => {
   return (
     <>
       <Helmet>
-        <title>Laptop previews – Asoldi</title>
+        <title>Public website previews – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
       <div className="min-h-screen bg-[#1a1a1a] text-white">
@@ -131,11 +130,11 @@ export const LaptopPreviews = () => {
             <div>
               <div className="inline-flex items-center gap-2 text-[#FF5B00]">
                 <MonitorSmartphone size={18} />
-                <span className="text-xs uppercase tracking-wide">Laptop preview board</span>
+                <span className="text-xs uppercase tracking-wide">Meeting preview board</span>
               </div>
-              <h1 className="text-lg font-semibold mt-1">Live client websites</h1>
+              <h1 className="text-lg font-semibold mt-1">Client website previews</h1>
               <p className="text-xs text-gray-400 mt-1">
-                Same Wi-Fi as PC2 (Docker). Opens the live Website Maker preview after custom changes — not the old Sales ZIP snapshot.
+                These are the Hostinger / asoldi.com snapshots used on Sales and in client checkout. Works from any network after you sync from Maker.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -156,7 +155,7 @@ export const LaptopPreviews = () => {
         <main className="max-w-[1100px] mx-auto px-6 py-8 space-y-5">
           <div className="rounded-2xl border border-white/10 bg-[#2a2a2a] p-4 flex flex-col md:flex-row md:items-center gap-3">
             <div className="min-w-0 flex-1">
-              <div className="text-xs text-gray-400 uppercase tracking-wide">Bookmark this on the laptop</div>
+              <div className="text-xs text-gray-400 uppercase tracking-wide">Bookmark this on the meeting laptop</div>
               <code className="block mt-1 text-sm text-emerald-300 break-all">{boardUrl}</code>
             </div>
             <button
@@ -191,38 +190,41 @@ export const LaptopPreviews = () => {
           ) : filtered.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-[#2a2a2a] p-6 text-sm text-gray-400">
               {items.length === 0
-                ? 'No Website Maker runs yet. Create a run from Sales on PC1, then refresh this page.'
+                ? 'No public previews yet. On Sales, click “Sync latest from Maker” so the snapshot is published to asoldi.com/sales-preview.'
                 : 'No matching clients.'}
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filtered.map((item) => (
+              {filtered.map((item) => {
+                const previewUrl = item.publicPreviewUrl || item.laptopUrl;
+                return (
                 <article key={item.id} className="rounded-2xl border border-white/10 bg-[#2a2a2a] p-4 flex flex-col gap-3">
                   <div>
                     <h2 className="text-white font-semibold truncate">{item.businessName}</h2>
-                    <p className="mt-1 text-xs text-gray-500 truncate">Run {item.runId}</p>
+                    <p className="mt-1 text-xs text-gray-500 break-all">{previewUrl}</p>
                   </div>
                   <div className="flex flex-wrap gap-2 mt-auto">
                     <a
-                      href={item.makerPreviewUrl}
+                      href={previewUrl}
                       target="_blank"
                       rel="noreferrer"
                       className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200]"
                     >
                       <ExternalLink size={15} />
-                      Open live website
+                      Open public preview
                     </a>
                     <button
                       type="button"
-                      onClick={() => void copyText(item.laptopUrl, item.id)}
+                      onClick={() => void copyText(previewUrl, item.id)}
                       className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
                     >
                       {copiedId === item.id ? <Check size={15} /> : <Copy size={15} />}
-                      {copiedId === item.id ? 'Copied' : 'Copy laptop link'}
+                      {copiedId === item.id ? 'Copied' : 'Copy link'}
                     </button>
                   </div>
                 </article>
-              ))}
+                );
+              })}
             </div>
           )}
         </main>

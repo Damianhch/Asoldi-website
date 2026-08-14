@@ -138,6 +138,7 @@ function normalizeWebsiteImport(value = {}) {
     siteFolder: sanitizeText(input.siteFolder),
     importRoot: sanitizeText(input.importRoot),
     previewUrl: sanitizeText(input.previewUrl),
+    publicPreviewPublishedAt: sanitizeText(input.publicPreviewPublishedAt),
   };
 }
 

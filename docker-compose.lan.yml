@@ -7,8 +7,8 @@
 # URLs (from any PC on the LAN):
 #   Site:             http://192.168.68.92:3200
 #   API:              http://192.168.68.92:3201
-#   Laptop previews:  http://192.168.68.92:3200/previews
-#   Live site (one):  http://192.168.68.92:3200/live-preview/<sales-client-id>
+#   Public previews:  https://asoldi.com/previews
+#   Client preview:   https://asoldi.com/sales-preview/<sales-client-id>/
 #   Website Maker:    http://192.168.68.92:3000
 services:
   api:
