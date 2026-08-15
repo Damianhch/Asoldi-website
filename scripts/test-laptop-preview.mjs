@@ -13,6 +13,7 @@ import {
   isAllowedPreviewBundleUploadUrl,
   isPrivateMakerUrl,
   lanAsoldiOriginFromMakerUrl,
+  rewritePreviewAssetPaths,
   toPublicSalesPreviewUrl,
 } from '../lib/laptop-preview.js';
 
@@ -112,6 +113,36 @@ assert.equal(
 assert.equal(
   injectPreviewBaseHref('<html><head><title>x</title></head></html>', 'client-1'),
   '<html><head><base href="/sales-preview/client-1/"><title>x</title></head></html>'
+);
+
+// Root-absolute assets must be pulled back inside the preview folder.
+assert.equal(
+  rewritePreviewAssetPaths('<link rel="stylesheet" href="/css/style.css">', 'client-1'),
+  '<link rel="stylesheet" href="/sales-preview/client-1/css/style.css">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<img src="/img/a.png" srcset="/img/a.png 1x, /img/b.png 2x">', 'client-1'),
+  '<img src="/sales-preview/client-1/img/a.png" srcset="/sales-preview/client-1/img/a.png 1x, /sales-preview/client-1/img/b.png 2x">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('body{background:url("/img/bg.jpg")}', 'client-1'),
+  'body{background:url("/sales-preview/client-1/img/bg.jpg")}'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="//cdn.example.com/x.css">', 'client-1'),
+  '<a href="//cdn.example.com/x.css">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="https://example.com/x">', 'client-1'),
+  '<a href="https://example.com/x">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="relative/page.html">', 'client-1'),
+  '<a href="relative/page.html">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="/sales-preview/client-1/page.html">', 'client-1'),
+  '<a href="/sales-preview/client-1/page.html">'
 );
 
 console.log('laptop-preview tests passed');

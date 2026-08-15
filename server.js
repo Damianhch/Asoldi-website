@@ -37,6 +37,7 @@ import {
   isAllowedPreviewBundleUploadUrl,
   isPrivateMakerUrl,
   lanAsoldiOriginFromMakerUrl,
+  rewritePreviewAssetPaths,
   toPublicSalesPreviewUrl,
 } from './lib/laptop-preview.js';
 import {
@@ -11472,9 +11473,15 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
         const text = raw.toString('utf8');
         if (ext === '.html' || ext === '.htm' || /^\s*</.test(text)) {
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          res.send(injectPreviewBaseHref(text, client.id));
+          res.send(rewritePreviewAssetPaths(injectPreviewBaseHref(text, client.id), client.id));
           return true;
         }
+      }
+      if (ext === '.css') {
+        const raw = await fs.readFile(filePath);
+        res.setHeader('Content-Type', 'text/css; charset=utf-8');
+        res.send(rewritePreviewAssetPaths(raw.toString('utf8'), client.id));
+        return true;
       }
       res.sendFile(filePath);
       return true;
@@ -11540,6 +11547,34 @@ app.use(express.static(distPath, {
 }));
 
 app.get('*', (req, res) => {
+  // Preview pages sometimes reference root-absolute URLs that JavaScript
+  // builds at runtime (so the HTML rewrite cannot catch them). When such a
+  // request comes from a /sales-preview/ page, send it back into that
+  // client's snapshot instead of the asoldi.com SPA.
+  const referer = String(req.get('referer') || '');
+  const refererMatch = referer.match(/\/sales-preview\/([^/?#]+)\//);
+  if (refererMatch && !req.path.startsWith('/sales-preview/') && !req.path.startsWith('/api/')) {
+    let clientId = '';
+    try {
+      clientId = decodeURIComponent(refererMatch[1]);
+    } catch {
+      clientId = refererMatch[1];
+    }
+    const client = sales.getSalesClientById(clientId);
+    const importRoot = sanitizeText(client?.websiteImport?.importRoot);
+    if (importRoot) {
+      const root = path.resolve(importRoot);
+      const cleaned = req.path.replace(/^\/+/, '');
+      const requestedAbs = path.resolve(root, path.normalize(cleaned || 'index.html'));
+      const insideRoot = requestedAbs.startsWith(root);
+      const fileExists = insideRoot && existsSync(requestedAbs);
+      const isNavigation = !path.extname(cleaned);
+      if (fileExists || isNavigation) {
+        const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+        return res.redirect(302, `/sales-preview/${encodeURIComponent(clientId)}${req.path}${search}`);
+      }
+    }
+  }
   const indexPath = join(distPath, 'index.html');
   if (existsSync(indexPath)) res.sendFile(indexPath);
   else res.status(500).send('index.html not found');
