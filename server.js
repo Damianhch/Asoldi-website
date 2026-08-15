@@ -11129,7 +11129,7 @@ app.post(
     setPreviewBundleCorsHeaders(req, res);
     next();
   },
-  express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '80mb' }),
+  express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '300mb' }),
   salesAuth,
   async (req, res) => {
     const client = sales.getSalesClientById(req.params.id);
