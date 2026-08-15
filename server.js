@@ -11454,10 +11454,15 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   }
 
   const root = path.resolve(client.websiteImport.importRoot);
+  // Maker export ZIPs sometimes keep shared folders (assets/) beside the site
+  // folder instead of inside it, so also serve from the whole import dir.
+  const importBase = path.resolve(join(SALES_IMPORTS_ROOT, client.id));
+  const roots = [root];
+  if (root !== importBase && root.startsWith(importBase)) roots.push(importBase);
   const cleaned = sanitizeText(relativePath).replace(/^[/\\]+/, '');
   const normalized = path.normalize(cleaned || 'index.html');
   const requestedAbs = path.resolve(root, normalized);
-  if (!requestedAbs.startsWith(root)) {
+  if (!requestedAbs.startsWith(importBase) && !requestedAbs.startsWith(root)) {
     return res.status(403).send('Forbidden');
   }
 
@@ -11490,8 +11495,12 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
     }
   }
 
-  if (await sendIfFile(requestedAbs)) return;
-  if (!path.extname(normalized) && await sendIfFile(path.join(requestedAbs, 'index.html'))) return;
+  for (const candidateRoot of roots) {
+    const absolute = path.resolve(candidateRoot, normalized);
+    if (!absolute.startsWith(candidateRoot)) continue;
+    if (await sendIfFile(absolute)) return;
+    if (!path.extname(normalized) && (await sendIfFile(path.join(absolute, 'index.html')))) return;
+  }
   if (!path.extname(normalized) && await sendIfFile(path.join(root, 'index.html'))) return;
   return res.status(404).send('Preview file not found');
 }
@@ -11563,11 +11572,14 @@ app.get('*', (req, res) => {
     const client = sales.getSalesClientById(clientId);
     const importRoot = sanitizeText(client?.websiteImport?.importRoot);
     if (importRoot) {
-      const root = path.resolve(importRoot);
       const cleaned = req.path.replace(/^\/+/, '');
-      const requestedAbs = path.resolve(root, path.normalize(cleaned || 'index.html'));
-      const insideRoot = requestedAbs.startsWith(root);
-      const fileExists = insideRoot && existsSync(requestedAbs);
+      const normalized = path.normalize(cleaned || 'index.html');
+      const fileExists = [path.resolve(importRoot), path.resolve(join(SALES_IMPORTS_ROOT, clientId))].some(
+        (root) => {
+          const requestedAbs = path.resolve(root, normalized);
+          return requestedAbs.startsWith(root) && existsSync(requestedAbs);
+        }
+      );
       const isNavigation = !path.extname(cleaned);
       if (fileExists || isNavigation) {
         const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
