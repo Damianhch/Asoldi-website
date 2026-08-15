@@ -30,6 +30,10 @@ services:
       WEBSITE_MAKER_LOCAL_URL: http://192.168.68.92:3000
       WEBSITE_MAKER_BASE_URL: http://192.168.68.92:3000
       CLIENT_SOCIAL_DEV_MODE: "1"
+      # Auto-publish every linked Maker site to https://asoldi.com/sales-preview
+      # every few minutes (browsers cannot copy HTTP LAN -> HTTPS themselves).
+      # Uses PROD_ADMIN_USERNAME/PROD_ADMIN_PASSWORD from .env when set.
+      LAN_PREVIEW_AUTOPUBLISH: "1"
     volumes:
       - .:/app
       - asoldi_node_modules:/app/node_modules

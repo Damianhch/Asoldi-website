@@ -383,66 +383,6 @@ type OfficePublisher = {
   close: () => void;
 };
 
-function buildOfficePublisherHtml() {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title>
-<!-- asoldi-helper-v3 -->
-<style>body{margin:0;font-family:sans-serif;background:#1a1a1a;color:#eee;padding:24px}#s{color:#f5c27a;white-space:pre-wrap}.ok{color:#86efac}.err{color:#fca5a5}</style>
-</head><body>
-<h1 style="font-size:16px">Publishing public preview</h1>
-<p style="color:#bbb;font-size:13px">Copying the Website Maker site onto asoldi.com/sales-preview. Leave this window open.</p>
-<p id="s">Waiting for Sales…</p>
-<script>
-(function(){
-  var busy=false;
-  function set(t,c){var el=document.getElementById('s'); el.textContent=t; el.className=c||'';}
-  function reply(source,origin,msg){
-    try{if(source&&source.postMessage)source.postMessage(msg,origin||'*');}catch(e){}
-    try{if(window.opener)window.opener.postMessage(msg,'*');}catch(e){}
-  }
-  if(window.opener) window.opener.postMessage({type:'asoldi-bridge-ready'},'*');
-  window.addEventListener('message', async function(event){
-    var payload=event.data;
-    if(!payload||payload.type!=='asoldi-publish-preview') return;
-    if(busy) return;
-    var jobs=payload.jobs||[];
-    if(!jobs.length){
-      set('No preview jobs received.','err');
-      reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:false,error:'No preview jobs received.'});
-      return;
-    }
-    busy=true;
-    reply(event.source,event.origin,{type:'asoldi-bridge-accepted'});
-    var results=[];
-    for(var i=0;i<jobs.length;i++){
-      var job=jobs[i];
-      try{
-        set('Exporting '+(i+1)+'/'+jobs.length+' from Website Maker…');
-        var zipRes=await fetch(job.exportUrl,{mode:'cors',credentials:'omit'});
-        if(!zipRes.ok) throw new Error('Maker export failed ('+zipRes.status+')');
-        var zip=await zipRes.blob();
-        if(!zip||!zip.size) throw new Error('Maker export was empty.');
-        var headers=Object.assign({Authorization:'Bearer '+job.token,'Content-Type':'application/zip'}, job.headers||{});
-        set('Uploading '+(i+1)+'/'+jobs.length+' to asoldi.com…');
-        var up=await fetch(job.uploadUrl,{method:'POST',mode:'cors',headers:headers,body:zip});
-        var data=await up.json().catch(function(){return {};});
-        if(!up.ok) throw new Error(data.message||('asoldi.com rejected the preview ('+up.status+')'));
-        results.push({ok:true,clientId:job.clientId,publicPreviewUrl:data.publicPreviewUrl||''});
-      }catch(err){
-        var message=(err&&err.message)?err.message:String(err);
-        if(/failed to fetch|networkerror|load failed/i.test(message)){
-          message='Could not reach Website Maker at http://192.168.68.92:3000. Stay on home Wi-Fi with Maker running.';
-        }
-        results.push({ok:false,clientId:job.clientId,error:message});
-      }
-    }
-    var failed=results.filter(function(row){return !row.ok;});
-    set(failed.length?('Failed: '+(failed[0].error||'Could not publish')):'Published to asoldi.com/sales-preview. You can close this window.', failed.length?'err':'ok');
-    reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:failed.length===0,results:results,error:(failed[0]&&failed[0].error)||''});
-  });
-})();
-</script></body></html>`;
-}
-
 function shouldOpenOfficePublisher(makerBase: string) {
   if (IS_LAN_SALES_HOST) return false;
   const origin =
@@ -450,24 +390,28 @@ function shouldOpenOfficePublisher(makerBase: string) {
   return isPrivateMakerHost(origin);
 }
 
-function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
-  const html = buildOfficePublisherHtml();
-  const iframe = document.createElement('iframe');
-  iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
-  iframe.setAttribute(
-    'csp',
-    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src *; style-src * 'unsafe-inline'"
+// asoldi.com is HTTPS; browsers block it from fetching office HTTP Maker
+// directly (mixed content). The office Asoldi server (port 3200) does the
+// copying instead: this opens its bridge page, which exports from Maker and
+// uploads to asoldi.com server-side. The office server also auto-publishes
+// every few minutes, so this popup is only for publishing right now.
+function startOfficeMakerPublisher(makerBase: string): OfficePublisher {
+  const makerOrigin =
+    healStaleLocalMakerBase(makerBase) || normalizeHttpBaseUrl(makerBase) || LAN_MAKER_URL;
+  const lanOrigin = lanAsoldiOriginFromMaker(makerOrigin);
+  const popup = window.open(
+    `${lanOrigin}/preview-bridge.html`,
+    'asoldi-preview-bridge',
+    'width=520,height=460'
   );
-  iframe.srcdoc = html;
-  iframe.title = 'Publishing to asoldi.com';
-  iframe.style.cssText =
-    'position:fixed;right:16px;bottom:16px;width:380px;height:260px;border:1px solid #444;border-radius:12px;z-index:99999;background:#1a1a1a;box-shadow:0 12px 40px rgba(0,0,0,.45)';
-  document.body.appendChild(iframe);
+  if (!popup) {
+    throw new Error('Popup blocked. Allow popups for asoldi.com, then try again.');
+  }
 
   return {
     close() {
       try {
-        iframe.remove();
+        popup.close();
       } catch {
         // ignore
       }
@@ -488,29 +432,36 @@ function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
         };
         const sendJobs = () => {
           try {
-            iframe.contentWindow?.postMessage({ type: 'asoldi-publish-preview', jobs }, '*');
+            popup.postMessage({ type: 'asoldi-publish-preview', jobs }, lanOrigin);
           } catch {
             // ignore
           }
         };
         const acceptTimer = window.setTimeout(() => {
           if (accepted) return;
-          finish(() =>
+          finish(() => {
+            try {
+              popup.close();
+            } catch {
+              // ignore
+            }
             reject(
               new Error(
-                'The publish helper did not start. Allow popups for asoldi.com and click Backfill again.'
+                `Could not reach the office Asoldi server (${lanOrigin}). No problem: that server also publishes previews to asoldi.com automatically every few minutes while it is running. If nothing appears, start Docker Asoldi on the office PC (docker compose -f docker-compose.lan.yml up -d).`
               )
-            )
-          );
-        }, 12000);
+            );
+          });
+        }, 25_000);
         const doneTimer = window.setTimeout(() => {
           finish(() => reject(new Error('Timed out publishing to asoldi.com/sales-preview.')));
-        }, 180_000);
+        }, 600_000);
         const onMessage = (event: MessageEvent) => {
-          if (event.origin !== 'null' && event.origin !== window.location.origin) return;
+          if (event.origin !== lanOrigin) return;
           const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
           if (!payload) return;
           if (payload.type === 'asoldi-bridge-ready') {
+            accepted = true;
+            window.clearTimeout(acceptTimer);
             sendJobs();
             return;
           }
@@ -521,16 +472,13 @@ function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
             return;
           }
           if (payload.type === 'asoldi-bridge-done') {
-            if (payload.ok) {
-              try {
-                iframe.remove();
-              } catch {
-                // ignore
-              }
-              finish(() => resolve());
-            } else {
-              finish(() => reject(new Error(String(payload.error || 'Publish failed.'))));
+            try {
+              popup.close();
+            } catch {
+              // ignore
             }
+            if (payload.ok) finish(() => resolve());
+            else finish(() => reject(new Error(String(payload.error || 'Publish failed.'))));
           }
         };
         window.addEventListener('message', onMessage);
@@ -1315,7 +1263,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       if (data?.browserExportHandoff) {
         if (!publisher) {
           throw new Error(
-            'asoldi.com cannot reach office Website Maker. Stay on home Wi-Fi, allow popups, and click Sync again.'
+            'asoldi.com cannot fetch office Website Maker from the browser. The office Asoldi server publishes previews automatically every few minutes — or click Sync on home Wi-Fi with Docker Asoldi (port 3200) running.'
           );
         }
         setNotice('Publishing preview from office Website Maker onto asoldi.com/sales-preview…');
@@ -1413,7 +1361,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             'X-Site-Folder': entry.businessName || 'site',
           },
         }));
-        setNotice(`Publishing ${list.length} public preview(s) from office Website Maker. Allow the helper window and stay on home Wi-Fi…`);
+        setNotice(`Publishing ${list.length} public preview(s) through the office Asoldi server…`);
         await publisher.publish(jobs);
         publisher = null;
       } else {
@@ -2093,9 +2041,10 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
-              then New tunnel URL, then Create run. Backfill / Sync opens a small helper window and copies
-              the Maker site onto asoldi.com/sales-preview. Allow popups. It does not download ZIP files and
-              does not start a Cloudflare tunnel.
+              then New tunnel URL, then Create run. The office Asoldi server (Docker, port 3200) publishes
+              every Maker site to asoldi.com/sales-preview automatically every few minutes. Backfill / Sync
+              asks it to publish right now (opens its bridge popup — allow popups). No ZIP downloads, no
+              Cloudflare tunnel.
             </p>
             <div className="mt-3">
               <button
@@ -2103,7 +2052,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 onClick={() => void backfillPublicPreviews()}
                 disabled={backfillingPreviews || isSsuBracket}
                 className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm hover:bg-emerald-600 disabled:opacity-50"
-                title="Copy linked Maker sites onto asoldi.com/sales-preview. Allow popups. Stay on home Wi-Fi. No ZIP download."
+                title="Ask the office Asoldi server to publish all linked Maker sites onto asoldi.com/sales-preview right now. Allow popups."
               >
                 {backfillingPreviews ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                 Backfill public previews
@@ -2698,7 +2647,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </button>
                       </div>
                       <p className="text-[11px] text-gray-500">
-                        Sync copies the current Maker site to asoldi.com/sales-preview (allow the helper popup). That is the temporary public URL Sales, checkout, and the meeting laptop all use. If this client was created before that flow, use Backfill public previews on home Wi-Fi. Re-sync after more custom changes.
+                        Sync copies the current Maker site to asoldi.com/sales-preview. That is the temporary public URL Sales, checkout, and the meeting laptop all use. The office Asoldi server also republishes every linked site automatically every few minutes, so Maker changes appear on their own shortly after.
                       </p>
                     </div>
 

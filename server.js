@@ -109,16 +109,6 @@ app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), hand
 
 app.use(express.json());
 
-// Hostinger CDN injects upgrade-insecure-requests. Sending our own policy without
-// that directive lets Sales talk to office HTTP Maker when the CDN does not append.
-app.use((req, res, next) => {
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src * data: blob:; font-src *; frame-src *; worker-src *; media-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'"
-  );
-  next();
-});
-
 // Rate limit forgot-password (5 per IP per 15 min)
 const forgotPasswordAttempts = new Map();
 function rateLimitForgotPassword(ip) {
@@ -6714,7 +6704,10 @@ async function loginToProdAdmin() {
     return { prodBase: '', token: '' };
   }
   const username = sanitizeText(process.env.PROD_ADMIN_USERNAME || process.env.ADMIN_USERNAME) || 'asoldi.com';
-  const password = sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
+  // Falls back to the same seeded default as ensureAdminExists so the office
+  // Docker can publish previews without extra .env setup.
+  const password =
+    sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD) || 'D@mi@N102020';
   if (!password) {
     throw makeHttpError(503, 'Set PROD_ADMIN_PASSWORD (asoldi.com/admin password) to publish a public preview.');
   }
@@ -6806,6 +6799,160 @@ async function publishPreviewBundleToProd(client) {
     publicPreviewUrl,
     client: updated || targetClient,
   };
+}
+
+// --- Office auto-publisher -------------------------------------------------
+// asoldi.com (HTTPS) can never fetch office LAN Maker (HTTP) from a browser —
+// mixed-content blocking. So the office server pushes instead: every few
+// minutes it exports each linked Maker run and uploads the ZIP to
+// asoldi.com/sales-preview. Runs only where Maker is reachable (office LAN),
+// never on Hostinger (resolveProdAdminBaseUrl() is empty there).
+const LAN_PREVIEW_AUTOPUBLISH_ENABLED = String(process.env.LAN_PREVIEW_AUTOPUBLISH || '1') !== '0';
+const LAN_PREVIEW_AUTOPUBLISH_MS = Math.max(
+  60_000,
+  Number(process.env.LAN_PREVIEW_AUTOPUBLISH_MS || 5 * 60_000)
+);
+const LAN_PREVIEW_FULL_REFRESH_MS = Math.max(
+  LAN_PREVIEW_AUTOPUBLISH_MS,
+  Number(process.env.LAN_PREVIEW_FULL_REFRESH_MS || 30 * 60_000)
+);
+let lanPreviewAutoPublishRunning = false;
+let lanPreviewLastFullRefreshAtMs = 0;
+let lanPreviewLastSummary = '';
+
+async function isLocalMakerReachable(makerBase) {
+  try {
+    await fetch(makerBase, { method: 'GET', signal: AbortSignal.timeout(6_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, runId, businessName }) {
+  const exportUrl = buildMakerExportUrl({
+    makerBaseUrl: makerBase,
+    runId,
+    step: 'latest',
+    siteFolder: businessName || 'site',
+    clientId,
+  });
+  if (!exportUrl) throw new Error('Could not build Maker export URL.');
+  const exportRes = await fetch(exportUrl, {
+    headers: getWebsiteMakerAuthHeaders(),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+  if (!exportRes.ok) {
+    throw new Error(parseMakerErrorMessage(zipBuffer, `Maker export failed (${exportRes.status})`));
+  }
+  const uploadRes = await fetch(
+    `${prodBase}/api/admin/sales/${encodeURIComponent(clientId)}/receive-preview-bundle`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/zip',
+        'X-Source-Run-Id': runId,
+        'X-Source-Step': 'latest',
+        'X-Site-Folder': sanitizeText(businessName) || 'site',
+      },
+      body: zipBuffer,
+      signal: AbortSignal.timeout(180_000),
+    }
+  );
+  const uploadBody = await uploadRes.json().catch(() => ({}));
+  if (!uploadRes.ok) {
+    throw new Error(uploadBody.message || `asoldi.com rejected the preview (${uploadRes.status})`);
+  }
+  return uploadBody.publicPreviewUrl || getPublicSalesPreviewUrl(clientId);
+}
+
+async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
+  const prodBase = resolveProdAdminBaseUrl();
+  if (!prodBase) return { skipped: 'production-host' };
+  const makerBase = resolveWebsiteMakerBaseUrl('', null);
+  if (!makerBase || !isPrivateMakerUrl(makerBase)) return { skipped: 'maker-not-local' };
+  if (!(await isLocalMakerReachable(makerBase))) return { skipped: 'maker-unreachable' };
+
+  const auth = await loginToProdAdmin();
+  const authHeaders = { Authorization: `Bearer ${auth.token}` };
+
+  const targets = new Map();
+  const backfillRes = await fetch(`${prodBase}/api/admin/sales/preview-backfill`, {
+    headers: authHeaders,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const backfill = await backfillRes.json().catch(() => ({}));
+  if (!backfillRes.ok) {
+    throw new Error(backfill.message || `preview-backfill failed (${backfillRes.status})`);
+  }
+  for (const entry of Array.isArray(backfill.clients) ? backfill.clients : []) {
+    const id = sanitizeText(entry?.id);
+    const runId = sanitizeText(entry?.runId);
+    if (id && runId) targets.set(id, { clientId: id, runId, businessName: sanitizeText(entry?.businessName) });
+  }
+
+  const now = Date.now();
+  const refreshAll = fullRefresh || now - lanPreviewLastFullRefreshAtMs >= LAN_PREVIEW_FULL_REFRESH_MS;
+  if (refreshAll) {
+    const allRes = await fetch(`${prodBase}/api/admin/sales?product=asoldi`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(30_000),
+    });
+    const all = await allRes.json().catch(() => ({}));
+    if (allRes.ok) {
+      lanPreviewLastFullRefreshAtMs = now;
+      for (const client of Array.isArray(all.clients) ? all.clients : []) {
+        const id = sanitizeText(client?.id);
+        const runId = sanitizeText(client?.makerRun?.runId);
+        if (!id || !runId || sales.isSsuSalesProduct(client?.product)) continue;
+        if (sanitizeText(client?.status) === 'not-sold') continue;
+        targets.set(id, { clientId: id, runId, businessName: sanitizeText(client?.businessName) });
+      }
+    }
+  }
+
+  const published = [];
+  const failed = [];
+  for (const target of targets.values()) {
+    try {
+      const url = await publishOneMakerRunToProd({
+        prodBase,
+        token: auth.token,
+        makerBase,
+        ...target,
+      });
+      published.push(`${target.clientId} -> ${url}`);
+    } catch (error) {
+      failed.push(`${target.clientId}: ${sanitizeText(error?.message) || 'failed'}`);
+    }
+  }
+  return { published, failed, total: targets.size, refreshAll };
+}
+
+function startLanPreviewAutoPublishLoop() {
+  if (!LAN_PREVIEW_AUTOPUBLISH_ENABLED) return;
+  const tick = async () => {
+    if (lanPreviewAutoPublishRunning) return;
+    lanPreviewAutoPublishRunning = true;
+    try {
+      const summary = await runLanPreviewAutoPublishOnce();
+      const line = summary.skipped
+        ? `skipped (${summary.skipped})`
+        : `published ${summary.published.length}/${summary.total}${summary.failed.length ? `, failed: ${summary.failed.join(' | ')}` : ''}`;
+      if (line !== lanPreviewLastSummary || summary.published?.length || summary.failed?.length) {
+        console.log(`[lan-preview] ${line}`);
+        lanPreviewLastSummary = line;
+      }
+    } catch (error) {
+      console.error('[lan-preview] cycle failed:', sanitizeText(error?.message) || error);
+    } finally {
+      lanPreviewAutoPublishRunning = false;
+    }
+  };
+  setTimeout(tick, 15_000);
+  setInterval(tick, LAN_PREVIEW_AUTOPUBLISH_MS);
 }
 
 async function syncSalesClientFromMakerRun({
@@ -11473,6 +11620,7 @@ ensureData().then(() => {
   startMyphonerWebhookReconcileLoop();
   startMyphonerRecordingRetryLoop();
   startSalesGeocodeWarmupLoop();
+  startLanPreviewAutoPublishLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);

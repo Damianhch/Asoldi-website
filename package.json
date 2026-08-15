@@ -15,6 +15,7 @@
     "lint": "tsc --noEmit",
     "test": "node scripts/test-laptop-preview.mjs",
     "test:laptop-preview": "node scripts/test-laptop-preview.mjs",
+    "publish:previews": "node scripts/publish-previews-from-office.mjs",
     "sync:prod-users": "node scripts/sync-prod-users.mjs",
     "sync:prod-runtime": "node scripts/sync-prod-runtime.mjs"
   },
