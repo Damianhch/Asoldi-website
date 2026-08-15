@@ -6829,6 +6829,43 @@ async function isLocalMakerReachable(makerBase) {
   }
 }
 
+function isDockerInternalHost(value = '') {
+  try {
+    return /\.docker\.internal$/i.test(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Docker-for-Windows containers usually cannot reach the host's own LAN IP
+// (hairpin NAT), so probe several ways to reach Website Maker and use the
+// first one that answers.
+async function resolveReachableMakerBase() {
+  const candidates = [
+    sanitizeText(process.env.LAN_PREVIEW_MAKER_URL),
+    resolveWebsiteMakerBaseUrl('', null),
+    sanitizeText(process.env.WEBSITE_MAKER_LOCAL_URL),
+    'http://host.docker.internal:3000',
+    'http://gateway.docker.internal:3000',
+    'http://172.17.0.1:3000',
+    'http://localhost:3000',
+  ];
+  const tried = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const origin = normalizeHttpBaseUrl(candidate);
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    // Never let the auto-publisher "export" from a public site by accident.
+    if (!isPrivateMakerUrl(origin) && !isDockerInternalHost(origin)) continue;
+    tried.push(origin);
+    if (await isLocalMakerReachable(origin)) {
+      return { makerBase: origin, tried };
+    }
+  }
+  return { makerBase: '', tried };
+}
+
 async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, runId, businessName }) {
   const exportUrl = buildMakerExportUrl({
     makerBaseUrl: makerBase,
@@ -6871,9 +6908,8 @@ async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, 
 async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
   const prodBase = resolveProdAdminBaseUrl();
   if (!prodBase) return { skipped: 'production-host' };
-  const makerBase = resolveWebsiteMakerBaseUrl('', null);
-  if (!makerBase || !isPrivateMakerUrl(makerBase)) return { skipped: 'maker-not-local' };
-  if (!(await isLocalMakerReachable(makerBase))) return { skipped: 'maker-unreachable' };
+  const { makerBase, tried } = await resolveReachableMakerBase();
+  if (!makerBase) return { skipped: `maker-unreachable: tried ${tried.join(', ')}` };
 
   const auth = await loginToProdAdmin();
   const authHeaders = { Authorization: `Bearer ${auth.token}` };
