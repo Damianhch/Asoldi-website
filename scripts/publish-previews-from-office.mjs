@@ -87,6 +87,7 @@ async function publishOne(token, target) {
     step: 'latest',
     siteFolder: target.businessName,
     clientId: target.id,
+    persist: true,
   });
   const exportRes = await fetch(exportUrl, { headers: makerHeaders(), signal: AbortSignal.timeout(180_000) });
   const zip = Buffer.from(await exportRes.arrayBuffer());

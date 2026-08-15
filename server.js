@@ -6874,6 +6874,9 @@ async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, 
     step: 'latest',
     siteFolder: businessName || 'site',
     clientId,
+    // persist=1 asks Maker for the full static bundle (assets included),
+    // matching the manual "download Hostinger ZIP" flow.
+    persist: true,
   });
   if (!exportUrl) throw new Error('Could not build Maker export URL.');
   const exportRes = await fetch(exportUrl, {
@@ -9868,6 +9871,36 @@ app.get('/api/admin/sales/preview-backfill', salesAuth, (req, res) => {
     ok: true,
     count: clients.length,
     clients,
+  });
+});
+
+// Debug: list the files stored for a client's public preview snapshot.
+app.get('/api/admin/sales/:id/preview-files', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const base = join(SALES_IMPORTS_ROOT, client.id);
+  const files = [];
+  async function walk(dir, prefix) {
+    if (files.length >= 800) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= 800) return;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(join(dir, entry.name), rel);
+      } else {
+        const stats = await fs.stat(join(dir, entry.name)).catch(() => null);
+        files.push({ path: rel, size: stats?.size || 0 });
+      }
+    }
+  }
+  await walk(base, '');
+  res.json({
+    ok: true,
+    importRoot: sanitizeText(client.websiteImport?.importRoot),
+    count: files.length,
+    files,
   });
 });
 
