@@ -29,9 +29,17 @@ export function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees';
+export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social';
 
-export type Features = { users?: boolean; analytics?: boolean; ecommerce?: boolean };
+export type Features = {
+  users?: boolean;
+  analytics?: boolean;
+  ecommerce?: boolean;
+  blog?: boolean;
+  socialSync?: boolean;
+};
+export type WebsitePlanId = 'tier-1-standard' | 'tier-2-seo' | 'tier-3-ecommerce' | 'custom';
+export type EcommerceCatalogType = 'menu' | 'tiers' | 'normal';
 export type UserRole = 'employee' | 'client' | 'sales' | 'none';
 export type EmployeeProduct = 'asoldi' | 'ssu';
 export type EmployeeRoleOption = 'none' | 'client' | 'sales' | 'employee-asoldi' | 'employee-ssu';
@@ -88,12 +96,23 @@ export function fromEmployeeRoleOption(option: EmployeeRoleOption): {
       return { role: 'none' };
   }
 }
+export type SiteCmsMeta = {
+  githubRepo?: string;
+  lastSeenAt?: string;
+  packageVersion?: string;
+  adminUrl?: string;
+  desiredPackageVersion?: string;
+};
+
 export type Site = {
   id: string;
   site_key: string;
   domain: string;
   name: string;
   features: Features;
+  websitePlan?: WebsitePlanId;
+  ecommerceCatalogType?: EcommerceCatalogType | null;
+  cms?: SiteCmsMeta;
   createdAt: string;
 };
 
@@ -212,7 +231,40 @@ export type SalesClient = {
   updatedAt: string;
 };
 
-export const DEFAULT_FEATURES: Features = { users: true, analytics: false, ecommerce: false };
+export const DEFAULT_FEATURES: Features = {
+  users: true,
+  analytics: false,
+  ecommerce: false,
+  blog: false,
+  socialSync: false,
+};
+
+export const WEBSITE_PLAN_OPTIONS: { id: WebsitePlanId; name: string }[] = [
+  { id: 'tier-1-standard', name: 'Tier 1: Standard' },
+  { id: 'tier-2-seo', name: 'Tier 2: SEO' },
+  { id: 'tier-3-ecommerce', name: 'Tier 3: Nettbutikk' },
+  { id: 'custom', name: 'Custom' },
+];
+
+export const CATALOG_TYPE_OPTIONS: { id: EcommerceCatalogType; name: string }[] = [
+  { id: 'menu', name: 'Menu (groups, allergens)' },
+  { id: 'tiers', name: 'Tiers (plans, bullets, CTA)' },
+  { id: 'normal', name: 'Normal products (categories, subtitle)' },
+];
+
+export function featuresFromPlan(planId: WebsitePlanId): Features {
+  switch (planId) {
+    case 'tier-2-seo':
+      return { users: true, analytics: false, ecommerce: false, blog: true, socialSync: true };
+    case 'tier-3-ecommerce':
+      return { users: true, analytics: true, ecommerce: true, blog: true, socialSync: true };
+    case 'custom':
+      return { ...DEFAULT_FEATURES };
+    case 'tier-1-standard':
+    default:
+      return { ...DEFAULT_FEATURES };
+  }
+}
 
 export const SITE_PAGES = [
   { path: '/', label: 'Home' },

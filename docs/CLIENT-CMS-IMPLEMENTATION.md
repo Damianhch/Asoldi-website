@@ -12,12 +12,12 @@ mongsushi.no (Hostinger)
 └── /admin → Client CMS (same codebase you copy per client)
               ├── Reads env: CMS_HUB_URL, CMS_SITE_KEY (or CMS_DOMAIN)
               ├── On load: GET hub → “features for this site?”
-              └── Shows only: Analytics, Ecommerce, Users (whatever hub returns)
+              └── Shows only: Analytics, Ecommerce, Blog, Social sync, Users (whatever hub returns)
 
 hub.asoldi.com (one deployment – your super-admin)
-├── You log in → list of sites, turn features on/off per site
-└── API: GET /api/site-config?domain=mongsushi.no (or by site_key)
-         → { ecommerce: true, analytics: true, users: true }
+├── You log in → list of sites, website plan, catalog type, turn features on/off per site
+└── API: GET /api/hub/site-config?domain=mongsushi.no (or by site_key)
+         → { features, ecommerceCatalogType, websitePlan, desiredCmsVersion, name, id }
 ```
 
 - **Client CMS** only loads when someone visits **domain.com/admin**. Rest of the site is unchanged. No slowdown.
@@ -46,8 +46,9 @@ hub.asoldi.com (one deployment – your super-admin)
 
 **Step 2 – Hub (minimal)**  
 - Small app (e.g. Express) or even a static JSON + serverless function.  
-- Stores: `sites[]` with `domain`, `site_key`, `features: { ecommerce, analytics, users }`.  
-- API: `GET /api/site-config?domain=mongsushi.no` or `?site_key=xxx` → returns features.  
+- Stores: `sites[]` with `domain`, `site_key`, `websitePlan`, `ecommerceCatalogType`, `features: { ecommerce, analytics, users, blog, socialSync }`.  
+- API: `GET /api/hub/site-config?domain=mongsushi.no` or `?site_key=xxx` → returns features, catalog type, and plan.  
+- `POST /api/hub/heartbeat` records client CMS `packageVersion` for fleet updates.  
 - Optional: simple UI for you to add a site and toggle features (or edit JSON/file at first).  
 - Deploy once (e.g. hub.asoldi.com or asoldi.com/superadmin).
 
@@ -105,7 +106,8 @@ hub.asoldi.com (one deployment – your super-admin)
 
 ## Done in this repo
 
-- **Hub API** – `GET /api/hub/site-config?site_key=xxx` or `?domain=xxx` returns features. Sites stored in `data/sites.json` (see `data/hub.js`).
-- **Admin (hub + client CMS)** – **/admin**: same login for everything. Sidebar: **Manage clients** (hub sites, site keys), **Users** (with role: employee / client / none), Analytics, Ecommerce. When **Users** is enabled, admins can create users and set each user’s role (employee, client, none). New users default to **none**; only **employee** can access the Ansatt page. This is the main site’s CMS (Asoldi); it is different from client CMS in that it also has “Manage clients” for the hub.
-- **Client CMS** – On this site, **/admin** fetches `GET /api/cms/config` (lookup by `CMS_SITE_KEY` or by Host). Sidebar shows only Users / Analytics / Ecommerce according to hub. When **Users** is enabled, the CMS must support **changing user role** (employee, client, none) as part of that feature—same three roles as above. This site is a client of itself: add it in the hub with domain `asoldi.com` (or current host); optionally set `CMS_SITE_KEY` in env.
-- **Installable** – **@damianhch/client-cms** (or **@asoldi/client-cms**) npm package (from [website-cms](https://github.com/Damianhch/website-cms)): install in any project, mount routes at `/api/cms`, add route for `/admin` with `ClientCMS`. Set `CMS_HUB_URL` and `CMS_SITE_KEY` on the client host. When the **Users** feature is activated for that site in the hub, the client CMS must expose **user role** management (employee, client, none) so admins can assign roles; default for new users is **none**.
+- **Hub API** – `GET /api/hub/site-config?site_key=xxx` or `?domain=xxx` returns `{ features, ecommerceCatalogType, websitePlan, desiredCmsVersion, name, id, domain }`. Sites stored in persistent `sites.json` (see `data/hub.js`). Website plan sets default flags: Tier 1 users; Tier 2 + blog + socialSync; Tier 3 + ecommerce + analytics. Ecommerce catalog type is `menu` | `tiers` | `normal`.
+- **Heartbeat** – `POST /api/hub/heartbeat` with `site_key` + `packageVersion` + `adminUrl` (no admin JWT). Super-admin shows last-seen CMS version and optional GitHub repo for later fleet bumps.
+- **Admin (hub + client CMS)** – **/admin** and **/superadmin**: same login. Sidebar: **Manage clients** (hub sites, site keys, plan, catalog type, feature badges), **Users**, Analytics, Ecommerce, Blog, Social sync (placeholders except client ecommerce which lives on each client domain). When **Users** is enabled, admins can create users and set each user’s role (employee, client, none). New users default to **none**; only **employee** can access the Ansatt page.
+- **Client CMS** – On this site, **/admin** fetches `GET /api/cms/config` (lookup by `CMS_SITE_KEY` or by Host). Sidebar shows only modules according to hub. This site is a client of itself: add it in the hub with domain `asoldi.com` (or current host); optionally set `CMS_SITE_KEY` in env.
+- **Installable** – **@damianhch/client-cms** npm package (from [website-cms](https://github.com/Damianhch/website-cms)): install in any project, mount routes at `/api/cms`, add route for `/admin` with `ClientCMS`. Set `CMS_HUB_URL` and `CMS_SITE_KEY` on the client host. Public catalog: `GET /api/cms/catalog`.

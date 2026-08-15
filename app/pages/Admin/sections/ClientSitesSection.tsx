@@ -1,6 +1,7 @@
 import React from 'react';
 import { Edit2, Globe, Key, Plus, Trash2 } from 'lucide-react';
-import type { Features, Site } from '../shared';
+import type { Site } from '../shared';
+import { WEBSITE_PLAN_OPTIONS } from '../shared';
 
 type Props = {
   sites: Site[];
@@ -13,13 +14,31 @@ type Props = {
   hideHeader?: boolean;
 };
 
+function planLabel(planId?: string) {
+  return WEBSITE_PLAN_OPTIONS.find((plan) => plan.id === planId)?.name || 'Tier 1: Standard';
+}
+
+function catalogLabel(type?: string | null) {
+  if (type === 'menu') return 'Menu';
+  if (type === 'tiers') return 'Tiers';
+  if (type === 'normal') return 'Products';
+  return '';
+}
+
+function formatSeen(value?: string) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+}
+
 export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onDelete, onCopyKey, hideHeader = false }: Props) {
   return (
     <div className="max-w-4xl">
       {!hideHeader && (
         <>
           <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
-          <p className="text-gray-400 text-sm mb-6">Client sites in the hub. Add a site to get a site key for client CMS.</p>
+          <p className="text-gray-400 text-sm mb-6">Client sites in the hub. Add a site to get a site key for client CMS. Plan and ecommerce catalog type control what the client sees at domain.com/admin.</p>
         </>
       )}
       <div className="flex items-center justify-between mb-6">
@@ -41,17 +60,34 @@ export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onD
               <p className="text-gray-400 text-sm flex items-center gap-1">
                 <Globe size={14} /> {site.domain || '—'}
               </p>
+              <p className="text-gray-500 text-xs mt-1">{planLabel(site.websitePlan)}</p>
               <p className="text-gray-500 text-xs mt-1 flex items-center gap-1">
                 <Key size={12} /> <code className="bg-black/30 px-1 rounded">{site.site_key}</code>
                 <button type="button" onClick={() => onCopyKey(site.site_key)} className="text-[#FF5B00] hover:underline ml-1">
                   {copyKey === site.site_key ? 'Copied!' : 'Copy'}
                 </button>
               </p>
+              {(site.cms?.packageVersion || site.cms?.lastSeenAt || site.cms?.githubRepo) && (
+                <p className="text-gray-500 text-xs mt-1">
+                  {site.cms?.packageVersion ? `CMS ${site.cms.packageVersion}` : 'CMS version unknown'}
+                  {site.cms?.lastSeenAt ? ` · seen ${formatSeen(site.cms.lastSeenAt)}` : ' · not seen yet'}
+                  {site.cms?.githubRepo ? ` · ${site.cms.githubRepo}` : ''}
+                </p>
+              )}
+              {site.cms?.adminUrl && (
+                <a href={site.cms.adminUrl} target="_blank" rel="noreferrer" className="text-xs text-[#FF5B00] hover:underline">
+                  Open client admin
+                </a>
+              )}
             </div>
-            <div className="flex items-center gap-2 text-xs">
+            <div className="flex items-center gap-2 text-xs flex-wrap justify-end max-w-[220px]">
               {site.features?.users && <FeatureBadge label="Users" color="green" />}
               {site.features?.analytics && <FeatureBadge label="Analytics" color="blue" />}
-              {site.features?.ecommerce && <FeatureBadge label="Ecommerce" color="purple" />}
+              {site.features?.ecommerce && (
+                <FeatureBadge label={site.ecommerceCatalogType ? `Ecommerce · ${catalogLabel(site.ecommerceCatalogType)}` : 'Ecommerce'} color="purple" />
+              )}
+              {site.features?.blog && <FeatureBadge label="Blog" color="orange" />}
+              {site.features?.socialSync && <FeatureBadge label="Social" color="teal" />}
             </div>
             <div className="flex items-center gap-2">
               <button type="button" onClick={() => onEdit(site)} className="p-2 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white">
@@ -72,11 +108,13 @@ export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onD
   );
 }
 
-function FeatureBadge({ label, color }: { label: string; color: 'green' | 'blue' | 'purple' }) {
+function FeatureBadge({ label, color }: { label: string; color: 'green' | 'blue' | 'purple' | 'orange' | 'teal' }) {
   const classes = {
     green: 'bg-green-900/50 text-green-300',
     blue: 'bg-blue-900/50 text-blue-300',
     purple: 'bg-purple-900/50 text-purple-300',
+    orange: 'bg-orange-900/50 text-orange-300',
+    teal: 'bg-teal-900/50 text-teal-300',
   };
-  return <span className={`px-2 py-0.5 rounded ${classes[color]}`}>{label}</span>;
+  return <span className={`px-2 py-1 rounded ${classes[color]}`}>{label}</span>;
 }

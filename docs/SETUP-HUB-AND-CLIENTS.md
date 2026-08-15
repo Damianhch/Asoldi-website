@@ -17,7 +17,10 @@
 4. Click **Add site**:
    - **Name:** e.g. Asoldi (or Mong Sushi for a client).
    - **Domain:** e.g. `seashell-camel-446716.hostingersite.com` for this site, or `mongsushi.no` for the client.
+   - **Website plan:** Tier 1 / Tier 2 / Tier 3 / Custom (sets default CMS modules).
+   - If ecommerce is included, pick **catalog type** (menu, tiers, or normal products).
 5. Save and **copy the site key** (long hex string). For client projects you’ll set it as `CMS_SITE_KEY` in env.
+   Edit the site later to toggle Users, Analytics, Ecommerce, Blog, and Social sync, and to store the GitHub repo used for CMS version bumps.
 
 To have **this** site’s /admin driven by the hub, add a site in super-admin with domain = this site’s host (e.g. `seashell-camel-446716.hostingersite.com`). Then /admin will load config by domain and show only the features you turn on for that site in the hub.
 

@@ -9432,14 +9432,32 @@ app.get('/api/hub/site-config', (req, res) => {
   if (siteKey) {
     const config = hub.getSiteConfig(siteKey, false);
     if (!config) return res.status(404).json({ message: 'Site not found' });
-    return res.json({ features: config.features, name: config.name, id: config.id });
+    return res.json(config);
   }
   if (domain) {
     const config = hub.getSiteConfig(domain, true);
     if (!config) return res.status(404).json({ message: 'Site not found' });
-    return res.json({ features: config.features, name: config.name, id: config.id });
+    return res.json(config);
   }
   return res.status(400).json({ message: 'Provide site_key or domain' });
+});
+
+app.post('/api/hub/heartbeat', (req, res) => {
+  const siteKey = sanitizeText(req.body?.site_key || req.query?.site_key);
+  const result = hub.recordHeartbeat(siteKey, {
+    packageVersion: sanitizeText(req.body?.packageVersion),
+    adminUrl: sanitizeText(req.body?.adminUrl),
+    name: sanitizeText(req.body?.name),
+  });
+  if (!result.ok) {
+    const status = result.error === 'Site not found' ? 404 : 400;
+    return res.status(status).json({ message: result.error });
+  }
+  return res.json({
+    ok: true,
+    lastSeenAt: result.site.cms?.lastSeenAt || '',
+    packageVersion: result.site.cms?.packageVersion || '',
+  });
 });
 
 // --- CMS config (for client CMS on this server: lookup by env CMS_SITE_KEY or by Host)
@@ -9447,12 +9465,19 @@ app.get('/api/cms/config', (req, res) => {
   const siteKey = process.env.CMS_SITE_KEY;
   if (siteKey) {
     const config = hub.getSiteConfig(siteKey, false);
-    if (config) return res.json({ features: config.features, name: config.name, id: config.id });
+    if (config) return res.json(config);
   }
   const host = (req.get('host') || '').split(':')[0];
   const config = hub.getSiteConfig(host, true);
-  if (config) return res.json({ features: config.features, name: config.name, id: config.id });
-  res.json({ features: { users: true, analytics: false, ecommerce: false }, name: 'Site' });
+  if (config) return res.json(config);
+  res.json({
+    features: { users: true, analytics: false, ecommerce: false, blog: false, socialSync: false },
+    name: 'Site',
+    id: null,
+    ecommerceCatalogType: null,
+    websitePlan: null,
+    desiredCmsVersion: null,
+  });
 });
 
 // --- Super-admin: hub sites CRUD (admin only)
@@ -9461,8 +9486,15 @@ app.get('/api/hub/sites', adminAuth, (_req, res) => {
 });
 
 app.post('/api/hub/sites', adminAuth, (req, res) => {
-  const { name, domain } = req.body || {};
-  const site = hub.createSite({ name: name || 'New site', domain: domain || '' });
+  const { name, domain, websitePlan, ecommerceCatalogType, githubRepo, features } = req.body || {};
+  const site = hub.createSite({
+    name: name || 'New site',
+    domain: domain || '',
+    websitePlan,
+    ecommerceCatalogType,
+    githubRepo,
+    features,
+  });
   res.status(201).json(site);
 });
 
@@ -11047,6 +11079,10 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
   const site = hub.createSite({
     name: client.businessName || 'New client',
     domain: client.websiteDomain || '',
+    websitePlan: req.body?.websitePlan,
+    ecommerceCatalogType: req.body?.ecommerceCatalogType,
+    githubRepo: req.body?.githubRepo,
+    features: req.body?.features,
   });
 
   if (client.websiteImport?.importRoot) {

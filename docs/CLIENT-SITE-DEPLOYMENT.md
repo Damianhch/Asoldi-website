@@ -25,6 +25,7 @@ When the **Users** feature is enabled for a client, the client CMS must support 
 3. Click **Add site**:
    - **Name:** e.g. Mong Sushi
    - **Domain:** e.g. `mongsushi.no` (the client’s live domain, or test domain for staging).
+   - **Website plan** and, for shops, **ecommerce catalog type** (menu / tiers / normal).
 4. Save, then **copy the site key** (long hex string). You will use this as `CMS_SITE_KEY` on the client.
 
 ---

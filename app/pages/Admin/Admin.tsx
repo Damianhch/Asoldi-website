@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, FileText, Globe, LogOut, ShoppingBag, Users, UserPlus } from 'lucide-react';
+import { BarChart3, FileText, Globe, LogOut, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
@@ -15,11 +15,16 @@ import {
   setToken,
   type AdminUser,
   type ClientPaymentRequest,
+  type EcommerceCatalogType,
   type EmployeeRoleOption,
   fromEmployeeRoleOption,
   type Features,
   type Site,
   type Tab,
+  type WebsitePlanId,
+  CATALOG_TYPE_OPTIONS,
+  WEBSITE_PLAN_OPTIONS,
+  featuresFromPlan,
 } from './shared';
 
 export const Admin = () => {
@@ -46,10 +51,22 @@ export const Admin = () => {
   const [addSiteOpen, setAddSiteOpen] = useState(false);
   const [addSiteName, setAddSiteName] = useState('');
   const [addSiteDomain, setAddSiteDomain] = useState('');
+  const [addSitePlan, setAddSitePlan] = useState<WebsitePlanId>('tier-1-standard');
+  const [addSiteCatalogType, setAddSiteCatalogType] = useState<EcommerceCatalogType>('normal');
+  const [addSiteGithubRepo, setAddSiteGithubRepo] = useState('');
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
   const [editSiteDomain, setEditSiteDomain] = useState('');
   const [editSiteName, setEditSiteName] = useState('');
-  const [editSiteFeatures, setEditSiteFeatures] = useState({ users: true, analytics: false, ecommerce: false });
+  const [editSitePlan, setEditSitePlan] = useState<WebsitePlanId>('tier-1-standard');
+  const [editSiteCatalogType, setEditSiteCatalogType] = useState<EcommerceCatalogType>('normal');
+  const [editSiteGithubRepo, setEditSiteGithubRepo] = useState('');
+  const [editSiteFeatures, setEditSiteFeatures] = useState<Features>({
+    users: true,
+    analytics: false,
+    ecommerce: false,
+    blog: false,
+    socialSync: false,
+  });
   const [copyKey, setCopyKey] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
@@ -271,7 +288,13 @@ export const Admin = () => {
       const res = await fetch(`${API}/hub/sites`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: addSiteName || 'New site', domain: addSiteDomain.trim() }),
+        body: JSON.stringify({
+          name: addSiteName || 'New site',
+          domain: addSiteDomain.trim(),
+          websitePlan: addSitePlan,
+          ecommerceCatalogType: addSitePlan === 'tier-3-ecommerce' || addSitePlan === 'custom' ? addSiteCatalogType : undefined,
+          githubRepo: addSiteGithubRepo.trim(),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -281,6 +304,9 @@ export const Admin = () => {
       setAddSiteOpen(false);
       setAddSiteName('');
       setAddSiteDomain('');
+      setAddSitePlan('tier-1-standard');
+      setAddSiteCatalogType('normal');
+      setAddSiteGithubRepo('');
       await fetchSites();
     } finally {
       setLoading(false);
@@ -293,7 +319,14 @@ export const Admin = () => {
       const res = await fetch(`${API}/hub/sites/${id}`, {
         method: 'PUT',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ domain: editSiteDomain, name: editSiteName, features: editSiteFeatures }),
+        body: JSON.stringify({
+          domain: editSiteDomain,
+          name: editSiteName,
+          websitePlan: editSitePlan,
+          features: editSiteFeatures,
+          ecommerceCatalogType: editSiteFeatures.ecommerce ? editSiteCatalogType : null,
+          githubRepo: editSiteGithubRepo.trim(),
+        }),
       });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -369,8 +402,10 @@ export const Admin = () => {
             <SidebarButton active={tab === 'pages'} onClick={() => setTab('pages')} icon={<FileText size={18} />} label="Pages" />
             {features.users !== false && <SidebarButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={18} />} label="Users" />}
             <SidebarButton active={tab === 'employees'} onClick={() => setTab('employees')} icon={<UserPlus size={18} />} label="Employees" />
-            {features.analytics && <SidebarButton active={tab === 'analytics'} onClick={() => setTab('analytics')} icon={<BarChart3 size={18} />} label="Analytics" />}
             {features.ecommerce && <SidebarButton active={tab === 'ecommerce'} onClick={() => setTab('ecommerce')} icon={<ShoppingBag size={18} />} label="Ecommerce" />}
+            {features.blog && <SidebarButton active={tab === 'blog'} onClick={() => setTab('blog')} icon={<Newspaper size={18} />} label="Blog" />}
+            {features.socialSync && <SidebarButton active={tab === 'social'} onClick={() => setTab('social')} icon={<Share2 size={18} />} label="Social sync" />}
+            {features.analytics && <SidebarButton active={tab === 'analytics'} onClick={() => setTab('analytics')} icon={<BarChart3 size={18} />} label="Analytics" />}
           </nav>
           <div className="p-2 border-t border-white/10 space-y-1">
             <button onClick={() => setChangePasswordOpen(true)} className="w-full px-3 py-2 text-left text-sm text-gray-400 hover:text-white">Change my password</button>
@@ -391,7 +426,16 @@ export const Admin = () => {
                 setEditingSiteId(site.id);
                 setEditSiteDomain(site.domain);
                 setEditSiteName(site.name);
-                setEditSiteFeatures({ users: !!site.features.users, analytics: !!site.features.analytics, ecommerce: !!site.features.ecommerce });
+                setEditSitePlan(site.websitePlan || 'tier-1-standard');
+                setEditSiteCatalogType(site.ecommerceCatalogType || 'normal');
+                setEditSiteGithubRepo(site.cms?.githubRepo || '');
+                setEditSiteFeatures({
+                  users: site.features.users !== false,
+                  analytics: !!site.features.analytics,
+                  ecommerce: !!site.features.ecommerce,
+                  blog: !!site.features.blog,
+                  socialSync: !!site.features.socialSync,
+                });
               }}
               onDelete={handleDeleteSite}
               onCopyKey={copySiteKey}
@@ -420,7 +464,9 @@ export const Admin = () => {
           )}
           {tab === 'employees' && <EmployeesSection />}
           {tab === 'analytics' && <PlaceholderSection title="Analytics" description="Connect Google Analytics or Business Profile. Coming soon." />}
-          {tab === 'ecommerce' && <PlaceholderSection title="Ecommerce" description="Products and pricing. Coming soon." />}
+          {tab === 'ecommerce' && <PlaceholderSection title="Ecommerce" description="Asoldi’s own shop catalog. Client product catalogs are managed on each client domain’s /admin." />}
+          {tab === 'blog' && <PlaceholderSection title="Blog" description="Write and publish posts from this CMS. Coming soon." />}
+          {tab === 'social' && <PlaceholderSection title="Social sync" description="Reviews and social media sync. Coming soon." />}
         </main>
       </div>
 
@@ -431,6 +477,34 @@ export const Admin = () => {
             <form onSubmit={handleAddSite} className="space-y-4">
               <input type="text" value={addSiteName} onChange={(e) => setAddSiteName(e.target.value)} placeholder="Site name" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
               <input type="text" value={addSiteDomain} onChange={(e) => setAddSiteDomain(e.target.value)} placeholder="Domain" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Website plan</label>
+                <select
+                  value={addSitePlan}
+                  onChange={(e) => setAddSitePlan(e.target.value as WebsitePlanId)}
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                >
+                  {WEBSITE_PLAN_OPTIONS.map((plan) => (
+                    <option key={plan.id} value={plan.id}>{plan.name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">Sets default CMS modules. You can change them after adding the site.</p>
+              </div>
+              {(addSitePlan === 'tier-3-ecommerce' || addSitePlan === 'custom') && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Ecommerce catalog type</label>
+                  <select
+                    value={addSiteCatalogType}
+                    onChange={(e) => setAddSiteCatalogType(e.target.value as EcommerceCatalogType)}
+                    className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                  >
+                    {CATALOG_TYPE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <input type="text" value={addSiteGithubRepo} onChange={(e) => setAddSiteGithubRepo(e.target.value)} placeholder="GitHub repo (e.g. damianhch/website---mong-sushi)" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
               <div className="flex gap-2">
                 <button type="submit" disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Add</button>
                 <button type="button" onClick={() => setAddSiteOpen(false)} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
@@ -447,11 +521,46 @@ export const Admin = () => {
             <div className="space-y-4">
               <input type="text" value={editSiteName} onChange={(e) => setEditSiteName(e.target.value)} className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
               <input type="text" value={editSiteDomain} onChange={(e) => setEditSiteDomain(e.target.value)} className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
-              <div className="flex flex-wrap gap-4">
-                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={editSiteFeatures.users} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, users: e.target.checked }))} /> Users</label>
-                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={editSiteFeatures.analytics} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, analytics: e.target.checked }))} /> Analytics</label>
-                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={editSiteFeatures.ecommerce} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, ecommerce: e.target.checked }))} /> Ecommerce</label>
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Website plan</label>
+                <select
+                  value={editSitePlan}
+                  onChange={(e) => {
+                    const plan = e.target.value as WebsitePlanId;
+                    setEditSitePlan(plan);
+                    setEditSiteFeatures(featuresFromPlan(plan));
+                    if (plan === 'tier-3-ecommerce' && !editSiteCatalogType) setEditSiteCatalogType('normal');
+                  }}
+                  className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                >
+                  {WEBSITE_PLAN_OPTIONS.map((plan) => (
+                    <option key={plan.id} value={plan.id}>{plan.name}</option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">Changing plan applies default modules. You can still toggle them below.</p>
               </div>
+              <div className="flex flex-wrap gap-4">
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.users} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, users: e.target.checked }))} /> Users</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.analytics} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, analytics: e.target.checked }))} /> Analytics</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.ecommerce} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, ecommerce: e.target.checked }))} /> Ecommerce</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.blog} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, blog: e.target.checked }))} /> Blog</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.socialSync} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, socialSync: e.target.checked }))} /> Social sync</label>
+              </div>
+              {editSiteFeatures.ecommerce && (
+                <div>
+                  <label className="block text-xs text-gray-400 mb-1">Ecommerce catalog type</label>
+                  <select
+                    value={editSiteCatalogType}
+                    onChange={(e) => setEditSiteCatalogType(e.target.value as EcommerceCatalogType)}
+                    className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white"
+                  >
+                    {CATALOG_TYPE_OPTIONS.map((option) => (
+                      <option key={option.id} value={option.id}>{option.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <input type="text" value={editSiteGithubRepo} onChange={(e) => setEditSiteGithubRepo(e.target.value)} placeholder="GitHub repo for CMS updates" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
               <div className="flex gap-2">
                 <button type="button" onClick={() => handleUpdateSite(editingSiteId)} disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Save</button>
                 <button type="button" onClick={() => setEditingSiteId(null)} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
