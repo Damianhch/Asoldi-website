@@ -6867,6 +6867,128 @@ async function resolveReachableMakerBase() {
   return { makerBase: '', tried };
 }
 
+function collectRelativeAssetRefs(text = '') {
+  const refs = new Set();
+  const push = (value = '') => {
+    const cleaned = String(value || '')
+      .replace(/^\.\//, '')
+      .replace(/^\/+/, '')
+      .split(/[?#]/)[0];
+    if (/^assets\//i.test(cleaned)) refs.add(cleaned);
+  };
+  for (const match of text.matchAll(/(?:href|src|poster|data-src)=["']([^"']+)["']/gi)) push(match[1]);
+  for (const match of text.matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/gi)) push(match[1]);
+  for (const match of text.matchAll(/(?:srcset|data-srcset)=["']([^"']+)["']/gi)) {
+    for (const part of String(match[1]).split(',')) push(part.trim().split(/\s+/)[0]);
+  }
+  return refs;
+}
+
+/**
+ * Website Maker's export ZIP references hashed assets/... files that it does
+ * not include. Maker's own preview server serves them, so fetch the missing
+ * files from there and add them to the bundle before uploading.
+ */
+async function ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer }) {
+  const zip = new AdmZip(zipBuffer);
+  const entries = zip.getEntries();
+  const entryNames = new Set(entries.map((entry) => entry.entryName.replace(/\\/g, '/')));
+  const htmlEntries = entries.filter((entry) => /\.html?$/i.test(entry.entryName));
+  if (!htmlEntries.length) return { buffer: zipBuffer, added: 0, note: 'no html' };
+
+  const indexEntry =
+    htmlEntries
+      .filter((entry) => /(^|\/)index\.html$/i.test(entry.entryName))
+      .sort((a, b) => a.entryName.split('/').length - b.entryName.split('/').length)[0] || htmlEntries[0];
+  const indexName = indexEntry.entryName.replace(/\\/g, '/');
+  const prefix = indexName.includes('/') ? indexName.slice(0, indexName.lastIndexOf('/') + 1) : '';
+
+  const wanted = new Set();
+  for (const entry of htmlEntries) {
+    for (const ref of collectRelativeAssetRefs(entry.getData().toString('utf8'))) wanted.add(ref);
+  }
+  const missing = [...wanted].filter((ref) => !entryNames.has(`${prefix}${ref}`) && !entryNames.has(ref));
+  if (!missing.length) return { buffer: zipBuffer, added: 0, note: 'complete' };
+
+  const stepRaw = sanitizeText(exportStep) || 'latest';
+  const stepTokens = [...new Set([stepRaw, stepRaw.replace(/^step-/i, ''), `step-${stepRaw.replace(/^step-/i, '')}`])]
+    .filter((token) => token && token !== 'latest');
+  const patternBuilders = [];
+  for (const step of stepTokens.length ? stepTokens : ['latest']) {
+    patternBuilders.push((assetPath) => `${makerBase}/preview/${encodeURIComponent(runId)}/step/${encodeURIComponent(step)}/${assetPath}`);
+    patternBuilders.push((assetPath) => `${makerBase}/preview/${encodeURIComponent(runId)}/step/${encodeURIComponent(step)}/view/${assetPath}`);
+  }
+  patternBuilders.push((assetPath) => `${makerBase}/api/runs/${encodeURIComponent(runId)}/files/${assetPath}`);
+  patternBuilders.push((assetPath) => `${makerBase}/${assetPath}`);
+
+  const fetchAsset = async (assetPath) => {
+    const expectHtml = /\.html?$/i.test(assetPath);
+    const tryUrl = async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: getWebsiteMakerAuthHeaders(),
+          signal: AbortSignal.timeout(30_000),
+        });
+        if (!response.ok) return null;
+        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
+        // Maker's SPA answers unknown paths with index.html; treat that as a miss.
+        if (!expectHtml && contentType.includes('text/html')) return null;
+        const buffer = Buffer.from(await response.arrayBuffer());
+        if (!buffer.length) return null;
+        return buffer;
+      } catch {
+        return null;
+      }
+    };
+    if (fetchAsset.workingBuilder) {
+      const buffer = await tryUrl(fetchAsset.workingBuilder(assetPath));
+      if (buffer) return buffer;
+    }
+    for (const builder of patternBuilders) {
+      if (builder === fetchAsset.workingBuilder) continue;
+      const buffer = await tryUrl(builder(assetPath));
+      if (buffer) {
+        fetchAsset.workingBuilder = builder;
+        fetchAsset.workingIndex = patternBuilders.indexOf(builder);
+        return buffer;
+      }
+    }
+    return null;
+  };
+  fetchAsset.workingBuilder = null;
+  fetchAsset.workingIndex = -1;
+
+  let added = 0;
+  const queue = [...missing];
+  const seen = new Set(queue);
+  const MAX_FILES = 500;
+  while (queue.length && added < MAX_FILES) {
+    const assetPath = queue.shift();
+    const buffer = await fetchAsset(assetPath);
+    if (!buffer) continue;
+    zip.addFile(`${prefix}${assetPath}`, buffer);
+    added += 1;
+    // CSS pulls in fonts/images of its own; fetch those too.
+    if (/\.css$/i.test(assetPath)) {
+      const cssDir = assetPath.includes('/') ? assetPath.slice(0, assetPath.lastIndexOf('/') + 1) : '';
+      for (const match of buffer.toString('utf8').matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/gi)) {
+        const raw = String(match[1] || '').trim().split(/[?#]/)[0];
+        if (!raw || /^(https?:)?\/\//i.test(raw) || raw.startsWith('data:') || raw.startsWith('/')) continue;
+        const resolved = path.posix.normalize(path.posix.join(cssDir, raw));
+        if (resolved.startsWith('..')) continue;
+        if (!seen.has(resolved) && !entryNames.has(`${prefix}${resolved}`)) {
+          seen.add(resolved);
+          queue.push(resolved);
+        }
+      }
+    }
+  }
+  if (!added) {
+    return { buffer: zipBuffer, added: 0, note: `assets missing (${missing.length} refs, no Maker source found)` };
+  }
+  return { buffer: zip.toBuffer(), added, note: `pattern#${fetchAsset.workingIndex}` };
+}
+
 async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, runId, businessName }) {
   const exportUrl = buildMakerExportUrl({
     makerBaseUrl: makerBase,
@@ -6887,6 +7009,13 @@ async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, 
   if (!exportRes.ok) {
     throw new Error(parseMakerErrorMessage(zipBuffer, `Maker export failed (${exportRes.status})`));
   }
+  const exportStep = sanitizeText(exportRes.headers.get('x-export-step')) || 'latest';
+  let bundle = { buffer: zipBuffer, added: 0, note: '' };
+  try {
+    bundle = await ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer });
+  } catch (error) {
+    bundle = { buffer: zipBuffer, added: 0, note: `asset-fill failed: ${sanitizeText(error?.message)}` };
+  }
   const uploadRes = await fetch(
     `${prodBase}/api/admin/sales/${encodeURIComponent(clientId)}/receive-preview-bundle`,
     {
@@ -6895,18 +7024,19 @@ async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, 
         Authorization: `Bearer ${token}`,
         'Content-Type': 'application/zip',
         'X-Source-Run-Id': runId,
-        'X-Source-Step': 'latest',
+        'X-Source-Step': exportStep,
         'X-Site-Folder': sanitizeText(businessName) || 'site',
       },
-      body: zipBuffer,
-      signal: AbortSignal.timeout(180_000),
+      body: bundle.buffer,
+      signal: AbortSignal.timeout(300_000),
     }
   );
   const uploadBody = await uploadRes.json().catch(() => ({}));
   if (!uploadRes.ok) {
     throw new Error(uploadBody.message || `asoldi.com rejected the preview (${uploadRes.status})`);
   }
-  return uploadBody.publicPreviewUrl || getPublicSalesPreviewUrl(clientId);
+  const publicUrl = uploadBody.publicPreviewUrl || getPublicSalesPreviewUrl(clientId);
+  return `${publicUrl}${bundle.added ? ` (+${bundle.added} assets, ${bundle.note})` : bundle.note ? ` (${bundle.note})` : ''}`;
 }
 
 async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
