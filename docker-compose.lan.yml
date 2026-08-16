@@ -26,6 +26,9 @@ services:
       # Point Asoldi sales / maker integration at the LAN website-creator.
       WEBSITE_MAKER_LOCAL_URL: http://192.168.68.92:3000
       WEBSITE_MAKER_BASE_URL: http://192.168.68.92:3000
+      PROD_ADMIN_URL: https://asoldi.com
+      SALES_PREVIEW_PUBLIC_BASE: https://asoldi.com
+      SALES_PREVIEW_PUSH_URL: https://asoldi.com/api/admin/sales/maker-preview-push
       CLIENT_SOCIAL_DEV_MODE: "1"
     volumes:
       - .:/app

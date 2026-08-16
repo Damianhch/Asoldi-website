@@ -45,15 +45,23 @@ PROD_ADMIN_PASSWORD='your-admin-password' node scripts/sync-prod-users.mjs --out
 
 Creating a Website Maker run on LAN **does not** update asoldi.com. That is the CRM safety net.
 
-When a run is good enough to show on the live sales page, use **Publish website to asoldi.com** on the LAN client card. That copies **only** `makerRun` (run id, preview URL, dashboard URL). Name, status, MyPhoner, and other CRM fields on production are left alone.
+When a run is good enough to show on the live sales page, use **Publish website to asoldi.com** on the LAN client card. That:
+
+1. Exports the latest ready Maker stage (including custom edits when present)
+2. Stores it on this LAN instance under `/sales-preview/:clientId/`
+3. Uploads the same static site to **asoldi.com** so any laptop can open:
+
+`https://asoldi.com/sales-preview/<client-slug>/`
+
+Name, status, MyPhoner, and other CRM fields on production are left alone.
 
 Requirements:
 
-1. Deploy this Asoldi-website change to asoldi.com first (so production has `POST /api/admin/sales/:id/set-maker-run`).
+1. Deploy this Asoldi-website change to asoldi.com first (so production has `POST /api/admin/sales/:id/import-website-push`).
 2. LAN env: `PROD_ADMIN_URL=https://asoldi.com` and `PROD_ADMIN_PASSWORD` (same as `/admin`).
-3. If people off the office network should open the **preview** from asoldi.com, the stored Maker URL must be reachable from their browser. `http://192.168.68.92:3000` only works on the office LAN.
+3. Website Maker should also set `salesPreviewPushUrl` to `https://asoldi.com/api/admin/sales/maker-preview-push` so each finished step pushes the preview automatically.
 
-Republish after you improve the run; it overwrites the previous production maker links for that client only.
+Republish after you improve the run; it overwrites the previous production preview files for that client only.
 
 ## Why the counts diverged
 

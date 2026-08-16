@@ -21,6 +21,7 @@ import {
   Volume2,
   Wand2,
   X,
+  Copy,
 } from 'lucide-react';
 import { API, salesAuthHeaders, type SalesClient, type SalesProduct } from '../shared';
 import 'leaflet/dist/leaflet.css';
@@ -479,6 +480,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
   const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
+  const [publishingAllPreviews, setPublishingAllPreviews] = useState(false);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -1035,7 +1037,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setSyncingId(client.id);
     setError('');
     try {
-      await request(`/admin/sales/${client.id}/import-website`, {
+      const data = await request(`/admin/sales/${client.id}/import-website`, {
         method: 'POST',
         body: JSON.stringify({
           runId,
@@ -1044,6 +1046,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
           step: 'latest',
         }),
       });
+      if (data?.publicUrl) {
+        setNotice(
+          data.publishedToProd
+            ? `Public preview is live: ${data.publicUrl}`
+            : `Preview synced. Public URL: ${data.publicUrl}${data.publishWarning ? ` (${data.publishWarning})` : ''}`
+        );
+      }
       await loadSales();
       await loadOffers();
     } catch (err) {
@@ -1143,7 +1152,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       return;
     }
     const confirmed = window.confirm(
-      'Publish only this website run (preview/dashboard links) to asoldi.com?\n\nClient name, status, MyPhoner data, and other CRM fields on production will not change.'
+      'Publish this client website to https://asoldi.com/sales-preview/… so any laptop can open it?\n\nThis copies the latest Maker stage onto asoldi.com. CRM fields on production stay unchanged.'
     );
     if (!confirmed) return;
     setPublishingMakerId(client.id);
@@ -1152,14 +1161,45 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     try {
       const data = await request(`/admin/sales/${client.id}/publish-maker-run-to-prod`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify({ websiteMakerBaseUrl }),
       });
+      const publicUrl = String(data?.publicUrl || getPublicClientPreviewUrl(client));
       const extra = typeof data?.warning === 'string' && data.warning ? ` ${data.warning}` : '';
-      setNotice(`Website run ${makerRunId} is now on asoldi.com/sales.${extra}`);
+      setNotice(`Public preview is live: ${publicUrl}${extra}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed publishing website run to asoldi.com');
+      setError(err instanceof Error ? err.message : 'Failed publishing website preview to asoldi.com');
     } finally {
       setPublishingMakerId(null);
+    }
+  }
+
+  async function publishAllPreviewsToProd() {
+    const confirmed = window.confirm(
+      'Export every linked Website Maker run and upload the latest stage to asoldi.com/sales-preview/…?\n\nClients without a ready step are skipped with an error. This can take a few minutes.'
+    );
+    if (!confirmed) return;
+    setPublishingAllPreviews(true);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request('/admin/sales/publish-all-previews-to-prod', {
+        method: 'POST',
+        body: JSON.stringify({ websiteMakerBaseUrl }),
+      });
+      const published = Number(data?.published || 0);
+      const failed = Number(data?.failed || 0);
+      setNotice(`Published ${published} preview(s) to asoldi.com.${failed ? ` ${failed} failed.` : ''}`);
+      if (failed) {
+        const firstError = Array.isArray(data?.results)
+          ? data.results.find((entry: { ok?: boolean; error?: string }) => !entry?.ok)?.error
+          : '';
+        if (firstError) setError(String(firstError));
+      }
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed publishing all previews to asoldi.com');
+    } finally {
+      setPublishingAllPreviews(false);
     }
   }
 
@@ -1690,8 +1730,20 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
-              then New tunnel URL, then Create run.
+              then New tunnel URL, then Create run. Client previews for customers always live at
+              {' '}<code>https://asoldi.com/sales-preview/…</code> after publish.
             </p>
+            {IS_LAN_SALES_HOST ? (
+              <button
+                type="button"
+                onClick={() => void publishAllPreviewsToProd()}
+                disabled={publishingAllPreviews}
+                className="mt-3 inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm hover:bg-emerald-600 disabled:opacity-50"
+              >
+                {publishingAllPreviews ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                Publish all ready previews to asoldi.com
+              </button>
+            ) : null}
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
             <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
@@ -1805,7 +1857,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   ] as { key: ProgressionKey; done: boolean }[])
                 : []),
             ];
-            const importedPreviewUrl = client.websiteImport?.previewUrl || getSalesPreviewFallback(client.id);
+            const publicPreviewUrl = getPublicClientPreviewUrl(client);
+            const importedPreviewUrl = publicPreviewUrl;
+            const previewPublished = Boolean(client.websiteImport?.importedAt || client.websiteImport?.publicUrl);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
@@ -1953,12 +2007,21 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         onClick={() => void publishMakerRunToProd(client)}
                         disabled={publishingMakerId === client.id}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-600 disabled:opacity-50"
-                        title="Copy only this website run onto asoldi.com/sales. Does not change production CRM fields."
+                        title="Upload the latest Maker stage to https://asoldi.com/sales-preview/… so any laptop can open it"
                       >
                         {publishingMakerId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
                         Publish website to asoldi.com
                       </button>
                       ) : null}
+                      <button
+                        type="button"
+                        onClick={() => window.open(publicPreviewUrl, '_blank')}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={publicPreviewUrl}
+                      >
+                        <ExternalLink size={13} />
+                        Public preview
+                      </button>
                     </>
                   ) : (
                     <button
@@ -2247,15 +2310,29 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         <button
                           type="button"
                           onClick={() => window.open(importedPreviewUrl, '_blank')}
-                          disabled={!client.websiteImport?.previewUrl}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
                         >
                           <ExternalLink size={14} />
                           Preview website
                         </button>
+                        <button
+                          type="button"
+                          onClick={() => void navigator.clipboard.writeText(importedPreviewUrl).then(
+                            () => setNotice(`Copied ${importedPreviewUrl}`),
+                            () => setError('Could not copy preview URL')
+                          )}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                        >
+                          <Copy size={14} />
+                          Copy public URL
+                        </button>
                       </div>
+                      <p className="text-[11px] text-gray-400 break-all">
+                        Internet URL: <span className="text-white">{importedPreviewUrl}</span>
+                        {previewPublished ? ' (files stored on asoldi.com)' : ' (publish to asoldi.com to make this work off the office network)'}
+                      </p>
                       <p className="text-[11px] text-gray-500">
-                        Sync is the preferred flow. ZIP export is only for manual hosting uploads when needed.
+                        Sync exports the latest Maker stage. On the office LAN it also uploads that site to asoldi.com so sales laptops can open it.
                       </p>
                     </div>
 
@@ -2623,7 +2700,26 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 }
 
 function getSalesPreviewFallback(clientId: string) {
-  return `/sales-preview/${encodeURIComponent(clientId)}/`;
+  return `https://asoldi.com/sales-preview/${encodeURIComponent(clientId)}/`;
+}
+
+function slugifyPreviewName(value = '') {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .replace(/-+$/, '')
+    .slice(0, 80);
+}
+
+function getPublicClientPreviewUrl(client: SalesClient) {
+  const stored = String(client.websiteImport?.publicUrl || '').trim();
+  if (stored) return stored;
+  const slug = String(client.websiteImport?.previewSlug || '').trim() || slugifyPreviewName(client.businessName);
+  if (slug) return `https://asoldi.com/sales-preview/${encodeURIComponent(slug)}/`;
+  return getSalesPreviewFallback(client.id);
 }
 
 function Field({
