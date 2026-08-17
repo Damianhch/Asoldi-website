@@ -141,6 +141,7 @@ function normalizeWebsiteImport(value = {}) {
     previewUrl: sanitizeText(input.previewUrl),
     previewSlug: sanitizeText(input.previewSlug),
     publicUrl: sanitizeText(input.publicUrl),
+    publicPreviewPublishedAt: sanitizeText(input.publicPreviewPublishedAt),
   };
 }
 

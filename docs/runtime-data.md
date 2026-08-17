@@ -63,6 +63,22 @@ Requirements:
 
 Republish after you improve the run; it overwrites the previous production preview files for that client only.
 
+## 3b) Public meeting preview (asoldi.com, any network)
+
+The URL clients see in checkout, and the URL you should open on a meeting laptop, is the Hostinger snapshot:
+
+`https://asoldi.com/sales-preview/<sales-client-id>/`
+
+It is **not** the office LAN Maker (`192.168.68.92:3000`). After custom changes in Website Maker:
+
+1. On Sales click **Sync latest from Maker**. LAN Docker also pushes that snapshot to asoldi.com.
+2. **Copy public preview** or bookmark **https://asoldi.com/previews**.
+3. Open that link from any laptop / show the client. Offers created after sync attach the same URL.
+
+Re-sync after more Maker edits. This is a published snapshot, not a live tunnel into PC2.
+
+Off the office network, use **New tunnel URL** only if you need to *edit* in Maker. Preview/show uses asoldi.com.
+
 ## Why the counts diverged
 
 A workstation `~/.asoldi-website-data` folder (March 2026, ~45 clients) was copied onto LAN. Production had kept receiving MyPhoner winners (68 clients at last sync: 53 Asoldi + 15 SSU). Those are independent JSON files, not git.

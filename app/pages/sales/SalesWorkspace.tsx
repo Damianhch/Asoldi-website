@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
 import { Loader2, LogOut } from 'lucide-react';
 import { SalesClientsSection } from '../Admin/sections/SalesClientsSection';
@@ -78,14 +78,22 @@ export const SalesWorkspace = () => {
               <h1 className="text-lg font-semibold">Salgsarbeidsplass</h1>
               <p className="text-xs text-gray-400">Dine salgskunder, møter og din egen Google Kalender.</p>
             </div>
-            <button
-              type="button"
-              onClick={logout}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
-            >
-              <LogOut size={15} />
-              Logg ut
-            </button>
+            <div className="flex items-center gap-2">
+              <Link
+                to="/previews"
+                className="inline-flex items-center px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+              >
+                Public previews
+              </Link>
+              <button
+                type="button"
+                onClick={logout}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 hover:bg-white/15 text-sm"
+              >
+                <LogOut size={15} />
+                Logg ut
+              </button>
+            </div>
           </div>
         </header>
         <main className="max-w-[1200px] mx-auto px-6 py-8">

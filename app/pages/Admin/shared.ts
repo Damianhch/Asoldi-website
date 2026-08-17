@@ -136,6 +136,7 @@ export type SalesWebsiteImportMeta = {
   previewUrl: string;
   previewSlug?: string;
   publicUrl?: string;
+  publicPreviewPublishedAt?: string;
 };
 
 export type SalesMakerRunMeta = {
