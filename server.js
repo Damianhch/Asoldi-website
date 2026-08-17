@@ -11876,6 +11876,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
     const found = await findPreviewFileByBasename(roots, wantedName);
     if (found && (await sendIfFile(found))) return;
   }
+  res.setHeader('Cache-Control', 'no-store');
   return res.status(404).send('Preview file not found');
 }
 
