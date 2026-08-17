@@ -66,5 +66,33 @@ const html = await fs.readFile(path.join(ingested.siteRoot, 'index.html'), 'utf8
 assert(html.includes('hello'), 'index.html not extracted');
 assert(getPublicSalesPreviewUrl(store['client-1']) === ingested.publicUrl, 'public url helper mismatch');
 
+const badZip = new AdmZip();
+badZip.addFile(
+  'index.html',
+  Buffer.from('<html><head><link href="assets/theme.css" rel="stylesheet"></head><body>unstyled</body></html>')
+);
+store['client-2'] = {
+  id: 'client-2',
+  businessName: 'Missing CSS Cafe',
+  makerRun: { runId: 'run-2' },
+  websiteImport: {},
+};
+let rejectedIncomplete = false;
+try {
+  await ingestSalesPreviewZip({
+    client: store['client-2'],
+    zipBuffer: badZip.toBuffer(),
+    runId: 'run-2',
+    step: 'custom',
+    siteFolder: 'missing-css-cafe',
+    importsRoot,
+    sales,
+    offers: { listOffers: () => [], updateOffer: () => null },
+  });
+} catch (error) {
+  rejectedIncomplete = /missing the website's CSS\/JS/.test(String(error.message || ''));
+}
+assert(rejectedIncomplete, 'ingest must refuse a ZIP that references CSS files it does not contain');
+
 await fs.rm(tmp, { recursive: true, force: true });
 console.log('sales-preview-import tests passed');

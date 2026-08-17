@@ -17,6 +17,11 @@ import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
 import { getPersistentDataDir } from './data/storage-path.js';
 import * as salesPreview from './lib/sales-preview-import.js';
+import {
+  assertImportedPreviewHasAssets,
+  fillExportZipWithMakerAssets,
+  findPreviewFileByBasename,
+} from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
 import * as employeeLuca from './lib/employee-luca.js';
@@ -6697,6 +6702,12 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
     await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
     throw makeHttpError(502, 'Imported ZIP did not contain an index.html site root.');
   }
+  try {
+    assertImportedPreviewHasAssets(siteRoot, importDir);
+  } catch (error) {
+    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
+    throw error?.status ? error : makeHttpError(502, error.message);
+  }
 
   const now = new Date().toISOString();
   const alreadyPublicHost = Boolean(
@@ -6900,126 +6911,19 @@ async function resolveReachableMakerBase() {
   return { makerBase: '', tried };
 }
 
-function collectRelativeAssetRefs(text = '') {
-  const refs = new Set();
-  const push = (value = '') => {
-    const cleaned = String(value || '')
-      .replace(/^\.\//, '')
-      .replace(/^\/+/, '')
-      .split(/[?#]/)[0];
-    if (/^assets\//i.test(cleaned)) refs.add(cleaned);
-  };
-  for (const match of text.matchAll(/(?:href|src|poster|data-src)=["']([^"']+)["']/gi)) push(match[1]);
-  for (const match of text.matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/gi)) push(match[1]);
-  for (const match of text.matchAll(/(?:srcset|data-srcset)=["']([^"']+)["']/gi)) {
-    for (const part of String(match[1]).split(',')) push(part.trim().split(/\s+/)[0]);
-  }
-  return refs;
-}
-
 /**
- * Website Maker's export ZIP references hashed assets/... files that it does
- * not include. Maker's own preview server serves them, so fetch the missing
- * files from there and add them to the bundle before uploading.
+ * Website Maker's export ZIP sometimes references hashed assets/... files
+ * without packing them. Fetch those from Maker's /asset?id= preview routes
+ * and refuse to publish if CSS/JS are still missing.
  */
 async function ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer }) {
-  const zip = new AdmZip(zipBuffer);
-  const entries = zip.getEntries();
-  const entryNames = new Set(entries.map((entry) => entry.entryName.replace(/\\/g, '/')));
-  const htmlEntries = entries.filter((entry) => /\.html?$/i.test(entry.entryName));
-  if (!htmlEntries.length) return { buffer: zipBuffer, added: 0, note: 'no html' };
-
-  const indexEntry =
-    htmlEntries
-      .filter((entry) => /(^|\/)index\.html$/i.test(entry.entryName))
-      .sort((a, b) => a.entryName.split('/').length - b.entryName.split('/').length)[0] || htmlEntries[0];
-  const indexName = indexEntry.entryName.replace(/\\/g, '/');
-  const prefix = indexName.includes('/') ? indexName.slice(0, indexName.lastIndexOf('/') + 1) : '';
-
-  const wanted = new Set();
-  for (const entry of htmlEntries) {
-    for (const ref of collectRelativeAssetRefs(entry.getData().toString('utf8'))) wanted.add(ref);
-  }
-  const missing = [...wanted].filter((ref) => !entryNames.has(`${prefix}${ref}`) && !entryNames.has(ref));
-  if (!missing.length) return { buffer: zipBuffer, added: 0, note: 'complete' };
-
-  const stepRaw = sanitizeText(exportStep) || 'latest';
-  const stepTokens = [...new Set([stepRaw, stepRaw.replace(/^step-/i, ''), `step-${stepRaw.replace(/^step-/i, '')}`])]
-    .filter((token) => token && token !== 'latest');
-  const patternBuilders = [];
-  for (const step of stepTokens.length ? stepTokens : ['latest']) {
-    patternBuilders.push((assetPath) => `${makerBase}/preview/${encodeURIComponent(runId)}/step/${encodeURIComponent(step)}/${assetPath}`);
-    patternBuilders.push((assetPath) => `${makerBase}/preview/${encodeURIComponent(runId)}/step/${encodeURIComponent(step)}/view/${assetPath}`);
-  }
-  patternBuilders.push((assetPath) => `${makerBase}/api/runs/${encodeURIComponent(runId)}/files/${assetPath}`);
-  patternBuilders.push((assetPath) => `${makerBase}/${assetPath}`);
-
-  const fetchAsset = async (assetPath) => {
-    const expectHtml = /\.html?$/i.test(assetPath);
-    const tryUrl = async (url) => {
-      try {
-        const response = await fetch(url, {
-          headers: getWebsiteMakerAuthHeaders(),
-          signal: AbortSignal.timeout(30_000),
-        });
-        if (!response.ok) return null;
-        const contentType = String(response.headers.get('content-type') || '').toLowerCase();
-        // Maker's SPA answers unknown paths with index.html; treat that as a miss.
-        if (!expectHtml && contentType.includes('text/html')) return null;
-        const buffer = Buffer.from(await response.arrayBuffer());
-        if (!buffer.length) return null;
-        return buffer;
-      } catch {
-        return null;
-      }
-    };
-    if (fetchAsset.workingBuilder) {
-      const buffer = await tryUrl(fetchAsset.workingBuilder(assetPath));
-      if (buffer) return buffer;
-    }
-    for (const builder of patternBuilders) {
-      if (builder === fetchAsset.workingBuilder) continue;
-      const buffer = await tryUrl(builder(assetPath));
-      if (buffer) {
-        fetchAsset.workingBuilder = builder;
-        fetchAsset.workingIndex = patternBuilders.indexOf(builder);
-        return buffer;
-      }
-    }
-    return null;
-  };
-  fetchAsset.workingBuilder = null;
-  fetchAsset.workingIndex = -1;
-
-  let added = 0;
-  const queue = [...missing];
-  const seen = new Set(queue);
-  const MAX_FILES = 500;
-  while (queue.length && added < MAX_FILES) {
-    const assetPath = queue.shift();
-    const buffer = await fetchAsset(assetPath);
-    if (!buffer) continue;
-    zip.addFile(`${prefix}${assetPath}`, buffer);
-    added += 1;
-    // CSS pulls in fonts/images of its own; fetch those too.
-    if (/\.css$/i.test(assetPath)) {
-      const cssDir = assetPath.includes('/') ? assetPath.slice(0, assetPath.lastIndexOf('/') + 1) : '';
-      for (const match of buffer.toString('utf8').matchAll(/url\(\s*["']?([^)"']+)["']?\s*\)/gi)) {
-        const raw = String(match[1] || '').trim().split(/[?#]/)[0];
-        if (!raw || /^(https?:)?\/\//i.test(raw) || raw.startsWith('data:') || raw.startsWith('/')) continue;
-        const resolved = path.posix.normalize(path.posix.join(cssDir, raw));
-        if (resolved.startsWith('..')) continue;
-        if (!seen.has(resolved) && !entryNames.has(`${prefix}${resolved}`)) {
-          seen.add(resolved);
-          queue.push(resolved);
-        }
-      }
-    }
-  }
-  if (!added) {
-    return { buffer: zipBuffer, added: 0, note: `assets missing (${missing.length} refs, no Maker source found)` };
-  }
-  return { buffer: zip.toBuffer(), added, note: `pattern#${fetchAsset.workingIndex}` };
+  return fillExportZipWithMakerAssets({
+    makerBase,
+    runId,
+    exportStep,
+    zipBuffer,
+    headers: getWebsiteMakerAuthHeaders(),
+  });
 }
 
 async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, runId, businessName }) {
@@ -7043,12 +6947,7 @@ async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, 
     throw new Error(parseMakerErrorMessage(zipBuffer, `Maker export failed (${exportRes.status})`));
   }
   const exportStep = sanitizeText(exportRes.headers.get('x-export-step')) || 'latest';
-  let bundle = { buffer: zipBuffer, added: 0, note: '' };
-  try {
-    bundle = await ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer });
-  } catch (error) {
-    bundle = { buffer: zipBuffer, added: 0, note: `asset-fill failed: ${sanitizeText(error?.message)}` };
-  }
+  const bundle = await ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer });
   const uploadRes = await fetch(
     `${prodBase}/api/admin/sales/${encodeURIComponent(clientId)}/receive-preview-bundle`,
     {
@@ -7232,18 +7131,13 @@ async function syncSalesClientFromMakerRun({
   }
 
   const exportStep = sanitizeText(response.headers.get('x-export-step')) || requestedStep;
-  let payloadToImport = payloadBuffer;
-  try {
-    const filled = await ensureExportBundleHasAssets({
-      makerBase: makerBaseUrl,
-      runId: resolvedRunId,
-      exportStep,
-      zipBuffer: payloadBuffer,
-    });
-    if (filled?.buffer?.length) payloadToImport = filled.buffer;
-  } catch {
-    payloadToImport = payloadBuffer;
-  }
+  const filled = await ensureExportBundleHasAssets({
+    makerBase: makerBaseUrl,
+    runId: resolvedRunId,
+    exportStep,
+    zipBuffer: payloadBuffer,
+  });
+  const payloadToImport = filled?.buffer?.length ? filled.buffer : payloadBuffer;
 
   const makerRunCreatedAt = sanitizeText(targetClient.makerRun?.createdAt) || new Date().toISOString();
   const makerRunIndustry = sanitizeText(targetClient.makerRun?.industry) || sanitizeText(targetClient.industry);
@@ -11977,6 +11871,11 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
     if (!path.extname(normalized) && (await sendIfFile(path.join(absolute, 'index.html')))) return;
   }
   if (!path.extname(normalized) && await sendIfFile(path.join(root, 'index.html'))) return;
+  const wantedName = path.basename(normalized);
+  if (wantedName && wantedName !== 'index.html' && path.extname(wantedName)) {
+    const found = await findPreviewFileByBasename(roots, wantedName);
+    if (found && (await sendIfFile(found))) return;
+  }
   return res.status(404).send('Preview file not found');
 }
 

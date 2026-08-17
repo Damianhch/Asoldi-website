@@ -13,7 +13,7 @@
     "start": "node server.js",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test": "node scripts/test-laptop-preview.mjs",
+    "test": "node scripts/test-laptop-preview.mjs && node scripts/sales-preview-import.test.mjs && node scripts/preview-bundle-assets.test.mjs",
     "test:laptop-preview": "node scripts/test-laptop-preview.mjs",
     "publish:previews": "node scripts/publish-previews-from-office.mjs",
     "sync:prod-users": "node scripts/sync-prod-users.mjs",

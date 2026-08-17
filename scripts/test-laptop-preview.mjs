@@ -144,5 +144,9 @@ assert.equal(
   rewritePreviewAssetPaths('<a href="/sales-preview/client-1/page.html">', 'client-1'),
   '<a href="/sales-preview/client-1/page.html">'
 );
+assert.equal(
+  rewritePreviewAssetPaths('<link href="localasset://theme.css" rel="stylesheet">', 'client-1'),
+  '<link href="assets/theme.css" rel="stylesheet">'
+);
 
 console.log('laptop-preview tests passed');
