@@ -127,12 +127,15 @@ export type SalesCalendarMeta = {
 
 export type SalesWebsiteImportMeta = {
   importedAt: string;
+  publishedAt?: string;
   sourceRunId: string;
   sourceStep: string;
   sourceBaseUrl: string;
   siteFolder: string;
   importRoot: string;
   previewUrl: string;
+  previewSlug?: string;
+  publicUrl?: string;
   publicPreviewPublishedAt?: string;
 };
 

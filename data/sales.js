@@ -132,12 +132,15 @@ function normalizeWebsiteImport(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
     importedAt: sanitizeText(input.importedAt),
+    publishedAt: sanitizeText(input.publishedAt),
     sourceRunId: sanitizeText(input.sourceRunId),
     sourceStep: sanitizeText(input.sourceStep),
     sourceBaseUrl: sanitizeText(input.sourceBaseUrl),
     siteFolder: sanitizeText(input.siteFolder),
     importRoot: sanitizeText(input.importRoot),
     previewUrl: sanitizeText(input.previewUrl),
+    previewSlug: sanitizeText(input.previewSlug),
+    publicUrl: sanitizeText(input.publicUrl),
     publicPreviewPublishedAt: sanitizeText(input.publicPreviewPublishedAt),
   };
 }
