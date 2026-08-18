@@ -2665,8 +2665,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   );
 }
 
-}
-
 function Field({
   label,
   value,
