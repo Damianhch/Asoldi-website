@@ -1,4 +1,5 @@
 import fs from 'fs/promises';
+import { existsSync } from 'fs';
 import os from 'os';
 import path from 'path';
 import AdmZip from 'adm-zip';
@@ -95,6 +96,43 @@ try {
   rejectedIncomplete = /missing the website's CSS\/JS/.test(String(error.message || ''));
 }
 assert(rejectedIncomplete, 'ingest must refuse a ZIP that references CSS files it does not contain');
+
+store['client-3'] = {
+  id: 'client-3',
+  businessName: 'Keep Me Cafe',
+  makerRun: { runId: 'run-3' },
+  websiteImport: {},
+};
+const keepZip = new AdmZip();
+keepZip.addFile('index.html', Buffer.from('<html><body>keep-me</body></html>'));
+await ingestSalesPreviewZip({
+  client: store['client-3'],
+  zipBuffer: keepZip.toBuffer(),
+  runId: 'run-3',
+  step: 'custom',
+  siteFolder: 'keep-me-cafe',
+  importsRoot,
+  sales,
+  offers: { listOffers: () => [], updateOffer: () => null },
+});
+let failedSecond = false;
+try {
+  await ingestSalesPreviewZip({
+    client: store['client-3'],
+    zipBuffer: badZip.toBuffer(),
+    runId: 'run-3',
+    step: 'custom',
+    siteFolder: 'keep-me-cafe',
+    importsRoot,
+    sales,
+    offers: { listOffers: () => [], updateOffer: () => null },
+  });
+} catch {
+  failedSecond = true;
+}
+const kept = await fs.readFile(path.join(importsRoot, 'client-3', 'index.html'), 'utf8');
+assert(failedSecond, 'second CSS-less import must fail');
+assert(kept.includes('keep-me'), 'failed CSS-less import must not wipe a working preview');
 
 await fs.rm(tmp, { recursive: true, force: true });
 console.log('sales-preview-import tests passed');

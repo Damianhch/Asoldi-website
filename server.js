@@ -18,11 +18,9 @@ import * as resetTokens from './data/reset-tokens.js';
 import { getPersistentDataDir } from './data/storage-path.js';
 import * as salesPreview from './lib/sales-preview-import.js';
 import {
-  assertImportedPreviewHasAssets,
   fillExportZipWithMakerAssets,
   findPreviewFileByBasename,
   inlineLocalStylesheets,
-  mergePreviewAssetsIntoSiteRoot,
   renderPublicPreviewsBoard,
 } from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
@@ -6716,21 +6714,14 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
   }
 
   const resolvedSiteFolder = sanitizeSegment(siteFolder || targetClient.businessName || 'site', 'site');
-  const importDir = join(SALES_IMPORTS_ROOT, targetClient.id);
-  await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-  await fs.mkdir(importDir, { recursive: true });
-  zip.extractAllTo(importDir, true);
-
-  const siteRoot = await resolveImportedSiteRoot(importDir, resolvedSiteFolder);
-  if (!siteRoot) {
-    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-    throw makeHttpError(502, 'Imported ZIP did not contain an index.html site root.');
-  }
+  let siteRoot;
   try {
-    await mergePreviewAssetsIntoSiteRoot(siteRoot, importDir);
-    assertImportedPreviewHasAssets(siteRoot, importDir);
+    ({ siteRoot } = await salesPreview.materializePreviewZip(zipBuffer, {
+      importsRoot: SALES_IMPORTS_ROOT,
+      clientId: targetClient.id,
+      siteFolder: resolvedSiteFolder,
+    }));
   } catch (error) {
-    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
     throw error?.status ? error : makeHttpError(502, error.message);
   }
 

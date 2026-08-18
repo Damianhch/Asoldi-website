@@ -9,6 +9,7 @@ import {
   fillExportZipWithMakerAssets,
   inlineLocalStylesheets,
   makerAssetFetchUrls,
+  recoverMissingStylesheets,
   rewriteCssForStaticPreview,
 } from '../lib/preview-bundle-assets.js';
 
@@ -112,5 +113,56 @@ await fs.writeFile(
 );
 assertImportedPreviewHasAssets(inlinedOnly);
 await fs.rm(inlinedOnly, { recursive: true, force: true });
+
+const recovered = await recoverMissingStylesheets(
+  '<html><head><link rel="stylesheet" href="assets/missing.css"><script src="assets/app.js"></script></head><body><img src="https://demo.example.com/hero.jpg"></body></html>',
+  {
+    fetchImpl: async (url) => {
+      if (String(url) === 'https://demo.example.com/') {
+        return {
+          ok: true,
+          text: async () => '<link rel="stylesheet" href="/theme.css">',
+          headers: { get: () => 'text/html' },
+        };
+      }
+      if (String(url) === 'https://demo.example.com/theme.css') {
+        return {
+          ok: true,
+          text: async () => 'body{color:blue}',
+          headers: { get: () => 'text/css' },
+        };
+      }
+      return { ok: false, text: async () => '', headers: { get: () => '' } };
+    },
+  }
+);
+assert.match(recovered, /data-preview-css="recovered"/);
+assert.match(recovered, /body\{color:blue\}/);
+assert.doesNotMatch(recovered, /assets\/missing\.css/);
+assert.doesNotMatch(recovered, /assets\/app\.js/);
+
+const recoveredNested = await recoverMissingStylesheets(
+  '<html><head><link rel="stylesheet" href="assets/missing.css"></head><body><img src="https://demo.example.com/main-demo/hero.jpg"></body></html>',
+  {
+    fetchImpl: async (url) => {
+      if (String(url) === 'https://demo.example.com/') {
+        return { ok: true, text: async () => '<html></html>', headers: { get: () => 'text/html' } };
+      }
+      if (String(url) === 'https://demo.example.com/main-demo/') {
+        return {
+          ok: true,
+          text: async () => '<link rel="stylesheet" href="/wp-content/theme.css">',
+          headers: { get: () => 'text/html' },
+        };
+      }
+      if (String(url) === 'https://demo.example.com/wp-content/theme.css') {
+        return { ok: true, text: async () => 'h1{color:green}', headers: { get: () => 'text/css' } };
+      }
+      return { ok: false, text: async () => '', headers: { get: () => '' } };
+    },
+  }
+);
+assert.match(recoveredNested, /h1\{color:green\}/);
+assert.match(recoveredNested, /data-preview-css="recovered"/);
 
 console.log('preview-bundle-assets tests passed');
