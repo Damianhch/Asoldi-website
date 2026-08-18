@@ -6798,7 +6798,7 @@ async function publishPreviewBundleToProd(client) {
   }
   const importDir = join(SALES_IMPORTS_ROOT, targetClient.id);
   if (!existsSync(importDir)) {
-    throw makeHttpError(400, 'Sync latest from Maker first so there is a website snapshot to publish.');
+    throw makeHttpError(400, 'No public website snapshot yet. Finish a Maker step, or click Update public website now on the run.');
   }
 
   const publicPreviewUrl = getPublicSalesPreviewUrl(targetClient.id);
@@ -6870,22 +6870,15 @@ async function publishPreviewBundleToProd(client) {
 }
 
 // --- Office auto-publisher -------------------------------------------------
-// asoldi.com (HTTPS) can never fetch office LAN Maker (HTTP) from a browser —
-// mixed-content blocking. So the office server pushes instead: every few
-// minutes it exports each linked Maker run and uploads the ZIP to
-// asoldi.com/sales-preview. Runs only where Maker is reachable (office LAN),
-// never on Hostinger (resolveProdAdminBaseUrl() is empty there).
+// Website Maker now pushes a client site to asoldi.com after each finished
+// step. This optional LAN loop is only a safety net for snapshots that never
+// landed. It is off by default and never re-uploads every client.
 const LAN_PREVIEW_AUTOPUBLISH_ENABLED = String(process.env.LAN_PREVIEW_AUTOPUBLISH || '0') !== '0';
 const LAN_PREVIEW_AUTOPUBLISH_MS = Math.max(
   60_000,
-  Number(process.env.LAN_PREVIEW_AUTOPUBLISH_MS || 5 * 60_000)
-);
-const LAN_PREVIEW_FULL_REFRESH_MS = Math.max(
-  LAN_PREVIEW_AUTOPUBLISH_MS,
-  Number(process.env.LAN_PREVIEW_FULL_REFRESH_MS || 30 * 60_000)
+  Number(process.env.LAN_PREVIEW_AUTOPUBLISH_MS || 30 * 60_000)
 );
 let lanPreviewAutoPublishRunning = false;
-let lanPreviewLastFullRefreshAtMs = 0;
 let lanPreviewLastSummary = '';
 
 async function isLocalMakerReachable(makerBase) {
@@ -7018,26 +7011,6 @@ async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
     if (id && runId) targets.set(id, { clientId: id, runId, businessName: sanitizeText(entry?.businessName) });
   }
 
-  const now = Date.now();
-  const refreshAll = fullRefresh || now - lanPreviewLastFullRefreshAtMs >= LAN_PREVIEW_FULL_REFRESH_MS;
-  if (refreshAll) {
-    const allRes = await fetch(`${prodBase}/api/admin/sales?product=asoldi`, {
-      headers: authHeaders,
-      signal: AbortSignal.timeout(30_000),
-    });
-    const all = await allRes.json().catch(() => ({}));
-    if (allRes.ok) {
-      lanPreviewLastFullRefreshAtMs = now;
-      for (const client of Array.isArray(all.clients) ? all.clients : []) {
-        const id = sanitizeText(client?.id);
-        const runId = sanitizeText(client?.makerRun?.runId);
-        if (!id || !runId || sales.isSsuSalesProduct(client?.product)) continue;
-        if (sanitizeText(client?.status) === 'not-sold') continue;
-        targets.set(id, { clientId: id, runId, businessName: sanitizeText(client?.businessName) });
-      }
-    }
-  }
-
   const published = [];
   const failed = [];
   for (const target of targets.values()) {
@@ -7053,7 +7026,7 @@ async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
       failed.push(`${target.clientId}: ${sanitizeText(error?.message) || 'failed'}`);
     }
   }
-  return { published, failed, total: targets.size, refreshAll };
+  return { published, failed, total: targets.size, refreshAll: false };
 }
 
 function startLanPreviewAutoPublishLoop() {
@@ -10977,7 +10950,7 @@ function isMakerPreviewPushAuthorized(req) {
   if (isMakerStatusCallbackAuthorized(req) && sanitizeText(process.env.WEBSITE_MAKER_STATUS_CALLBACK_TOKEN || process.env.SALES_MAKER_STATUS_CALLBACK_TOKEN)) {
     return true;
   }
-  const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY);
+  const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY || process.env.WEBSITEMAKER_API_KEY);
   const providedKey = sanitizeText(req.headers['x-api-key']);
   if (apiKey && providedKey && secureStringEqual(providedKey, apiKey)) return true;
   return false;
@@ -11037,7 +11010,7 @@ app.post('/api/admin/sales/:id/publish-maker-run-to-prod', salesAuth, async (req
   const prodBase = resolveProdAdminBaseUrl();
   if (!prodBase) {
     return res.status(400).json({
-      message: 'This instance is already production. Use Sync latest from Maker, or let Website Maker push the preview ZIP to asoldi.com.',
+      message: 'This instance is already production. Open the client run in Website Maker and click Update public website now.',
     });
   }
   try {
@@ -11464,7 +11437,7 @@ app.post('/api/admin/sales/:id/publish-preview-to-prod', salesAuth, async (req, 
 
 app.post('/api/admin/sales/:id/import-website-upload', salesAuth, (req, res) => {
   return res.status(410).json({
-    message: 'Manual ZIP upload from the browser is deprecated. Use "Publish website to asoldi.com" or Website Maker auto-push.',
+    message: 'Manual ZIP upload from the browser is deprecated. Open the client run in Website Maker and click Update public website now.',
   });
 });
 
@@ -11687,7 +11660,7 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
             if (!existingImportedPreviewUrl) {
               return res.status(400).json({
                 message:
-                  'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først (på hjemme-Wi-Fi).',
+                  'Ingen offentlig forhåndsvisning funnet ennå. Åpne Website Maker-kjøringen og klikk Update public website now.',
               });
             }
             previewUrl = existingImportedPreviewUrl;
@@ -11723,7 +11696,7 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
       if (!previewUrl) {
         return res.status(400).json({
           message:
-            'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først.',
+            'Ingen offentlig forhåndsvisning funnet ennå. Åpne Website Maker-kjøringen og klikk Update public website now.',
         });
       }
       previewUrl = getPublicSalesPreviewUrl(salesClient) || toPublicSalesPreviewUrl(previewUrl, salesClient.id);
@@ -11820,7 +11793,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   if (!client) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(404).send(
-      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
+      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. Open the client run in Website Maker and click Update public website now.'
     );
   }
   if (salesPreview.shouldRedirectPreviewToSlash(req.path, relativePath)) {
@@ -11836,7 +11809,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   if (!root) {
     res.setHeader('Cache-Control', 'no-store');
     return res.status(404).send(
-      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
+      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. Open the client run in Website Maker and click Update public website now.'
     );
   }
 
@@ -11916,7 +11889,7 @@ app.get('/live-preview/:id', (req, res) => {
   const hasSnapshot =
     sanitizeText(client.websiteImport?.importRoot) || sanitizeText(client.websiteImport?.previewUrl);
   if (!hasSnapshot) {
-    return res.status(404).send('No public website preview yet. Sync latest from Maker first.');
+    return res.status(404).send('No public website preview yet. Open the client run in Website Maker and click Update public website now.');
   }
   res.setHeader('Cache-Control', 'no-store');
   return res.redirect(302, getSalesPreviewUrl(client.id));

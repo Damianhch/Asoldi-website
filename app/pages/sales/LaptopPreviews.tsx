@@ -134,7 +134,7 @@ export const LaptopPreviews = () => {
               </div>
               <h1 className="text-lg font-semibold mt-1">Client website previews</h1>
               <p className="text-xs text-gray-400 mt-1">
-                These are the Hostinger / asoldi.com snapshots used on Sales and in client checkout. Works from any network after you sync from Maker.
+                These are the Hostinger / asoldi.com snapshots used on Sales and in client checkout. Website Maker updates them after each finished step.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -190,7 +190,7 @@ export const LaptopPreviews = () => {
           ) : filtered.length === 0 ? (
             <div className="rounded-2xl border border-white/10 bg-[#2a2a2a] p-6 text-sm text-gray-400">
               {items.length === 0
-                ? 'No public previews yet. On Sales, click “Sync latest from Maker” so the snapshot is published to asoldi.com/sales-preview.'
+                ? 'No public previews yet. Finish Step 1 in Website Maker, or click Update public website now on that run.'
                 : 'No matching clients.'}
             </div>
           ) : (
