@@ -173,6 +173,7 @@ async function publishFromMaker({ client, runId, token, base }) {
     siteFolder,
     createBackup: false,
     exportRootBase: path.join(makerRoot, '.generated-runs', '.api-exports'),
+    workspaceRoot: makerRoot,
   });
   try {
     const zipBuffer = readFileSync(report.zipPath);
