@@ -60,7 +60,7 @@ const ingested = await ingestSalesPreviewZip({
 });
 
 assert(ingested.previewSlug === 'byneset-bydelskafe', `unexpected slug ${ingested.previewSlug}`);
-assert(ingested.publicUrl === 'https://asoldi.com/sales-preview/byneset-bydelskafe/', `unexpected public url ${ingested.publicUrl}`);
+assert(ingested.publicUrl === 'https://asoldi.com/sales-preview/client-1/', `unexpected public url ${ingested.publicUrl}`);
 assert(store['client-1'].websiteImport.importRoot.includes('byneset-bydelskafe'), 'importRoot missing site folder');
 const html = await fs.readFile(path.join(ingested.siteRoot, 'index.html'), 'utf8');
 assert(html.includes('hello'), 'index.html not extracted');

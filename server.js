@@ -21,6 +21,9 @@ import {
   assertImportedPreviewHasAssets,
   fillExportZipWithMakerAssets,
   findPreviewFileByBasename,
+  inlineLocalStylesheets,
+  mergePreviewAssetsIntoSiteRoot,
+  renderPublicPreviewsBoard,
 } from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
@@ -2197,8 +2200,7 @@ function resolveSalesClientArg(clientOrId) {
 function getSalesPreviewUrl(clientOrId) {
   const client = resolveSalesClientArg(clientOrId);
   if (!client?.id) return '';
-  const slug = sanitizeText(client.websiteImport?.previewSlug);
-  return salesPreview.getSalesPreviewPath(client.id, slug) || buildSalesPreviewPath(client.id);
+  return buildSalesPreviewPath(client.id);
 }
 
 function getPublicSalesPreviewUrl(clientOrId) {
@@ -6703,6 +6705,7 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
     throw makeHttpError(502, 'Imported ZIP did not contain an index.html site root.');
   }
   try {
+    await mergePreviewAssetsIntoSiteRoot(siteRoot, importDir);
     assertImportedPreviewHasAssets(siteRoot, importDir);
   } catch (error) {
     await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
@@ -6852,7 +6855,7 @@ async function publishPreviewBundleToProd(client) {
 // minutes it exports each linked Maker run and uploads the ZIP to
 // asoldi.com/sales-preview. Runs only where Maker is reachable (office LAN),
 // never on Hostinger (resolveProdAdminBaseUrl() is empty there).
-const LAN_PREVIEW_AUTOPUBLISH_ENABLED = String(process.env.LAN_PREVIEW_AUTOPUBLISH || '1') !== '0';
+const LAN_PREVIEW_AUTOPUBLISH_ENABLED = String(process.env.LAN_PREVIEW_AUTOPUBLISH || '0') !== '0';
 const LAN_PREVIEW_AUTOPUBLISH_MS = Math.max(
   60_000,
   Number(process.env.LAN_PREVIEW_AUTOPUBLISH_MS || 5 * 60_000)
@@ -11795,6 +11798,7 @@ ${message || '(Ingen melding)'}`;
 async function sendSalesPreviewFile(req, res, relativePath = '') {
   const client = salesPreview.findSalesClientForPreviewParam(req.params.id, sales);
   if (!client) {
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(404).send(
       'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
     );
@@ -11810,6 +11814,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
     (resolvedStored && existsSync(path.join(resolvedStored, 'index.html')) && resolvedStored) ||
     (await salesPreview.resolveSalesPreviewRoot(client, SALES_IMPORTS_ROOT));
   if (!root) {
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(404).send(
       'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
     );
@@ -11820,7 +11825,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   const importBase = path.resolve(join(SALES_IMPORTS_ROOT, client.id));
   const roots = [root];
   if (root !== importBase && existsSync(importBase) && root.startsWith(importBase)) roots.push(importBase);
-  const cleaned = sanitizeText(relativePath).replace(/^[/\\]+/, '');
+  const cleaned = sanitizeText(relativePath).replace(/^[/\\]+/, '').split(/[?#]/)[0];
   const normalized = path.normalize(cleaned || 'index.html');
   const requestedAbs = path.resolve(root, normalized);
   const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
@@ -11847,7 +11852,9 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
         const text = raw.toString('utf8');
         if (ext === '.html' || ext === '.htm' || /^\s*</.test(text)) {
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          res.send(rewritePreviewAssetPaths(injectPreviewBaseHref(text, client.id), client.id));
+          res.send(
+            inlineLocalStylesheets(rewritePreviewAssetPaths(injectPreviewBaseHref(text, client.id), client.id), roots)
+          );
           return true;
         }
       }
@@ -11893,6 +11900,25 @@ app.get('/live-preview/:id', (req, res) => {
   }
   res.setHeader('Cache-Control', 'no-store');
   return res.redirect(302, getSalesPreviewUrl(client.id));
+});
+
+app.get(['/previews', '/previews/'], (req, res) => {
+  const items = sales
+    .getSalesClients()
+    .filter((client) => !sales.isSsuSalesProduct(client.product))
+    .filter(
+      (client) =>
+        sanitizeText(client?.websiteImport?.importRoot) || sanitizeText(client?.websiteImport?.previewUrl)
+    )
+    .map((client) => ({
+      name: sanitizeText(client.businessName) || 'Website',
+      url: `${PUBLIC_SALES_ORIGIN}/sales-preview/${encodeURIComponent(client.id)}/`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'nb'));
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.send(renderPublicPreviewsBoard(items));
 });
 
 app.get('/sales-preview/:id', async (req, res) => {

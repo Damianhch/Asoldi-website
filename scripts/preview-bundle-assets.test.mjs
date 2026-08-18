@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import AdmZip from 'adm-zip';
 import {
   collectRelativeAssetRefs,
   fillExportZipWithMakerAssets,
+  inlineLocalStylesheets,
   makerAssetFetchUrls,
   rewriteCssForStaticPreview,
 } from '../lib/preview-bundle-assets.js';
@@ -86,5 +90,17 @@ await assert.rejects(
     }),
   /missing CSS\/JS/
 );
+
+const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'inline-css-'));
+await fs.mkdir(path.join(tmp, 'assets'), { recursive: true });
+await fs.writeFile(path.join(tmp, 'assets', 'theme.css'), 'body{color:red} @font-face{src:url(brand.woff)}', 'utf8');
+const inlined = inlineLocalStylesheets(
+  '<link rel="stylesheet" href="assets/theme.css"><body>Hi</body>',
+  [tmp]
+);
+assert.match(inlined, /<style data-preview-css="theme.css">/);
+assert.match(inlined, /url\(assets\/brand\.woff\)/);
+assert.doesNotMatch(inlined, /<link rel="stylesheet"/);
+await fs.rm(tmp, { recursive: true, force: true });
 
 console.log('preview-bundle-assets tests passed');
