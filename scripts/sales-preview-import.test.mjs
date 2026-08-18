@@ -65,6 +65,8 @@ assert(store['client-1'].websiteImport.importRoot.includes('byneset-bydelskafe')
 const html = await fs.readFile(path.join(ingested.siteRoot, 'index.html'), 'utf8');
 assert(html.includes('hello'), 'index.html not extracted');
 assert(getPublicSalesPreviewUrl(store['client-1']) === ingested.publicUrl, 'public url helper mismatch');
+assert(getPublicSalesPreviewUrl(store['client-1'], { pretty: true }).includes('byneset-bydelskafe'), 'pretty slug stays available as alias');
+assert(getPublicSalesPreviewUrl(store['client-1'], { pretty: false }) === 'https://asoldi.com/sales-preview/client-1/', 'shared url must stay the id path');
 
 const badZip = new AdmZip();
 badZip.addFile(

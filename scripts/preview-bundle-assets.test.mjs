@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import AdmZip from 'adm-zip';
 import {
+  assertImportedPreviewHasAssets,
   collectRelativeAssetRefs,
   fillExportZipWithMakerAssets,
   inlineLocalStylesheets,
@@ -102,5 +103,14 @@ assert.match(inlined, /<style data-preview-css="theme.css">/);
 assert.match(inlined, /url\(assets\/brand\.woff\)/);
 assert.doesNotMatch(inlined, /<link rel="stylesheet"/);
 await fs.rm(tmp, { recursive: true, force: true });
+
+const inlinedOnly = await fs.mkdtemp(path.join(os.tmpdir(), 'inline-only-'));
+await fs.writeFile(
+  path.join(inlinedOnly, 'index.html'),
+  '<html><head><link href="assets/theme.css" rel="stylesheet"><style data-preview-css="theme.css">body{color:red}</style></head><body>ok</body></html>',
+  'utf8'
+);
+assertImportedPreviewHasAssets(inlinedOnly);
+await fs.rm(inlinedOnly, { recursive: true, force: true });
 
 console.log('preview-bundle-assets tests passed');

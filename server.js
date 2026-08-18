@@ -2206,7 +2206,29 @@ function getSalesPreviewUrl(clientOrId) {
 function getPublicSalesPreviewUrl(clientOrId) {
   const client = resolveSalesClientArg(clientOrId);
   if (!client?.id) return '';
-  return salesPreview.getPublicSalesPreviewUrl(client) || buildPublicSalesPreviewUrl(client.id);
+  return salesPreview.getPublicSalesPreviewUrl(client, { pretty: false }) || buildPublicSalesPreviewUrl(client.id);
+}
+
+function listPublicPreviewBoardItems() {
+  return sales
+    .getSalesClients()
+    .filter((client) => !sales.isSsuSalesProduct(client.product))
+    .filter(
+      (client) =>
+        sanitizeText(client?.websiteImport?.importRoot) || sanitizeText(client?.websiteImport?.previewUrl)
+    )
+    .map((client) => ({
+      name: sanitizeText(client.businessName) || 'Website',
+      url: `${PUBLIC_SALES_ORIGIN}/sales-preview/${encodeURIComponent(client.id)}/`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'nb'));
+}
+
+function sendPublicPreviewsBoard(res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.send(renderPublicPreviewsBoard(listPublicPreviewBoardItems()));
 }
 
 function rewriteOffersToPublicPreview(clientId) {
@@ -6720,10 +6742,8 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
   const previewSlug =
     sanitizeText(targetClient.websiteImport?.previewSlug) ||
     salesPreview.allocatePreviewSlug(targetClient, sales.getSalesClients());
-  const publicUrl = salesPreview.getPublicSalesPreviewUrl({
-    ...targetClient,
-    websiteImport: { ...(targetClient.websiteImport || {}), previewSlug },
-  });
+  const previewPath = `/sales-preview/${encodeURIComponent(targetClient.id)}/`;
+  const publicUrl = `${salesPreview.getPublicPreviewOrigin()}${previewPath}`;
   const updatedClient = sales.setSalesWebsiteImport(targetClient.id, {
     importedAt: now,
     publishedAt: publishedNow ? now : sanitizeText(targetClient.websiteImport?.publishedAt),
@@ -6732,7 +6752,7 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
     sourceBaseUrl: sanitizeText(sourceBaseUrl) || publicUrl || getPublicSalesPreviewUrl(targetClient),
     siteFolder: path.basename(siteRoot),
     importRoot: siteRoot,
-    previewUrl: salesPreview.getSalesPreviewPath(targetClient.id, previewSlug),
+    previewUrl: previewPath,
     previewSlug,
     publicUrl,
     publicPreviewPublishedAt: publishedNow
@@ -11902,23 +11922,14 @@ app.get('/live-preview/:id', (req, res) => {
   return res.redirect(302, getSalesPreviewUrl(client.id));
 });
 
-app.get(['/previews', '/previews/'], (req, res) => {
-  const items = sales
-    .getSalesClients()
-    .filter((client) => !sales.isSsuSalesProduct(client.product))
-    .filter(
-      (client) =>
-        sanitizeText(client?.websiteImport?.importRoot) || sanitizeText(client?.websiteImport?.previewUrl)
-    )
-    .map((client) => ({
-      name: sanitizeText(client.businessName) || 'Website',
-      url: `${PUBLIC_SALES_ORIGIN}/sales-preview/${encodeURIComponent(client.id)}/`,
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'nb'));
+app.get('/api/public/previews', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Robots-Tag', 'noindex, nofollow');
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  return res.send(renderPublicPreviewsBoard(items));
+  return res.json({ ok: true, items: listPublicPreviewBoardItems() });
+});
+
+app.get(['/previews', '/previews/', '/sales-preview', '/sales-preview/'], (req, res) => {
+  return sendPublicPreviewsBoard(res);
 });
 
 app.get('/sales-preview/:id', async (req, res) => {
