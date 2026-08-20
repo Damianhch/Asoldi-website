@@ -14,6 +14,7 @@ import {
   isPrivateMakerUrl,
   lanAsoldiOriginFromMakerUrl,
   rewritePreviewAssetPaths,
+  rewriteMakerPreviewRefs,
   toPublicSalesPreviewUrl,
 } from '../lib/laptop-preview.js';
 
@@ -147,6 +148,33 @@ assert.equal(
 assert.equal(
   rewritePreviewAssetPaths('<link href="localasset://theme.css" rel="stylesheet">', 'client-1'),
   '<link href="assets/theme.css" rel="stylesheet">'
+);
+
+assert.equal(
+  rewriteMakerPreviewRefs(
+    '<script src="/preview/81809674-2f51-4ae2-9587-20a128dc1591/custom/asset?id=0e3fe9e1bf0a4a5c.js"></script>'
+  ),
+  '<script src="assets/0e3fe9e1bf0a4a5c.js"></script>'
+);
+assert.equal(
+  rewriteMakerPreviewRefs(
+    '<script src="http://localhost:3000/preview/run-9/step/2/asset?id=webflow.js"></script><a href="/preview/run-9/custom?route=%2Fmeny">Meny</a>'
+  ),
+  '<script src="assets/webflow.js"></script><a href="./meny">Meny</a>'
+);
+assert.equal(
+  rewritePreviewAssetPaths(
+    '<script src="/preview/run-9/custom/asset?id=webflow.js"></script><a href="/preview/run-9/custom?route=%2Fmeny">Meny</a>',
+    'client-1'
+  ),
+  '<script src="/sales-preview/client-1/assets/webflow.js"></script><a href="/sales-preview/client-1/meny">Meny</a>'
+);
+assert.equal(
+  rewritePreviewAssetPaths(
+    '<script src="./preview/run-9/custom/asset?id=gsap.js"></script>',
+    'client-1'
+  ),
+  '<script src="/sales-preview/client-1/assets/gsap.js"></script>'
 );
 
 console.log('laptop-preview tests passed');

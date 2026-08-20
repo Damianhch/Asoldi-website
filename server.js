@@ -21,9 +21,11 @@ import {
   fillExportZipWithMakerAssets,
   findPreviewFileByBasename,
   inlineLocalStylesheets,
+  looksLikeAssetFileName,
   renderPublicPreviewsBoard,
 } from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
+import * as clientForms from './lib/client-forms.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
 import * as employeeLuca from './lib/employee-luca.js';
 import * as employeeMyPhoner from './lib/employee-myphoner.js';
@@ -1820,6 +1822,11 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
       product === 'ssu' ? '' : sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
     details: normalizeSalesDetailLinks(source.details, existing?.details),
   };
+  if (Object.prototype.hasOwnProperty.call(source, 'notes')) {
+    payload.notes = sales.sanitizeSalesNotes(source.notes);
+  } else {
+    payload.notes = sales.sanitizeSalesNotes(existing?.notes);
+  }
 
   if (requireCore) {
     if (!payload.businessName) throw new Error('Business name is required.');
@@ -9853,6 +9860,9 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
         clientPatch.meetingPlace = nextAddress;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(fields, 'websiteDomain')) {
+      clientPatch.websiteDomain = sanitizeSalesWebsiteDomain(fields.websiteDomain);
+    }
     const updatedClient = sales.updateSalesClient(client.id, clientPatch);
     const makerPatch = {
       runId: nextRunId,
@@ -9863,6 +9873,56 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
     };
     const updated = sales.setSalesMakerRun(client.id, makerPatch);
     return res.json({ ok: true, event, client: updated, fieldsApplied: true });
+  }
+
+  if (event === 'run.golive.updated') {
+    const domain = sanitizeSalesWebsiteDomain(req.body?.domain || req.body?.hubSite?.domain || client.websiteDomain);
+    const siteKey = sanitizeText(req.body?.siteKey || req.body?.hubSite?.site_key);
+    const liveUrl = sanitizeText(req.body?.liveUrl);
+    const goLiveStatus = sanitizeText(req.body?.status).toLowerCase();
+    const hubName = sanitizeText(req.body?.hubSite?.name || client.businessName);
+    let site = null;
+    if (goLiveStatus === 'ready' && (siteKey || domain)) {
+      site = hub.createSite({
+        name: hubName || domain || 'New client',
+        domain,
+        site_key: siteKey,
+      });
+    }
+    const clientPatch = {};
+    if (domain) clientPatch.websiteDomain = domain;
+    if (goLiveStatus === 'ready') {
+      clientPatch.progression = { domainConnected: true, live: true };
+      if (site) {
+        clientPatch.hubSite = {
+          siteKey: site.site_key,
+          domain: site.domain,
+          id: site.id,
+          createdAt: site.createdAt,
+          liveUrl: liveUrl || (site.domain ? `https://${site.domain}` : ''),
+        };
+      }
+    }
+    const updatedClient = Object.keys(clientPatch).length
+      ? sales.updateSalesClient(client.id, clientPatch)
+      : client;
+    const makerBaseUrl = resolveWebsiteMakerBaseUrl('', updatedClient || client);
+    const linked = buildMakerRunLinks(makerBaseUrl, nextRunId, handoff);
+    const patch = {
+      runId: nextRunId,
+      industry: sanitizeText(updatedClient?.industry || client.industry),
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+      statusUpdatedAt: new Date().toISOString(),
+    };
+    if (sanitizeText(linked.dashboardUrl)) patch.dashboardUrl = linked.dashboardUrl;
+    if (sanitizeText(linked.previewUrl)) patch.previewUrl = linked.previewUrl;
+    if (sanitizeText(linked.exportPath)) patch.exportPath = linked.exportPath;
+    if (sanitizeText(linked.latestReadyStep)) patch.latestReadyStep = linked.latestReadyStep;
+    if (sanitizeText(linked.latestStepStatus)) patch.latestStepStatus = linked.latestStepStatus;
+    else if (callbackStatus) patch.latestStepStatus = callbackStatus;
+    if (sanitizeText(linked.intakeStatus)) patch.intakeStatus = linked.intakeStatus;
+    const updated = sales.setSalesMakerRun((updatedClient || client).id, patch);
+    return res.json({ ok: true, event, client: updated, site, live: goLiveStatus === 'ready' });
   }
 
   const makerBaseUrl = resolveWebsiteMakerBaseUrl('', client);
@@ -10500,6 +10560,18 @@ app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
   const updated = sales.setSalesProgress(req.params.id, key, value);
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
+app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'notes')) {
+    return res.status(400).json({ message: 'Notes are required.' });
+  }
+  const updated = sales.setSalesNotes(req.params.id, req.body?.notes);
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
 });
@@ -11159,6 +11231,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
       relevantLinks,
       extraContext,
+      websiteDomain: sanitizeSalesWebsiteDomain(client.websiteDomain),
     };
     const previousRunId = sanitizeText(client.makerRun?.runId);
     const existingRunId = forceNewRun ? '' : previousRunId;
@@ -11181,6 +11254,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       salesPreviewPushUrl: resolveSalesPreviewPushUrl(),
       skipSalesAddressEnrichment: true,
       answers: answersPatch,
+      productionDomain: sanitizeSalesWebsiteDomain(client.websiteDomain),
       quickFillLinks,
     };
 
@@ -11558,20 +11632,36 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
     });
   }
 
-  const site = hub.createSite({
-    name: client.businessName || 'New client',
-    domain: client.websiteDomain || '',
-  });
+  const existing =
+    (client.hubSite?.siteKey && hub.getSiteByKey(client.hubSite.siteKey)) ||
+    (client.websiteDomain && hub.getSiteByDomain(client.websiteDomain)) ||
+    null;
+  const site =
+    existing ||
+    hub.createSite({
+      name: client.businessName || 'New client',
+      domain: client.websiteDomain || '',
+      site_key: client.hubSite?.siteKey || '',
+    });
 
-  if (client.websiteImport?.importRoot) {
-    const importBase = join(SALES_IMPORTS_ROOT, client.id);
-    await fs.rm(importBase, { recursive: true, force: true }).catch(() => {});
-  }
-  sales.deleteSalesClient(client.id);
+  sales.updateSalesClient(client.id, {
+    progression: {
+      domainConnected: Boolean(client.websiteDomain || site.domain),
+      live: true,
+    },
+    hubSite: {
+      siteKey: site.site_key,
+      domain: site.domain,
+      id: site.id,
+      createdAt: site.createdAt,
+    },
+  });
+  sales.setSalesStatus(client.id, 'secondary', { reason: 'got-client' });
 
   res.json({
     ok: true,
     site,
+    client: sales.getSalesClientById(client.id),
     movedClient: client,
   });
 });
@@ -11738,6 +11828,59 @@ app.delete('/api/admin/sales/offers/:id', salesAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.options('/api/client-forms/:siteKey', (req, res) => {
+  clientForms.setClientFormCors(req, res);
+  return res.status(204).end();
+});
+
+app.post(
+  '/api/client-forms/:siteKey',
+  express.urlencoded({ extended: true }),
+  async (req, res) => {
+    clientForms.setClientFormCors(req, res);
+    const siteKey = sanitizeText(req.params.siteKey);
+    const site = hub.getSiteByKey(siteKey);
+    if (!site) {
+      return res.status(404).json({ ok: false, message: 'Unknown site.' });
+    }
+    try {
+      clientForms.assertClientFormAllowed(req);
+    } catch (error) {
+      return res.status(error.status || 429).json({ ok: false, message: error.message });
+    }
+    if (clientForms.looksLikeBot(req.body || {})) {
+      return res.json({ ok: true });
+    }
+    if (!emailLib.canSendEmail()) {
+      return res.status(503).json({ ok: false, message: 'Email is not configured.' });
+    }
+    const fields = clientForms.extractFormFields(req.body || {});
+    if (!Object.keys(fields).length) {
+      return res.status(400).json({ ok: false, message: 'The form was empty.' });
+    }
+    const pageUrl = sanitizeText(req.get('referer'));
+    const email = clientForms.buildFormEmail({ site, fields, pageUrl });
+    const replyTo = clientForms.replyToFromFields(fields);
+    try {
+      await emailLib.sendEmail({
+        to: clientForms.resolveFormRecipient(site),
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
+        replyTo: replyTo || undefined,
+      });
+    } catch (error) {
+      console.error('Client form email error:', error);
+      return res.status(500).json({ ok: false, message: 'Could not send the message.' });
+    }
+    if (clientForms.wantsJsonResponse(req)) {
+      return res.json({ ok: true });
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(clientForms.thankYouHtml({ name: site.name || site.domain, redirectUrl: pageUrl }));
+  }
+);
+
 // --- Booking (skip Calendly: send inquiry email to configured inbox)
 app.post('/api/booking', async (req, res) => {
   const { name, email, phone, company, service, message } = req.body || {};
@@ -11866,6 +12009,16 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
   if (wantedName && wantedName !== 'index.html' && path.extname(wantedName)) {
     const found = await findPreviewFileByBasename(roots, wantedName);
     if (found && (await sendIfFile(found))) return;
+  }
+  const assetId = sanitizeText(req.query?.id).split(/[?#]/)[0];
+  const askedForMakerAsset = /(^|[\\/])asset$/i.test(String(cleaned || '').replace(/\\/g, '/'));
+  if (assetId && askedForMakerAsset && looksLikeAssetFileName(assetId)) {
+    for (const candidateRoot of roots) {
+      const direct = path.resolve(candidateRoot, 'assets', assetId);
+      if (await sendIfFile(direct)) return;
+    }
+    const foundAsset = await findPreviewFileByBasename(roots, assetId);
+    if (foundAsset && (await sendIfFile(foundAsset))) return;
   }
   res.setHeader('Cache-Control', 'no-store');
   return res.status(404).send('Preview file not found');

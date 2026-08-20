@@ -16,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Search,
+  StickyNote,
   Tag,
   Trash2,
   Undo2,
@@ -101,6 +102,7 @@ type SalesFormState = {
   agreedTime: boolean;
   meetingAt: string;
   websiteDomain: string;
+  notes: string;
   instagramUrl: string;
   facebookUrl: string;
   proffUrl: string;
@@ -120,6 +122,7 @@ const INITIAL_FORM: SalesFormState = {
   agreedTime: false,
   meetingAt: '',
   websiteDomain: '',
+  notes: '',
   instagramUrl: '',
   facebookUrl: '',
   proffUrl: '',
@@ -575,6 +578,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [recordingOpenClientId, setRecordingOpenClientId] = useState<string | null>(null);
   const [recordingLoadingClientId, setRecordingLoadingClientId] = useState<string | null>(null);
   const [recordingErrorByClient, setRecordingErrorByClient] = useState<Record<string, string>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
@@ -612,6 +617,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       client.contactPhone,
       client.meetingPlace,
       client.industry,
+      client.notes,
     ]
       .map((entry) => normalizeClientSearchText(entry))
       .filter(Boolean)
@@ -1013,6 +1019,42 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setShowForm(true);
   }
 
+  function clientNoteDraft(client: SalesClient) {
+    return Object.prototype.hasOwnProperty.call(noteDrafts, client.id)
+      ? noteDrafts[client.id]
+      : (client.notes || '');
+  }
+
+  function applySavedClient(saved: SalesClient) {
+    setClients((prev) => prev.map((entry) => (entry.id === saved.id ? saved : entry)));
+    setNoteDrafts((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, saved.id)) return prev;
+      const next = { ...prev };
+      delete next[saved.id];
+      return next;
+    });
+  }
+
+  async function saveClientNotes(client: SalesClient) {
+    const notes = clientNoteDraft(client);
+    if (notes.trim() === String(client.notes || '').trim()) return;
+    if (savingNoteId === client.id) return;
+    setSavingNoteId(client.id);
+    setError('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/notes`, {
+        method: 'PATCH',
+        body: JSON.stringify({ notes }),
+      });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed saving note');
+    } finally {
+      setSavingNoteId((current) => (current === client.id ? null : current));
+    }
+  }
+
   function openEdit(client: SalesClient) {
     const details = parseDetails(client.details);
     setEditingId(client.id);
@@ -1028,6 +1070,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       agreedTime: Boolean(client.agreedTime),
       meetingAt: toDateTimeLocal(client.meetingAt),
       websiteDomain: client.websiteDomain || '',
+      notes: clientNoteDraft(client),
       instagramUrl: details.instagramUrl,
       facebookUrl: details.facebookUrl,
       proffUrl: details.proffUrl,
@@ -1054,6 +1097,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         agreedTime: form.agreedTime,
         meetingAt: form.agreedTime ? toIsoDateTime(form.meetingAt) : '',
         websiteDomain: form.product === 'ssu' ? '' : form.websiteDomain,
+        notes: form.notes,
         details: {
           instagramUrl: form.instagramUrl,
           facebookUrl: form.facebookUrl,
@@ -1071,8 +1115,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       if (Array.isArray(data.warnings) && data.warnings.length) {
         setError(data.warnings.join(' | '));
       }
+      const savedId = editingId;
       setShowForm(false);
       setEditingId(null);
+      if (savedId) {
+        setNoteDrafts((prev) => {
+          if (!Object.prototype.hasOwnProperty.call(prev, savedId)) return prev;
+          const next = { ...prev };
+          delete next[savedId];
+          return next;
+        });
+      }
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed saving sales client');
@@ -1225,6 +1278,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       latestReadyStep: String(client.makerRun?.latestReadyStep || ''),
     });
     try {
+      const makerBase = healStaleLocalMakerBase(websiteMakerBaseUrl) || normalizeHttpBaseUrl(websiteMakerBaseUrl);
+      if (makerBase) {
+        await fetch(`${makerBase.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(makerRunId)}`, {
+          cache: 'no-store',
+        }).catch(() => null);
+      }
       const data = await request(`/admin/sales/${client.id}/refresh-maker-handoff`, {
         method: 'POST',
         body: JSON.stringify({
@@ -1921,6 +1980,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   </button>
                 </div>
 
+                <ClientNotesField
+                  value={clientNoteDraft(client)}
+                  saving={savingNoteId === client.id}
+                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
+                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
+                  onSave={() => void saveClientNotes(client)}
+                />
+
                 <div className="flex flex-wrap gap-1.5">
                   {timeline.map((step) => {
                     const stepDone = step.key === 'step0AgreeMeetingTime'
@@ -2535,6 +2602,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 ) : (
                   <div className="text-xs text-gray-500">No reason added.</div>
                 )}
+                <ClientNotesField
+                  value={clientNoteDraft(client)}
+                  saving={savingNoteId === client.id}
+                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
+                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
+                  onSave={() => void saveClientNotes(client)}
+                />
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -2649,6 +2723,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
               <TextArea label="Other links (one per line)" value={form.otherLinks} onChange={(value) => setForm((prev) => ({ ...prev, otherLinks: value }))} />
 
+              <TextArea
+                label="Internal notes (shown on the client card)"
+                value={form.notes}
+                onChange={(value) => setForm((prev) => ({ ...prev, notes: value }))}
+              />
+
               <div className="md:col-span-2 flex justify-end gap-2 mt-2">
                 <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg bg-white/10 text-white">
                   Cancel
@@ -2710,6 +2790,95 @@ function TextArea({
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white resize-y"
       />
+    </div>
+  );
+}
+
+function ClientNotesField({
+  value,
+  saving,
+  dirty,
+  onChange,
+  onSave,
+}: {
+  value: string;
+  saving: boolean;
+  dirty: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasNote = Boolean(value.trim());
+  const showEditor = editing || dirty || saving;
+
+  useEffect(() => {
+    if (!showEditor) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [showEditor]);
+
+  return (
+    <div className="rounded-xl border border-amber-700/25 bg-amber-950/20 p-2.5 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-amber-300">
+          <StickyNote size={12} />
+          Note
+        </div>
+        {(dirty || saving) && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onSave}
+            disabled={saving || !dirty}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-700/40 text-amber-100 text-[11px] hover:bg-amber-700/55 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={11} className="animate-spin" /> : null}
+            {saving ? 'Saving…' : 'Save note'}
+          </button>
+        )}
+      </div>
+      {showEditor ? (
+        <textarea
+          ref={textareaRef}
+          rows={3}
+          maxLength={8000}
+          value={value}
+          placeholder="Write a note for this client…"
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={() => {
+            onSave();
+            setEditing(false);
+          }}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              onSave();
+              setEditing(false);
+            }
+          }}
+          className="w-full px-2.5 py-2 rounded-lg bg-black/30 border border-white/10 text-sm text-gray-100 placeholder:text-gray-500 resize-y whitespace-pre-wrap"
+        />
+      ) : hasNote ? (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="w-full text-left text-sm text-amber-50/90 whitespace-pre-wrap break-words max-h-32 overflow-y-auto"
+          title="Click to edit note"
+        >
+          {value}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="w-full text-left text-xs text-gray-400 hover:text-gray-200"
+        >
+          Add a note…
+        </button>
+      )}
     </div>
   );
 }

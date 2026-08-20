@@ -202,6 +202,7 @@ export type SalesClient = {
   agreedTime: boolean;
   meetingAt: string;
   websiteDomain: string;
+  notes: string;
   details: SalesClientDetails;
   myphoner: SalesMyphonerMeta;
   progression: SalesProgression;
@@ -209,6 +210,13 @@ export type SalesClient = {
   calendar: SalesCalendarMeta;
   websiteImport: SalesWebsiteImportMeta;
   makerRun: SalesMakerRunMeta;
+  hubSite?: {
+    siteKey: string;
+    domain: string;
+    id: string;
+    createdAt: string;
+    liveUrl?: string;
+  };
   status: 'active' | 'not-sold' | 'secondary';
   archive: SalesArchiveMeta;
   createdAt: string;

@@ -60,15 +60,30 @@ export function getAllSites() {
   }));
 }
 
-export function createSite({ name, domain }) {
+export function createSite({ name, domain, site_key } = {}) {
+  const requestedKey = String(site_key || "").trim();
+  if (requestedKey) {
+    const existingByKey = getSiteByKey(requestedKey);
+    if (existingByKey) {
+      if (domain && existingByKey.domain !== domain) {
+        const updated = updateSite(existingByKey.id, { domain, name: name || existingByKey.name });
+        return updated.ok ? { ...updated.site } : { ...existingByKey };
+      }
+      return { ...existingByKey };
+    }
+  }
+  if (domain) {
+    const existingByDomain = getSiteByDomain(domain);
+    if (existingByDomain) return { ...existingByDomain };
+  }
   const sites = readSites();
-  const siteKey = generateSiteKey();
+  const siteKey = requestedKey || generateSiteKey();
   const id = String(Date.now());
   const site = {
     id,
     site_key: siteKey,
-    domain: domain || '',
-    name: name || 'Unnamed site',
+    domain: domain || "",
+    name: name || "Unnamed site",
     features: { users: true, analytics: false, ecommerce: false },
     createdAt: new Date().toISOString(),
   };

@@ -17,6 +17,12 @@ const htmlRefs = collectRelativeAssetRefs(
   '<link href="localasset://theme.css" rel="stylesheet"><script src="assets/app.js"></script>'
 );
 assert.deepEqual([...htmlRefs].sort(), ['assets/app.js', 'assets/theme.css']);
+assert.deepEqual(
+  [...collectRelativeAssetRefs(
+    '<script src="/preview/run-1/custom/asset?id=webflow.js"></script>'
+  )],
+  ['assets/webflow.js']
+);
 
 assert.equal(
   rewriteCssForStaticPreview('src:url(localasset://brand.woff)'),
@@ -139,7 +145,7 @@ const recovered = await recoverMissingStylesheets(
 assert.match(recovered, /data-preview-css="recovered"/);
 assert.match(recovered, /body\{color:blue\}/);
 assert.doesNotMatch(recovered, /assets\/missing\.css/);
-assert.doesNotMatch(recovered, /assets\/app\.js/);
+assert.match(recovered, /assets\/app\.js/);
 
 const recoveredNested = await recoverMissingStylesheets(
   '<html><head><link rel="stylesheet" href="assets/missing.css"></head><body><img src="https://demo.example.com/main-demo/hero.jpg"></body></html>',
@@ -164,5 +170,37 @@ const recoveredNested = await recoverMissingStylesheets(
 );
 assert.match(recoveredNested, /h1\{color:green\}/);
 assert.match(recoveredNested, /data-preview-css="recovered"/);
+
+const recoveredIgnoresSvgXmlns = await recoverMissingStylesheets(
+  `<html><head><link rel="stylesheet" href="assets/missing.css"></head><body>
+    ${'<svg xmlns="http://www.w3.org/2000/svg"></svg>'.repeat(20)}
+    <img src="https://themepanthers.com/wp/nest/d1/wp-content/uploads/hero.jpg">
+    <link rel="shortlink" href="https://themepanthers.com/wp/nest/d1/">
+  </body></html>`,
+  {
+    fetchImpl: async (url) => {
+      if (/w3\.org/i.test(String(url))) {
+        throw new Error(`must not fetch w3.org: ${url}`);
+      }
+      if (String(url) === 'https://themepanthers.com/wp/nest/d1/') {
+        return {
+          ok: true,
+          text: async () => '<link rel="stylesheet" href="/wp-content/themes/nest/style.css">',
+          headers: { get: () => 'text/html' },
+        };
+      }
+      if (String(url) === 'https://themepanthers.com/wp-content/themes/nest/style.css') {
+        return {
+          ok: true,
+          text: async () => 'body{font-family:Quicksand}',
+          headers: { get: () => 'text/css' },
+        };
+      }
+      return { ok: false, text: async () => '', headers: { get: () => '' } };
+    },
+  }
+);
+assert.match(recoveredIgnoresSvgXmlns, /font-family:Quicksand/);
+assert.doesNotMatch(recoveredIgnoresSvgXmlns, /recovered from [^"']*w3\.org/);
 
 console.log('preview-bundle-assets tests passed');

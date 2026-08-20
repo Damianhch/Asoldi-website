@@ -134,5 +134,34 @@ const kept = await fs.readFile(path.join(importsRoot, 'client-3', 'index.html'),
 assert(failedSecond, 'second CSS-less import must fail');
 assert(kept.includes('keep-me'), 'failed CSS-less import must not wipe a working preview');
 
+store['client-4'] = {
+  id: 'client-4',
+  businessName: 'Animated Cafe',
+  makerRun: { runId: 'run-4' },
+  websiteImport: {},
+};
+const animatedZip = new AdmZip();
+animatedZip.addFile(
+  'index.html',
+  Buffer.from(
+    '<html><head></head><body><script src="/preview/run-4/custom/asset?id=webflow.js"></script><a href="/preview/run-4/custom?route=%2Fmeny">Meny</a></body></html>'
+  )
+);
+animatedZip.addFile('assets/webflow.js', Buffer.from('window.Webflow=window.Webflow||[];'));
+const animated = await ingestSalesPreviewZip({
+  client: store['client-4'],
+  zipBuffer: animatedZip.toBuffer(),
+  runId: 'run-4',
+  step: 'custom',
+  siteFolder: 'animated-cafe',
+  importsRoot,
+  sales,
+  offers: { listOffers: () => [], updateOffer: () => null },
+});
+const animatedHtml = await fs.readFile(path.join(animated.siteRoot, 'index.html'), 'utf8');
+assert(animatedHtml.includes('src="assets/webflow.js"'), 'import must rewrite Maker preview JS URLs');
+assert(animatedHtml.includes('href="./meny"'), 'import must rewrite Maker preview page routes');
+assert(!animatedHtml.includes('/preview/'), 'imported HTML must not keep Maker /preview/ URLs');
+
 await fs.rm(tmp, { recursive: true, force: true });
 console.log('sales-preview-import tests passed');
