@@ -43,17 +43,23 @@ PROD_ADMIN_PASSWORD='your-admin-password' node scripts/sync-prod-users.mjs --out
 
 ## 3) Publishing a tested website to production
 
-Creating a Website Maker run on LAN **does not** update asoldi.com. That is the CRM safety net.
+Website Maker owns the public snapshot. After draft phase, **Step 1** (and later steps or custom edits) uploads **that client only** to:
 
-When a run is good enough to show on the live sales page, use **Publish website to asoldi.com** on the LAN client card. That copies **only** `makerRun` (run id, preview URL, dashboard URL). Name, status, MyPhoner, and other CRM fields on production are left alone.
+`https://asoldi.com/sales-preview/<sales-client-id>/`
+
+Unchanged HTML/CSS/JS is skipped. There is no Sales “backfill” / “sync websites” button anymore — that was a one-time fill.
+
+If the URL is not live yet, open the Maker run and click **Update public website now**. Do not wait for a 5-minute LAN timer.
+
+Name, status, MyPhoner, and other CRM fields on production are left alone.
 
 Requirements:
 
-1. Deploy this Asoldi-website change to asoldi.com first (so production has `POST /api/admin/sales/:id/set-maker-run`).
-2. LAN env: `PROD_ADMIN_URL=https://asoldi.com` and `PROD_ADMIN_PASSWORD` (same as `/admin`).
-3. If people off the office network should open the **preview** from asoldi.com, the stored Maker URL must be reachable from their browser. `http://192.168.68.92:3000` only works on the office LAN.
+1. Production already has `POST /api/admin/sales/maker-preview-push` and `POST /api/admin/sales/:id/import-website-push`.
+2. Maker env: `SALES_PREVIEW_PUSH_URL=https://asoldi.com/api/admin/sales/maker-preview-push`, plus a matching callback token / API key, or `PROD_ADMIN_PASSWORD` for the admin fallback.
+3. Each finished Maker step pushes automatically within seconds.
 
-Republish after you improve the run; it overwrites the previous production maker links for that client only.
+Republish after you improve the run; it overwrites the previous production preview files for that client only.
 
 ## 3b) Public meeting preview (asoldi.com, any network)
 
@@ -63,11 +69,11 @@ The URL clients see in checkout, and the URL you should open on a meeting laptop
 
 It is **not** the office LAN Maker (`192.168.68.92:3000`). After custom changes in Website Maker:
 
-1. On Sales click **Sync latest from Maker**. LAN Docker also pushes that snapshot to asoldi.com.
-2. **Copy public preview** or bookmark **https://asoldi.com/previews**.
-3. Open that link from any laptop / show the client. Offers created after sync attach the same URL.
+1. Wait a few seconds for Maker to push, or click **Update public website now** on the run.
+2. In Sales, **Copy public URL** or bookmark **https://asoldi.com/previews**.
+3. Open that link from any laptop / show the client. Offers attach the same URL.
 
-Re-sync after more Maker edits. This is a published snapshot, not a live tunnel into PC2.
+This is a published snapshot, not a live tunnel into PC2.
 
 Off the office network, use **New tunnel URL** only if you need to *edit* in Maker. Preview/show uses asoldi.com.
 

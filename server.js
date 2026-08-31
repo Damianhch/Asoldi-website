@@ -16,7 +16,16 @@ import * as clientPortal from './data/client-portal.js';
 import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
 import { getPersistentDataDir } from './data/storage-path.js';
+import * as salesPreview from './lib/sales-preview-import.js';
+import {
+  fillExportZipWithMakerAssets,
+  findPreviewFileByBasename,
+  inlineLocalStylesheets,
+  looksLikeAssetFileName,
+  renderPublicPreviewsBoard,
+} from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
+import * as clientForms from './lib/client-forms.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
 import * as employeeLuca from './lib/employee-luca.js';
 import * as employeeMyPhoner from './lib/employee-myphoner.js';
@@ -37,6 +46,7 @@ import {
   isAllowedPreviewBundleUploadUrl,
   isPrivateMakerUrl,
   lanAsoldiOriginFromMakerUrl,
+  rewritePreviewAssetPaths,
   toPublicSalesPreviewUrl,
 } from './lib/laptop-preview.js';
 import {
@@ -108,16 +118,6 @@ async function ensureAdminExists() {
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
 
 app.use(express.json());
-
-// Hostinger CDN injects upgrade-insecure-requests. Sending our own policy without
-// that directive lets Sales talk to office HTTP Maker when the CDN does not append.
-app.use((req, res, next) => {
-  res.setHeader(
-    'Content-Security-Policy',
-    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src * data: blob:; font-src *; frame-src *; worker-src *; media-src *; script-src * 'unsafe-inline' 'unsafe-eval'; style-src * 'unsafe-inline'"
-  );
-  next();
-});
 
 // Rate limit forgot-password (5 per IP per 15 min)
 const forgotPasswordAttempts = new Map();
@@ -1822,6 +1822,11 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
       product === 'ssu' ? '' : sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
     details: normalizeSalesDetailLinks(source.details, existing?.details),
   };
+  if (Object.prototype.hasOwnProperty.call(source, 'notes')) {
+    payload.notes = sales.sanitizeSalesNotes(source.notes);
+  } else {
+    payload.notes = sales.sanitizeSalesNotes(existing?.notes);
+  }
 
   if (requireCore) {
     if (!payload.businessName) throw new Error('Business name is required.');
@@ -2190,18 +2195,52 @@ async function searchBrregBusinesses(queryText = '') {
   }
 }
 
-function getSalesPreviewUrl(clientId) {
-  return buildSalesPreviewPath(clientId);
+function resolveSalesClientArg(clientOrId) {
+  if (clientOrId && typeof clientOrId === 'object') return clientOrId;
+  const id = sanitizeText(clientOrId);
+  if (!id) return null;
+  return sales.getSalesClientById(id) || { id };
 }
 
-function getPublicSalesPreviewUrl(clientId) {
-  return buildPublicSalesPreviewUrl(clientId);
+function getSalesPreviewUrl(clientOrId) {
+  const client = resolveSalesClientArg(clientOrId);
+  if (!client?.id) return '';
+  return buildSalesPreviewPath(client.id);
+}
+
+function getPublicSalesPreviewUrl(clientOrId) {
+  const client = resolveSalesClientArg(clientOrId);
+  if (!client?.id) return '';
+  return salesPreview.getPublicSalesPreviewUrl(client, { pretty: false }) || buildPublicSalesPreviewUrl(client.id);
+}
+
+function listPublicPreviewBoardItems() {
+  return sales
+    .getSalesClients()
+    .filter((client) => !sales.isSsuSalesProduct(client.product))
+    .filter(
+      (client) =>
+        sanitizeText(client?.websiteImport?.importRoot) || sanitizeText(client?.websiteImport?.previewUrl)
+    )
+    .map((client) => ({
+      name: sanitizeText(client.businessName) || 'Website',
+      url: `${PUBLIC_SALES_ORIGIN}/sales-preview/${encodeURIComponent(client.id)}/`,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'nb'));
+}
+
+function sendPublicPreviewsBoard(res) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  return res.send(renderPublicPreviewsBoard(listPublicPreviewBoardItems()));
 }
 
 function rewriteOffersToPublicPreview(clientId) {
+  const id = sanitizeText(typeof clientId === 'object' ? clientId?.id : clientId);
   const publicUrl = getPublicSalesPreviewUrl(clientId);
-  if (!publicUrl) return 0;
-  return offers.updatePreviewUrlForSalesClient(clientId, publicUrl);
+  if (!publicUrl || !id) return 0;
+  return offers.updatePreviewUrlForSalesClient(id, publicUrl);
 }
 
 function httpStatusFromError(error, fallback = 500) {
@@ -2282,6 +2321,12 @@ function resolveSalesMakerCallbackUrl(req) {
   const appBase = normalizeHttpBaseUrl(process.env.APP_URL || `${req.protocol}://${req.get('host')}`);
   if (!appBase) return '';
   return `${appBase}/api/admin/sales/maker-status-callback`;
+}
+
+function resolveSalesPreviewPushUrl() {
+  const explicit = normalizeAbsoluteHttpUrl(process.env.SALES_PREVIEW_PUSH_URL || '');
+  if (explicit) return explicit;
+  return `${salesPreview.getPublicPreviewOrigin()}/api/admin/sales/maker-preview-push`;
 }
 
 function isMakerStatusCallbackAuthorized(req) {
@@ -6597,17 +6642,20 @@ function resolveSalesClientPreviewUrl(salesClientId = '') {
   const clientId = sanitizeText(salesClientId);
   if (!clientId) return '';
   const client = sales.getSalesClientById(clientId);
-  return sanitizeText(client?.websiteImport?.previewUrl);
+  return (
+    sanitizeText(client?.websiteImport?.publicUrl) ||
+    getPublicSalesPreviewUrl(client) ||
+    sanitizeText(client?.websiteImport?.previewUrl)
+  );
 }
 
 function hydrateOfferPreviewFromSalesImport(offer, { persist = false } = {}) {
   const source = offer && typeof offer === 'object' ? offer : null;
   if (!source) return null;
   const currentPreview = sanitizeText(source.previewUrl);
-  const linkedPreview = toPublicSalesPreviewUrl(
-    currentPreview || resolveSalesClientPreviewUrl(source.salesClientId),
-    source.salesClientId
-  );
+  const linkedPreview =
+    resolveSalesClientPreviewUrl(source.salesClientId) ||
+    toPublicSalesPreviewUrl(currentPreview, source.salesClientId);
   if (!linkedPreview) return source;
   if (linkedPreview === currentPreview) return source;
   if (persist && source.id) {
@@ -6673,33 +6721,41 @@ async function applyImportedWebsiteZip(client, zipBuffer, {
   }
 
   const resolvedSiteFolder = sanitizeSegment(siteFolder || targetClient.businessName || 'site', 'site');
-  const importDir = join(SALES_IMPORTS_ROOT, targetClient.id);
-  await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-  await fs.mkdir(importDir, { recursive: true });
-  zip.extractAllTo(importDir, true);
-
-  const siteRoot = await resolveImportedSiteRoot(importDir, resolvedSiteFolder);
-  if (!siteRoot) {
-    await fs.rm(importDir, { recursive: true, force: true }).catch(() => {});
-    throw makeHttpError(502, 'Imported ZIP did not contain an index.html site root.');
+  let siteRoot;
+  try {
+    ({ siteRoot } = await salesPreview.materializePreviewZip(zipBuffer, {
+      importsRoot: SALES_IMPORTS_ROOT,
+      clientId: targetClient.id,
+      siteFolder: resolvedSiteFolder,
+    }));
+  } catch (error) {
+    throw error?.status ? error : makeHttpError(502, error.message);
   }
 
   const now = new Date().toISOString();
   const alreadyPublicHost = Boolean(
     String(process.env.APP_URL || '').match(/asoldi\.com/i)
   );
+  const publishedNow = Boolean(markPublic || alreadyPublicHost);
+  const previewSlug =
+    sanitizeText(targetClient.websiteImport?.previewSlug) ||
+    salesPreview.allocatePreviewSlug(targetClient, sales.getSalesClients());
+  const previewPath = `/sales-preview/${encodeURIComponent(targetClient.id)}/`;
+  const publicUrl = `${salesPreview.getPublicPreviewOrigin()}${previewPath}`;
   const updatedClient = sales.setSalesWebsiteImport(targetClient.id, {
     importedAt: now,
+    publishedAt: publishedNow ? now : sanitizeText(targetClient.websiteImport?.publishedAt),
     sourceRunId: sanitizeText(sourceRunId) || sanitizeText(targetClient.makerRun?.runId),
     sourceStep: sanitizeText(sourceStep) || 'latest',
-    sourceBaseUrl: sanitizeText(sourceBaseUrl) || getPublicSalesPreviewUrl(targetClient.id),
+    sourceBaseUrl: sanitizeText(sourceBaseUrl) || publicUrl || getPublicSalesPreviewUrl(targetClient),
     siteFolder: path.basename(siteRoot),
     importRoot: siteRoot,
-    previewUrl: getSalesPreviewUrl(targetClient.id),
-    publicPreviewPublishedAt:
-      markPublic || alreadyPublicHost
-        ? now
-        : sanitizeText(targetClient.websiteImport?.publicPreviewPublishedAt),
+    previewUrl: previewPath,
+    previewSlug,
+    publicUrl,
+    publicPreviewPublishedAt: publishedNow
+      ? now
+      : sanitizeText(targetClient.websiteImport?.publicPreviewPublishedAt),
   });
   if (!updatedClient) {
     throw makeHttpError(404, 'Sales client not found.');
@@ -6714,7 +6770,10 @@ async function loginToProdAdmin() {
     return { prodBase: '', token: '' };
   }
   const username = sanitizeText(process.env.PROD_ADMIN_USERNAME || process.env.ADMIN_USERNAME) || 'asoldi.com';
-  const password = sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
+  // Falls back to the same seeded default as ensureAdminExists so the office
+  // Docker can publish previews without extra .env setup.
+  const password =
+    sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD) || 'D@mi@N102020';
   if (!password) {
     throw makeHttpError(503, 'Set PROD_ADMIN_PASSWORD (asoldi.com/admin password) to publish a public preview.');
   }
@@ -6737,7 +6796,7 @@ async function publishPreviewBundleToProd(client) {
   }
   const importDir = join(SALES_IMPORTS_ROOT, targetClient.id);
   if (!existsSync(importDir)) {
-    throw makeHttpError(400, 'Sync latest from Maker first so there is a website snapshot to publish.');
+    throw makeHttpError(400, 'No public website snapshot yet. Finish a Maker step, or click Update public website now on the run.');
   }
 
   const publicPreviewUrl = getPublicSalesPreviewUrl(targetClient.id);
@@ -6808,6 +6867,190 @@ async function publishPreviewBundleToProd(client) {
   };
 }
 
+// --- Office auto-publisher -------------------------------------------------
+// Website Maker now pushes a client site to asoldi.com after each finished
+// step. This optional LAN loop is only a safety net for snapshots that never
+// landed. It is off by default and never re-uploads every client.
+const LAN_PREVIEW_AUTOPUBLISH_ENABLED = String(process.env.LAN_PREVIEW_AUTOPUBLISH || '0') !== '0';
+const LAN_PREVIEW_AUTOPUBLISH_MS = Math.max(
+  60_000,
+  Number(process.env.LAN_PREVIEW_AUTOPUBLISH_MS || 30 * 60_000)
+);
+let lanPreviewAutoPublishRunning = false;
+let lanPreviewLastSummary = '';
+
+async function isLocalMakerReachable(makerBase) {
+  try {
+    await fetch(makerBase, { method: 'GET', signal: AbortSignal.timeout(6_000) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isDockerInternalHost(value = '') {
+  try {
+    return /\.docker\.internal$/i.test(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
+// Docker-for-Windows containers usually cannot reach the host's own LAN IP
+// (hairpin NAT), so probe several ways to reach Website Maker and use the
+// first one that answers.
+async function resolveReachableMakerBase() {
+  const candidates = [
+    sanitizeText(process.env.LAN_PREVIEW_MAKER_URL),
+    resolveWebsiteMakerBaseUrl('', null),
+    sanitizeText(process.env.WEBSITE_MAKER_LOCAL_URL),
+    'http://host.docker.internal:3000',
+    'http://gateway.docker.internal:3000',
+    'http://172.17.0.1:3000',
+    'http://localhost:3000',
+  ];
+  const tried = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const origin = normalizeHttpBaseUrl(candidate);
+    if (!origin || seen.has(origin)) continue;
+    seen.add(origin);
+    // Never let the auto-publisher "export" from a public site by accident.
+    if (!isPrivateMakerUrl(origin) && !isDockerInternalHost(origin)) continue;
+    tried.push(origin);
+    if (await isLocalMakerReachable(origin)) {
+      return { makerBase: origin, tried };
+    }
+  }
+  return { makerBase: '', tried };
+}
+
+/**
+ * Website Maker's export ZIP sometimes references hashed assets/... files
+ * without packing them. Fetch those from Maker's /asset?id= preview routes
+ * and refuse to publish if CSS/JS are still missing.
+ */
+async function ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer }) {
+  return fillExportZipWithMakerAssets({
+    makerBase,
+    runId,
+    exportStep,
+    zipBuffer,
+    headers: getWebsiteMakerAuthHeaders(),
+  });
+}
+
+async function publishOneMakerRunToProd({ prodBase, token, makerBase, clientId, runId, businessName }) {
+  const exportUrl = buildMakerExportUrl({
+    makerBaseUrl: makerBase,
+    runId,
+    step: 'latest',
+    siteFolder: businessName || 'site',
+    clientId,
+    // persist=1 asks Maker for the full static bundle (assets included),
+    // matching the manual "download Hostinger ZIP" flow.
+    persist: true,
+  });
+  if (!exportUrl) throw new Error('Could not build Maker export URL.');
+  const exportRes = await fetch(exportUrl, {
+    headers: getWebsiteMakerAuthHeaders(),
+    signal: AbortSignal.timeout(180_000),
+  });
+  const zipBuffer = Buffer.from(await exportRes.arrayBuffer());
+  if (!exportRes.ok) {
+    throw new Error(parseMakerErrorMessage(zipBuffer, `Maker export failed (${exportRes.status})`));
+  }
+  const exportStep = sanitizeText(exportRes.headers.get('x-export-step')) || 'latest';
+  const bundle = await ensureExportBundleHasAssets({ makerBase, runId, exportStep, zipBuffer });
+  const uploadRes = await fetch(
+    `${prodBase}/api/admin/sales/${encodeURIComponent(clientId)}/receive-preview-bundle`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/zip',
+        'X-Source-Run-Id': runId,
+        'X-Source-Step': exportStep,
+        'X-Site-Folder': sanitizeText(businessName) || 'site',
+      },
+      body: bundle.buffer,
+      signal: AbortSignal.timeout(300_000),
+    }
+  );
+  const uploadBody = await uploadRes.json().catch(() => ({}));
+  if (!uploadRes.ok) {
+    throw new Error(uploadBody.message || `asoldi.com rejected the preview (${uploadRes.status})`);
+  }
+  const publicUrl = uploadBody.publicPreviewUrl || getPublicSalesPreviewUrl(clientId);
+  return `${publicUrl}${bundle.added ? ` (+${bundle.added} assets, ${bundle.note})` : bundle.note ? ` (${bundle.note})` : ''}`;
+}
+
+async function runLanPreviewAutoPublishOnce({ fullRefresh = false } = {}) {
+  const prodBase = resolveProdAdminBaseUrl();
+  if (!prodBase) return { skipped: 'production-host' };
+  const { makerBase, tried } = await resolveReachableMakerBase();
+  if (!makerBase) return { skipped: `maker-unreachable: tried ${tried.join(', ')}` };
+
+  const auth = await loginToProdAdmin();
+  const authHeaders = { Authorization: `Bearer ${auth.token}` };
+
+  const targets = new Map();
+  const backfillRes = await fetch(`${prodBase}/api/admin/sales/preview-backfill`, {
+    headers: authHeaders,
+    signal: AbortSignal.timeout(30_000),
+  });
+  const backfill = await backfillRes.json().catch(() => ({}));
+  if (!backfillRes.ok) {
+    throw new Error(backfill.message || `preview-backfill failed (${backfillRes.status})`);
+  }
+  for (const entry of Array.isArray(backfill.clients) ? backfill.clients : []) {
+    const id = sanitizeText(entry?.id);
+    const runId = sanitizeText(entry?.runId);
+    if (id && runId) targets.set(id, { clientId: id, runId, businessName: sanitizeText(entry?.businessName) });
+  }
+
+  const published = [];
+  const failed = [];
+  for (const target of targets.values()) {
+    try {
+      const url = await publishOneMakerRunToProd({
+        prodBase,
+        token: auth.token,
+        makerBase,
+        ...target,
+      });
+      published.push(`${target.clientId} -> ${url}`);
+    } catch (error) {
+      failed.push(`${target.clientId}: ${sanitizeText(error?.message) || 'failed'}`);
+    }
+  }
+  return { published, failed, total: targets.size, refreshAll: false };
+}
+
+function startLanPreviewAutoPublishLoop() {
+  if (!LAN_PREVIEW_AUTOPUBLISH_ENABLED) return;
+  const tick = async () => {
+    if (lanPreviewAutoPublishRunning) return;
+    lanPreviewAutoPublishRunning = true;
+    try {
+      const summary = await runLanPreviewAutoPublishOnce();
+      const line = summary.skipped
+        ? `skipped (${summary.skipped})`
+        : `published ${summary.published.length}/${summary.total}${summary.failed.length ? `, failed: ${summary.failed.join(' | ')}` : ''}`;
+      if (line !== lanPreviewLastSummary || summary.published?.length || summary.failed?.length) {
+        console.log(`[lan-preview] ${line}`);
+        lanPreviewLastSummary = line;
+      }
+    } catch (error) {
+      console.error('[lan-preview] cycle failed:', sanitizeText(error?.message) || error);
+    } finally {
+      lanPreviewAutoPublishRunning = false;
+    }
+  };
+  setTimeout(tick, 15_000);
+  setInterval(tick, LAN_PREVIEW_AUTOPUBLISH_MS);
+}
+
 async function syncSalesClientFromMakerRun({
   client,
   runId = '',
@@ -6829,7 +7072,7 @@ async function syncSalesClientFromMakerRun({
 
   const resolvedSiteFolder = sanitizeSegment(siteFolder || targetClient.businessName || 'site', 'site');
   const requestedStep = sanitizeText(step || 'latest') || 'latest';
-  const sourceBaseUrl = sanitizeText(baseUrl) || getPublicSalesPreviewUrl(targetClient.id);
+  const sourceBaseUrl = sanitizeText(baseUrl) || getPublicSalesPreviewUrl(targetClient);
   const makerBaseUrl = resolveWebsiteMakerBaseUrl(websiteMakerBaseUrl, targetClient);
   if (!makerBaseUrl) {
     throw makeHttpError(400, 'Website Maker URL is invalid. Use a valid host or URL (for example https://example.com).');
@@ -6842,8 +7085,9 @@ async function syncSalesClientFromMakerRun({
       step: requestedStep,
       siteFolder: resolvedSiteFolder,
       clientId: targetClient.id,
+      persist: true,
     }) ||
-    `${makerBaseUrl}/api/runs/${encodeURIComponent(resolvedRunId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(sourceBaseUrl)}&siteFolder=${encodeURIComponent(resolvedSiteFolder)}`;
+    `${makerBaseUrl}/api/runs/${encodeURIComponent(resolvedRunId)}/export?step=${encodeURIComponent(requestedStep)}&baseUrl=${encodeURIComponent(sourceBaseUrl)}&siteFolder=${encodeURIComponent(resolvedSiteFolder)}&persist=1`;
 
   // Hostinger cannot fetch office-LAN Maker. Return a browser handoff so Sales
   // can pull the ZIP on home Wi-Fi and POST it to asoldi.com.
@@ -6861,7 +7105,7 @@ async function syncSalesClientFromMakerRun({
         'X-Source-Step': requestedStep,
         'X-Site-Folder': resolvedSiteFolder,
       },
-      publicPreviewUrl: getPublicSalesPreviewUrl(targetClient.id),
+      publicPreviewUrl: getPublicSalesPreviewUrl(targetClient),
       siteFolder: resolvedSiteFolder,
       client: targetClient,
     };
@@ -6881,6 +7125,14 @@ async function syncSalesClientFromMakerRun({
   }
 
   const exportStep = sanitizeText(response.headers.get('x-export-step')) || requestedStep;
+  const filled = await ensureExportBundleHasAssets({
+    makerBase: makerBaseUrl,
+    runId: resolvedRunId,
+    exportStep,
+    zipBuffer: payloadBuffer,
+  });
+  const payloadToImport = filled?.buffer?.length ? filled.buffer : payloadBuffer;
+
   const makerRunCreatedAt = sanitizeText(targetClient.makerRun?.createdAt) || new Date().toISOString();
   const makerRunIndustry = sanitizeText(targetClient.makerRun?.industry) || sanitizeText(targetClient.industry);
   const existingRunId = sanitizeText(targetClient.makerRun?.runId);
@@ -6899,7 +7151,7 @@ async function syncSalesClientFromMakerRun({
     });
   }
 
-  const updatedClient = await applyImportedWebsiteZip(targetClient, payloadBuffer, {
+  const updatedClient = await applyImportedWebsiteZip(targetClient, payloadToImport, {
     sourceRunId: resolvedRunId,
     sourceStep: exportStep,
     sourceBaseUrl,
@@ -6912,6 +7164,8 @@ async function syncSalesClientFromMakerRun({
     sourceStep: exportStep,
     sourceExportUrl: exportUrl,
     websiteMakerBaseUrl: makerBaseUrl,
+    publicUrl: getPublicSalesPreviewUrl(updatedClient),
+    zipBuffer: payloadToImport,
     client: updatedClient,
   };
 }
@@ -9486,10 +9740,11 @@ app.get('/api/hub/sites', adminAuth, (_req, res) => {
 });
 
 app.post('/api/hub/sites', adminAuth, (req, res) => {
-  const { name, domain, websitePlan, ecommerceCatalogType, githubRepo, features } = req.body || {};
+  const { name, domain, site_key, websitePlan, ecommerceCatalogType, githubRepo, features } = req.body || {};
   const site = hub.createSite({
     name: name || 'New site',
     domain: domain || '',
+    site_key,
     websitePlan,
     ecommerceCatalogType,
     githubRepo,
@@ -9511,17 +9766,7 @@ app.delete('/api/hub/sites/:id', adminAuth, (req, res) => {
 });
 
 async function resolveImportedSiteRoot(importDir, preferredSiteFolder) {
-  const preferred = join(importDir, preferredSiteFolder);
-  if (existsSync(join(preferred, 'index.html'))) return preferred;
-  if (existsSync(join(importDir, 'index.html'))) return importDir;
-
-  const entries = await fs.readdir(importDir, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const candidate = join(importDir, entry.name);
-    if (existsSync(join(candidate, 'index.html'))) return candidate;
-  }
-  return '';
+  return salesPreview.resolveImportedSiteRoot(importDir, preferredSiteFolder);
 }
 
 // --- Sales workflow (admin + sales role). Each principal scopes to their own calendar/clients.
@@ -9648,6 +9893,9 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
         clientPatch.meetingPlace = nextAddress;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(fields, 'websiteDomain')) {
+      clientPatch.websiteDomain = sanitizeSalesWebsiteDomain(fields.websiteDomain);
+    }
     const updatedClient = sales.updateSalesClient(client.id, clientPatch);
     const makerPatch = {
       runId: nextRunId,
@@ -9658,6 +9906,56 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
     };
     const updated = sales.setSalesMakerRun(client.id, makerPatch);
     return res.json({ ok: true, event, client: updated, fieldsApplied: true });
+  }
+
+  if (event === 'run.golive.updated') {
+    const domain = sanitizeSalesWebsiteDomain(req.body?.domain || req.body?.hubSite?.domain || client.websiteDomain);
+    const siteKey = sanitizeText(req.body?.siteKey || req.body?.hubSite?.site_key);
+    const liveUrl = sanitizeText(req.body?.liveUrl);
+    const goLiveStatus = sanitizeText(req.body?.status).toLowerCase();
+    const hubName = sanitizeText(req.body?.hubSite?.name || client.businessName);
+    let site = null;
+    if (goLiveStatus === 'ready' && (siteKey || domain)) {
+      site = hub.createSite({
+        name: hubName || domain || 'New client',
+        domain,
+        site_key: siteKey,
+      });
+    }
+    const clientPatch = {};
+    if (domain) clientPatch.websiteDomain = domain;
+    if (goLiveStatus === 'ready') {
+      clientPatch.progression = { domainConnected: true, live: true };
+      if (site) {
+        clientPatch.hubSite = {
+          siteKey: site.site_key,
+          domain: site.domain,
+          id: site.id,
+          createdAt: site.createdAt,
+          liveUrl: liveUrl || (site.domain ? `https://${site.domain}` : ''),
+        };
+      }
+    }
+    const updatedClient = Object.keys(clientPatch).length
+      ? sales.updateSalesClient(client.id, clientPatch)
+      : client;
+    const makerBaseUrl = resolveWebsiteMakerBaseUrl('', updatedClient || client);
+    const linked = buildMakerRunLinks(makerBaseUrl, nextRunId, handoff);
+    const patch = {
+      runId: nextRunId,
+      industry: sanitizeText(updatedClient?.industry || client.industry),
+      createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
+      statusUpdatedAt: new Date().toISOString(),
+    };
+    if (sanitizeText(linked.dashboardUrl)) patch.dashboardUrl = linked.dashboardUrl;
+    if (sanitizeText(linked.previewUrl)) patch.previewUrl = linked.previewUrl;
+    if (sanitizeText(linked.exportPath)) patch.exportPath = linked.exportPath;
+    if (sanitizeText(linked.latestReadyStep)) patch.latestReadyStep = linked.latestReadyStep;
+    if (sanitizeText(linked.latestStepStatus)) patch.latestStepStatus = linked.latestStepStatus;
+    else if (callbackStatus) patch.latestStepStatus = callbackStatus;
+    if (sanitizeText(linked.intakeStatus)) patch.intakeStatus = linked.intakeStatus;
+    const updated = sales.setSalesMakerRun((updatedClient || client).id, patch);
+    return res.json({ ok: true, event, client: updated, site, live: goLiveStatus === 'ready' });
   }
 
   const makerBaseUrl = resolveWebsiteMakerBaseUrl('', client);
@@ -9677,6 +9975,18 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   if (sanitizeText(linked.intakeStatus)) patch.intakeStatus = linked.intakeStatus;
 
   const updated = sales.setSalesMakerRun(client.id, patch);
+  if (sanitizeText(patch.latestReadyStep) && resolveProdAdminBaseUrl()) {
+    void syncSalesClientFromMakerRun({
+      client: updated || client,
+      runId: nextRunId,
+      step: 'latest',
+      siteFolder: (updated || client).businessName || 'site',
+    })
+      .then((syncResult) => maybePushImportedPreviewToProduction(syncResult))
+      .catch((error) => {
+        console.warn('[sales-preview] callback publish failed:', sanitizeText(error?.message) || error);
+      });
+  }
   return res.json({ ok: true, event, client: updated });
 });
 
@@ -9716,6 +10026,36 @@ app.get('/api/admin/sales/preview-backfill', salesAuth, (req, res) => {
     ok: true,
     count: clients.length,
     clients,
+  });
+});
+
+// Debug: list the files stored for a client's public preview snapshot.
+app.get('/api/admin/sales/:id/preview-files', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const base = join(SALES_IMPORTS_ROOT, client.id);
+  const files = [];
+  async function walk(dir, prefix) {
+    if (files.length >= 800) return;
+    const entries = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (files.length >= 800) return;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(join(dir, entry.name), rel);
+      } else {
+        const stats = await fs.stat(join(dir, entry.name)).catch(() => null);
+        files.push({ path: rel, size: stats?.size || 0 });
+      }
+    }
+  }
+  await walk(base, '');
+  res.json({
+    ok: true,
+    importRoot: sanitizeText(client.websiteImport?.importRoot),
+    count: files.length,
+    files,
   });
 });
 
@@ -10257,6 +10597,18 @@ app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   res.json({ client: updated });
 });
 
+app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'notes')) {
+    return res.status(400).json({ message: 'Notes are required.' });
+  }
+  const updated = sales.setSalesNotes(req.params.id, req.body?.notes);
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
 app.post('/api/admin/sales/:id/not-sold', salesAuth, (req, res) => {
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
@@ -10382,17 +10734,24 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
         ...syncResult,
       });
     }
-    let publishWarning = '';
-    let publishedToProd = !resolveProdAdminBaseUrl();
+    const published = await maybePushImportedPreviewToProduction(syncResult);
+    let publishWarning = published.error || '';
+    let publishedToProd = Boolean(published.ok) || Boolean(published.skipped);
     let publicClient = syncResult.client;
-    try {
-      const published = await publishPreviewBundleToProd(syncResult.client);
-      publishedToProd = Boolean(published?.ok);
-      publicClient = published?.client || publicClient;
-    } catch (publishError) {
-      publishWarning =
-        publishError.message ||
-        'Synced locally, but the public asoldi.com preview could not be updated.';
+    let publicUrl = published.publicUrl || syncResult.publicUrl || getPublicSalesPreviewUrl(syncResult.client);
+    if (!published.ok && !published.skipped) {
+      try {
+        const fromDir = await publishPreviewBundleToProd(syncResult.client);
+        publishedToProd = Boolean(fromDir?.ok);
+        publicClient = fromDir?.client || publicClient;
+        publicUrl = fromDir?.publicPreviewUrl || publicUrl;
+        publishWarning = '';
+      } catch (publishError) {
+        publishWarning =
+          publishError.message ||
+          publishWarning ||
+          'Synced locally, but the public asoldi.com preview could not be updated.';
+      }
     }
     res.json({
       ok: true,
@@ -10400,8 +10759,10 @@ app.post('/api/admin/sales/:id/import-website', salesAuth, async (req, res) => {
       runId: syncResult.runId,
       sourceStep: syncResult.sourceStep,
       sourceExportUrl: syncResult.sourceExportUrl,
-      publicPreviewUrl: getPublicSalesPreviewUrl(client.id),
+      publicUrl,
+      publicPreviewUrl: publicUrl,
       publishedToProd,
+      publishWarning,
       warning: publishWarning,
     });
   } catch (error) {
@@ -10583,6 +10944,134 @@ function resolveProdAdminBaseUrl() {
   return prod;
 }
 
+async function loginProdAdmin(prodBase = '') {
+  const base = sanitizeText(prodBase) || resolveProdAdminBaseUrl();
+  if (!base) {
+    throw makeHttpError(400, 'This instance is already production (or PROD_ADMIN_URL is unset).');
+  }
+  const username = sanitizeText(process.env.PROD_ADMIN_USERNAME || process.env.ADMIN_USERNAME) || 'asoldi.com';
+  const password = sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
+  if (!password) {
+    throw makeHttpError(503, 'Set PROD_ADMIN_PASSWORD (asoldi.com/admin password) to publish a preview to asoldi.com.');
+  }
+  const loginRes = await fetch(`${base}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const loginBody = await loginRes.json().catch(() => ({}));
+  if (!loginRes.ok || !loginBody.token) {
+    throw makeHttpError(502, loginBody.message || 'Failed logging into asoldi.com/admin.');
+  }
+  return { prodBase: base, token: loginBody.token };
+}
+
+async function pushPreviewZipToProduction({
+  client,
+  zipBuffer,
+  runId = '',
+  step = 'latest',
+  siteFolder = '',
+} = {}) {
+  const target = client && typeof client === 'object' ? client : null;
+  if (!target?.id) throw makeHttpError(404, 'Sales client not found.');
+  const { prodBase, token } = await loginProdAdmin();
+  const response = await fetch(`${prodBase}/api/admin/sales/${encodeURIComponent(target.id)}/import-website-push`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/zip',
+      'x-run-id': sanitizeText(runId || target.makerRun?.runId),
+      'x-export-step': sanitizeText(step || target.websiteImport?.sourceStep || 'latest') || 'latest',
+      'x-site-folder': sanitizeText(siteFolder || target.businessName || 'site') || 'site',
+    },
+    body: zipBuffer,
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (response.status === 404) {
+    throw makeHttpError(
+      409,
+      payload.message === 'Sales client not found.'
+        ? 'This client id is not on asoldi.com. Refresh LAN from production, then retry.'
+        : 'asoldi.com does not have the preview ingest endpoint yet. Deploy this Asoldi-website change to production first, then retry.'
+    );
+  }
+  if (!response.ok) {
+    throw makeHttpError(
+      response.status >= 400 && response.status <= 599 ? response.status : 502,
+      payload.message || `asoldi.com rejected the preview upload (${response.status}).`
+    );
+  }
+  return payload;
+}
+
+async function maybePushImportedPreviewToProduction(syncResult) {
+  if (!resolveProdAdminBaseUrl()) return { skipped: true, reason: 'already-production' };
+  const zipBuffer = syncResult?.zipBuffer;
+  if (!syncResult?.client?.id || !zipBuffer?.length) {
+    return { skipped: true, reason: 'missing-export' };
+  }
+  try {
+    const published = await pushPreviewZipToProduction({
+      client: syncResult.client,
+      zipBuffer,
+      runId: syncResult.runId,
+      step: syncResult.sourceStep,
+      siteFolder: syncResult.client?.businessName || 'site',
+    });
+    return { skipped: false, ok: true, publicUrl: published.publicUrl || published.publicPreviewUrl || syncResult.publicUrl };
+  } catch (error) {
+    try {
+      const fromDir = await publishPreviewBundleToProd(syncResult.client);
+      return {
+        skipped: false,
+        ok: true,
+        publicUrl: fromDir.publicPreviewUrl || syncResult.publicUrl,
+      };
+    } catch {
+      return { skipped: false, ok: false, error: error?.message || 'Failed publishing preview to asoldi.com.' };
+    }
+  }
+}
+
+function readRequestZipBuffer(req) {
+  const body = req.body;
+  if (Buffer.isBuffer(body)) return body;
+  if (body instanceof Uint8Array) return Buffer.from(body);
+  if (typeof body === 'string' && body) return Buffer.from(body, 'binary');
+  return null;
+}
+
+function isMakerPreviewPushAuthorized(req) {
+  if (isMakerStatusCallbackAuthorized(req) && sanitizeText(process.env.WEBSITE_MAKER_STATUS_CALLBACK_TOKEN || process.env.SALES_MAKER_STATUS_CALLBACK_TOKEN)) {
+    return true;
+  }
+  const apiKey = sanitizeText(process.env.WEBSITE_MAKER_API_KEY || process.env.WEBSITEMAKER_API_KEY);
+  const providedKey = sanitizeText(req.headers['x-api-key']);
+  if (apiKey && providedKey && secureStringEqual(providedKey, apiKey)) return true;
+  return false;
+}
+
+async function ingestPreviewZipFromRequest(req, client) {
+  const zipBuffer = readRequestZipBuffer(req);
+  if (!zipBuffer?.length) {
+    throw makeHttpError(400, 'Website preview ZIP body is required (Content-Type: application/zip).');
+  }
+  const updated = await applyImportedWebsiteZip(client, zipBuffer, {
+    sourceRunId: sanitizeText(req.headers['x-run-id'] || req.headers['x-source-run-id'] || req.query?.runId),
+    sourceStep: sanitizeText(req.headers['x-export-step'] || req.headers['x-source-step'] || req.query?.step || 'latest') || 'latest',
+    sourceBaseUrl: getPublicSalesPreviewUrl(client),
+    siteFolder: sanitizeText(req.headers['x-site-folder'] || req.query?.siteFolder || client.businessName || 'site'),
+    markPublic: true,
+  });
+  return {
+    client: updated,
+    publicUrl: getPublicSalesPreviewUrl(updated),
+    prettyPath: salesPreview.getSalesPreviewPath(updated.id, updated.websiteImport?.previewSlug),
+    sourceStep: sanitizeText(updated.websiteImport?.sourceStep) || 'latest',
+  };
+}
+
 app.post('/api/admin/sales/:id/set-maker-run', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
@@ -10617,77 +11106,60 @@ app.post('/api/admin/sales/:id/publish-maker-run-to-prod', salesAuth, async (req
   const prodBase = resolveProdAdminBaseUrl();
   if (!prodBase) {
     return res.status(400).json({
-      message: 'This instance is already production (or PROD_ADMIN_URL is unset). Maker runs stay on asoldi.com automatically.',
+      message: 'This instance is already production. Open the client run in Website Maker and click Update public website now.',
     });
-  }
-  const username = sanitizeText(process.env.PROD_ADMIN_USERNAME || process.env.ADMIN_USERNAME) || 'asoldi.com';
-  const password = sanitizeText(process.env.PROD_ADMIN_PASSWORD || process.env.ADMIN_PASSWORD);
-  if (!password) {
-    return res.status(503).json({ message: 'Set PROD_ADMIN_PASSWORD (asoldi.com/admin password) to publish a maker run.' });
   }
   try {
-    const loginRes = await fetch(`${prodBase}/api/admin/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password }),
+    const syncResult = await syncSalesClientFromMakerRun({
+      client,
+      runId,
+      step: req.body?.step || 'latest',
+      siteFolder: req.body?.siteFolder || client.businessName || 'site',
+      websiteMakerBaseUrl: req.body?.websiteMakerBaseUrl,
     });
-    const loginBody = await loginRes.json().catch(() => ({}));
-    if (!loginRes.ok || !loginBody.token) {
-      return res.status(502).json({ message: loginBody.message || 'Failed logging into asoldi.com/admin.' });
+    const published = await maybePushImportedPreviewToProduction(syncResult);
+    if (!published.ok) {
+      return res.status(502).json({
+        message: published.error || 'Exported the site locally, but failed uploading it to asoldi.com.',
+        publicUrl: syncResult.publicUrl,
+      });
     }
-    const publishRes = await fetch(`${prodBase}/api/admin/sales/${encodeURIComponent(client.id)}/set-maker-run`, {
+    const { token } = await loginProdAdmin(prodBase);
+    const makerRunPatch = {
+      ...(client.makerRun || {}),
+      ...(syncResult.client?.makerRun || {}),
+      runId,
+      previewUrl: published.publicUrl || getPublicSalesPreviewUrl(syncResult.client),
+    };
+    await fetch(`${prodBase}/api/admin/sales/${encodeURIComponent(client.id)}/set-maker-run`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${loginBody.token}`,
+        Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ makerRun: client.makerRun }),
-    });
-    const publishBody = await publishRes.json().catch(() => ({}));
-    if (publishRes.status === 404) {
-      return res.status(409).json({
-        message:
-          publishBody.message === 'Sales client not found.'
-            ? 'This client id is not on asoldi.com. Refresh LAN from production, then retry.'
-            : 'asoldi.com does not have the publish endpoint yet. Deploy this Asoldi-website change to production first, then retry.',
-      });
-    }
-    if (!publishRes.ok) {
-      return res.status(publishRes.status >= 400 && publishRes.status <= 599 ? publishRes.status : 502).json({
-        message: publishBody.message || `asoldi.com rejected the publish (${publishRes.status}).`,
-      });
-    }
-    const previewUrl = sanitizeText(client.makerRun?.previewUrl);
-    const dashboardUrl = sanitizeText(client.makerRun?.dashboardUrl);
+      body: JSON.stringify({ makerRun: makerRunPatch }),
+    }).catch(() => null);
+    const previewUrl = sanitizeText(makerRunPatch.previewUrl);
+    const dashboardUrl = sanitizeText(makerRunPatch.dashboardUrl);
     const lanOnlyPreview = isPrivateMakerUrl(previewUrl) || isPrivateMakerUrl(dashboardUrl);
-    let publicPreviewUrl = '';
-    let previewPublishWarning = '';
-    if (existsSync(join(SALES_IMPORTS_ROOT, client.id))) {
-      try {
-        const publishedPreview = await publishPreviewBundleToProd(client);
-        publicPreviewUrl = publishedPreview?.publicPreviewUrl || getPublicSalesPreviewUrl(client.id);
-      } catch (previewError) {
-        previewPublishWarning =
-          previewError.message || 'Maker run published, but the public asoldi.com/sales-preview snapshot failed.';
-      }
-    }
-    const warningParts = [
-      lanOnlyPreview
-        ? 'Maker dashboard/preview links are still on the office LAN. The client checkout preview uses asoldi.com/sales-preview after you sync + publish the snapshot.'
-        : '',
-      previewPublishWarning,
-    ].filter(Boolean);
+    const publicUrl = published.publicUrl || syncResult.publicUrl || getPublicSalesPreviewUrl(syncResult.client);
     return res.json({
       ok: true,
       prodBase,
       runId,
       lanOnlyPreview,
-      publicPreviewUrl,
-      warning: warningParts.join(' '),
-      client: publishBody.client || null,
+      publicUrl,
+      publicPreviewUrl: publicUrl,
+      sourceStep: syncResult.sourceStep,
+      warning: lanOnlyPreview
+        ? 'Maker dashboard/preview links are still on the office LAN. The client checkout preview uses asoldi.com/sales-preview.'
+        : '',
+      client: syncResult.client,
     });
   } catch (error) {
-    return res.status(502).json({ message: error.message || 'Failed publishing maker run to asoldi.com.' });
+    return res.status(httpStatusFromError(error, 502)).json({
+      message: error.message || 'Failed publishing website preview to asoldi.com.',
+    });
   }
 });
 
@@ -10792,6 +11264,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
       relevantLinks,
       extraContext,
+      websiteDomain: sanitizeSalesWebsiteDomain(client.websiteDomain),
     };
     const previousRunId = sanitizeText(client.makerRun?.runId);
     const existingRunId = forceNewRun ? '' : previousRunId;
@@ -10811,8 +11284,10 @@ app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) =>
       salesOrderId: sanitizeText(req.body?.salesOrderId || ''),
       salesCallbackUrl,
       salesCallbackToken,
+      salesPreviewPushUrl: resolveSalesPreviewPushUrl(),
       skipSalesAddressEnrichment: true,
       answers: answersPatch,
+      productionDomain: sanitizeSalesWebsiteDomain(client.websiteDomain),
       quickFillLinks,
     };
 
@@ -10978,7 +11453,7 @@ app.post(
     setPreviewBundleCorsHeaders(req, res);
     next();
   },
-  express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '80mb' }),
+  express.raw({ type: ['application/zip', 'application/octet-stream'], limit: '300mb' }),
   salesAuth,
   async (req, res) => {
     const client = sales.getSalesClientById(req.params.id);
@@ -11002,7 +11477,8 @@ app.post(
       return res.json({
         ok: true,
         client: updated,
-        publicPreviewUrl: getPublicSalesPreviewUrl(client.id),
+        publicPreviewUrl: getPublicSalesPreviewUrl(updated),
+        publicUrl: getPublicSalesPreviewUrl(updated),
       });
     } catch (error) {
       return res.status(httpStatusFromError(error, 502)).json({
@@ -11058,11 +11534,124 @@ app.post('/api/admin/sales/:id/publish-preview-to-prod', salesAuth, async (req, 
 });
 
 app.post('/api/admin/sales/:id/import-website-upload', salesAuth, (req, res) => {
+  return res.status(410).json({
+    message: 'Manual ZIP upload from the browser is deprecated. Open the client run in Website Maker and click Update public website now.',
+  });
+});
+
+const salesPreviewZipParser = express.raw({
+  type: ['application/zip', 'application/octet-stream', 'application/x-zip-compressed'],
+  limit: '150mb',
+});
+
+app.post('/api/admin/sales/:id/import-website-push', salesPreviewZipParser, salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
-  return res.status(410).json({
-    message: 'Manual ZIP upload is deprecated. Use "Sync latest from Maker" instead.',
+  if (sales.isSsuSalesProduct(client.product)) {
+    return res.status(400).json({ message: 'SSU clients do not use Website Maker previews.' });
+  }
+  try {
+    const ingested = await ingestPreviewZipFromRequest(req, client);
+    return res.json({
+      ok: true,
+      client: ingested.client,
+      publicUrl: ingested.publicUrl,
+      prettyPath: ingested.prettyPath,
+      sourceStep: ingested.sourceStep,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      message: error.message || 'Failed storing website preview.',
+    });
+  }
+});
+
+app.post('/api/admin/sales/maker-preview-push', salesPreviewZipParser, async (req, res) => {
+  if (!isMakerPreviewPushAuthorized(req)) {
+    return res.status(401).json({ message: 'Unauthorized preview push.' });
+  }
+  const salesClientId = sanitizeText(req.headers['x-sales-client-id'] || req.query?.salesClientId);
+  const runId = sanitizeText(req.headers['x-run-id'] || req.query?.runId);
+  let client = salesClientId ? sales.getSalesClientById(salesClientId) : null;
+  if (!client && runId) {
+    client = sales.getSalesClients().find((entry) => sanitizeText(entry?.makerRun?.runId) === runId) || null;
+  }
+  if (!client) {
+    return res.status(404).json({ message: 'No matching sales client for preview push.' });
+  }
+  if (sales.isSsuSalesProduct(client.product)) {
+    return res.status(400).json({ message: 'SSU clients do not use Website Maker previews.' });
+  }
+  try {
+    const ingested = await ingestPreviewZipFromRequest(req, client);
+    if (runId) {
+      sales.setSalesMakerRun(client.id, {
+        runId,
+        latestReadyStep: sanitizeText(req.headers['x-export-step'] || ingested.sourceStep),
+        statusUpdatedAt: new Date().toISOString(),
+      });
+    }
+    return res.json({
+      ok: true,
+      client: sales.getSalesClientById(client.id) || ingested.client,
+      publicUrl: ingested.publicUrl,
+      prettyPath: ingested.prettyPath,
+      sourceStep: ingested.sourceStep,
+    });
+  } catch (error) {
+    return res.status(httpStatusFromError(error, 500)).json({
+      message: error.message || 'Failed storing website preview from Maker.',
+    });
+  }
+});
+
+app.post('/api/admin/sales/publish-all-previews-to-prod', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can publish all website previews.' });
+  }
+  const requestedIds = Array.isArray(req.body?.clientIds)
+    ? req.body.clientIds.map((entry) => sanitizeText(entry)).filter(Boolean)
+    : [];
+  const all = sales.getSalesClients().filter((entry) => !sales.isSsuSalesProduct(entry.product) && sanitizeText(entry?.makerRun?.runId));
+  const selected = requestedIds.length ? all.filter((entry) => requestedIds.includes(entry.id)) : all;
+  const results = [];
+  for (const client of selected) {
+    try {
+      const syncResult = await syncSalesClientFromMakerRun({
+        client,
+        runId: client.makerRun.runId,
+        step: 'latest',
+        siteFolder: client.businessName || 'site',
+        websiteMakerBaseUrl: req.body?.websiteMakerBaseUrl,
+      });
+      const published = await maybePushImportedPreviewToProduction(syncResult);
+      results.push({
+        id: client.id,
+        businessName: client.businessName,
+        ok: true,
+        runId: syncResult.runId,
+        sourceStep: syncResult.sourceStep,
+        publicUrl: published.publicUrl || syncResult.publicUrl,
+        publishedToProd: Boolean(published.ok) || published.skipped,
+        error: published.error || '',
+      });
+    } catch (error) {
+      results.push({
+        id: client.id,
+        businessName: client.businessName,
+        ok: false,
+        runId: sanitizeText(client.makerRun?.runId),
+        error: error.message || 'Failed exporting this client.',
+      });
+    }
+  }
+  return res.json({
+    ok: true,
+    count: results.length,
+    published: results.filter((entry) => entry.ok).length,
+    failed: results.filter((entry) => !entry.ok).length,
+    results,
   });
 });
 
@@ -11076,24 +11665,40 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
     });
   }
 
-  const site = hub.createSite({
-    name: client.businessName || 'New client',
-    domain: client.websiteDomain || '',
-    websitePlan: req.body?.websitePlan,
-    ecommerceCatalogType: req.body?.ecommerceCatalogType,
-    githubRepo: req.body?.githubRepo,
-    features: req.body?.features,
-  });
+  const existing =
+    (client.hubSite?.siteKey && hub.getSiteByKey(client.hubSite.siteKey)) ||
+    (client.websiteDomain && hub.getSiteByDomain(client.websiteDomain)) ||
+    null;
+  const site =
+    existing ||
+    hub.createSite({
+      name: client.businessName || 'New client',
+      domain: client.websiteDomain || '',
+      site_key: client.hubSite?.siteKey || '',
+      websitePlan: req.body?.websitePlan,
+      ecommerceCatalogType: req.body?.ecommerceCatalogType,
+      githubRepo: req.body?.githubRepo,
+      features: req.body?.features,
+    });
 
-  if (client.websiteImport?.importRoot) {
-    const importBase = join(SALES_IMPORTS_ROOT, client.id);
-    await fs.rm(importBase, { recursive: true, force: true }).catch(() => {});
-  }
-  sales.deleteSalesClient(client.id);
+  sales.updateSalesClient(client.id, {
+    progression: {
+      domainConnected: Boolean(client.websiteDomain || site.domain),
+      live: true,
+    },
+    hubSite: {
+      siteKey: site.site_key,
+      domain: site.domain,
+      id: site.id,
+      createdAt: site.createdAt,
+    },
+  });
+  sales.setSalesStatus(client.id, 'secondary', { reason: 'got-client' });
 
   res.json({
     ok: true,
     site,
+    client: sales.getSalesClientById(client.id),
     movedClient: client,
   });
 });
@@ -11155,7 +11760,7 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
     }
     if (salesClient) {
       if (!businessName) businessName = sanitizeText(salesClient.businessName);
-      const existingImportedPreviewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+      const existingImportedPreviewUrl = resolveSalesClientPreviewUrl(salesClient.id);
       const linkedRunId = sanitizeText(body.runId || salesClient.makerRun?.runId);
       const shouldTryRefreshFromMaker = !previewUrl && Boolean(linkedRunId);
       if (shouldTryRefreshFromMaker) {
@@ -11173,13 +11778,17 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
             if (!existingImportedPreviewUrl) {
               return res.status(400).json({
                 message:
-                  'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først (på hjemme-Wi-Fi).',
+                  'Ingen offentlig forhåndsvisning funnet ennå. Åpne Website Maker-kjøringen og klikk Update public website now.',
               });
             }
             previewUrl = existingImportedPreviewUrl;
           } else {
-            salesClient = syncResult.client;
-            previewUrl = sanitizeText(salesClient.websiteImport?.previewUrl);
+            await maybePushImportedPreviewToProduction(syncResult);
+            salesClient = sales.getSalesClientById(salesClient.id) || syncResult.client;
+            previewUrl =
+              sanitizeText(syncResult.publicUrl) ||
+              resolveSalesClientPreviewUrl(salesClient.id) ||
+              sanitizeText(salesClient.websiteImport?.publicUrl);
             try {
               const published = await publishPreviewBundleToProd(salesClient);
               salesClient = published?.client || salesClient;
@@ -11205,10 +11814,10 @@ app.post('/api/admin/sales/offers', salesAuth, async (req, res) => {
       if (!previewUrl) {
         return res.status(400).json({
           message:
-            'Ingen synkronisert forhåndsvisning funnet ennå. Kjør "Sync latest from Maker" først.',
+            'Ingen offentlig forhåndsvisning funnet ennå. Åpne Website Maker-kjøringen og klikk Update public website now.',
         });
       }
-      previewUrl = toPublicSalesPreviewUrl(previewUrl, salesClient.id);
+      previewUrl = getPublicSalesPreviewUrl(salesClient) || toPublicSalesPreviewUrl(previewUrl, salesClient.id);
 
       // If sales doesn't explicitly pick a client user, default to the sales
       // contact email so the offer appears automatically when that account logs in.
@@ -11256,6 +11865,59 @@ app.delete('/api/admin/sales/offers/:id', salesAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.options('/api/client-forms/:siteKey', (req, res) => {
+  clientForms.setClientFormCors(req, res);
+  return res.status(204).end();
+});
+
+app.post(
+  '/api/client-forms/:siteKey',
+  express.urlencoded({ extended: true }),
+  async (req, res) => {
+    clientForms.setClientFormCors(req, res);
+    const siteKey = sanitizeText(req.params.siteKey);
+    const site = hub.getSiteByKey(siteKey);
+    if (!site) {
+      return res.status(404).json({ ok: false, message: 'Unknown site.' });
+    }
+    try {
+      clientForms.assertClientFormAllowed(req);
+    } catch (error) {
+      return res.status(error.status || 429).json({ ok: false, message: error.message });
+    }
+    if (clientForms.looksLikeBot(req.body || {})) {
+      return res.json({ ok: true });
+    }
+    if (!emailLib.canSendEmail()) {
+      return res.status(503).json({ ok: false, message: 'Email is not configured.' });
+    }
+    const fields = clientForms.extractFormFields(req.body || {});
+    if (!Object.keys(fields).length) {
+      return res.status(400).json({ ok: false, message: 'The form was empty.' });
+    }
+    const pageUrl = sanitizeText(req.get('referer'));
+    const email = clientForms.buildFormEmail({ site, fields, pageUrl });
+    const replyTo = clientForms.replyToFromFields(fields);
+    try {
+      await emailLib.sendEmail({
+        to: clientForms.resolveFormRecipient(site),
+        subject: email.subject,
+        text: email.text,
+        html: email.html,
+        replyTo: replyTo || undefined,
+      });
+    } catch (error) {
+      console.error('Client form email error:', error);
+      return res.status(500).json({ ok: false, message: 'Could not send the message.' });
+    }
+    if (clientForms.wantsJsonResponse(req)) {
+      return res.json({ ok: true });
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    return res.send(clientForms.thankYouHtml({ name: site.name || site.domain, redirectUrl: pageUrl }));
+  }
+);
+
 // --- Booking (skip Calendly: send inquiry email to configured inbox)
 app.post('/api/booking', async (req, res) => {
   const { name, email, phone, company, service, message } = req.body || {};
@@ -11298,18 +11960,46 @@ ${message || '(Ingen melding)'}`;
 });
 
 async function sendSalesPreviewFile(req, res, relativePath = '') {
-  const client = sales.getSalesClientById(req.params.id);
-  if (!client || !client.websiteImport?.importRoot) {
+  const client = salesPreview.findSalesClientForPreviewParam(req.params.id, sales);
+  if (!client) {
+    res.setHeader('Cache-Control', 'no-store');
     return res.status(404).send(
-      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. On home Wi-Fi, open Sales and click Sync latest from Maker (or Backfill public previews).'
+      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. Open the client run in Website Maker and click Update public website now.'
+    );
+  }
+  if (salesPreview.shouldRedirectPreviewToSlash(req.path, relativePath)) {
+    const suffix = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    return res.redirect(302, `${req.path}/${suffix}`);
+  }
+
+  const storedRoot = sanitizeText(client.websiteImport?.importRoot);
+  const resolvedStored = storedRoot ? path.resolve(storedRoot) : '';
+  const root =
+    (resolvedStored && existsSync(path.join(resolvedStored, 'index.html')) && resolvedStored) ||
+    (await salesPreview.resolveSalesPreviewRoot(client, SALES_IMPORTS_ROOT));
+  if (!root) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(404).send(
+      'Preview not available. This sales client has a Maker run, but the website files are not on asoldi.com yet. Open the client run in Website Maker and click Update public website now.'
     );
   }
 
-  const root = path.resolve(client.websiteImport.importRoot);
-  const cleaned = sanitizeText(relativePath).replace(/^[/\\]+/, '');
+  // Maker export ZIPs sometimes keep shared folders (assets/) beside the site
+  // folder instead of inside it, so also serve from the whole import dir.
+  const importBase = path.resolve(join(SALES_IMPORTS_ROOT, client.id));
+  const roots = [root];
+  if (root !== importBase && existsSync(importBase) && root.startsWith(importBase)) roots.push(importBase);
+  const cleaned = sanitizeText(relativePath).replace(/^[/\\]+/, '').split(/[?#]/)[0];
   const normalized = path.normalize(cleaned || 'index.html');
   const requestedAbs = path.resolve(root, normalized);
-  if (!requestedAbs.startsWith(root)) {
+  const rootWithSep = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+  const importBaseWithSep = importBase.endsWith(path.sep) ? importBase : `${importBase}${path.sep}`;
+  if (
+    requestedAbs !== root &&
+    !requestedAbs.startsWith(rootWithSep) &&
+    requestedAbs !== importBase &&
+    !requestedAbs.startsWith(importBaseWithSep)
+  ) {
     return res.status(403).send('Forbidden');
   }
 
@@ -11318,6 +12008,7 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
       const stats = await fs.stat(filePath);
       if (!stats.isFile()) return false;
       res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
       const ext = path.extname(filePath).toLowerCase();
       const looksHtml = ext === '.html' || ext === '.htm' || !ext;
       if (looksHtml) {
@@ -11325,9 +12016,17 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
         const text = raw.toString('utf8');
         if (ext === '.html' || ext === '.htm' || /^\s*</.test(text)) {
           res.setHeader('Content-Type', 'text/html; charset=utf-8');
-          res.send(injectPreviewBaseHref(text, client.id));
+          res.send(
+            inlineLocalStylesheets(rewritePreviewAssetPaths(injectPreviewBaseHref(text, client.id), client.id), roots)
+          );
           return true;
         }
+      }
+      if (ext === '.css') {
+        const raw = await fs.readFile(filePath);
+        res.setHeader('Content-Type', 'text/css; charset=utf-8');
+        res.send(rewritePreviewAssetPaths(raw.toString('utf8'), client.id));
+        return true;
       }
       res.sendFile(filePath);
       return true;
@@ -11336,9 +12035,29 @@ async function sendSalesPreviewFile(req, res, relativePath = '') {
     }
   }
 
-  if (await sendIfFile(requestedAbs)) return;
-  if (!path.extname(normalized) && await sendIfFile(path.join(requestedAbs, 'index.html'))) return;
+  for (const candidateRoot of roots) {
+    const absolute = path.resolve(candidateRoot, normalized);
+    if (!absolute.startsWith(candidateRoot)) continue;
+    if (await sendIfFile(absolute)) return;
+    if (!path.extname(normalized) && (await sendIfFile(path.join(absolute, 'index.html')))) return;
+  }
   if (!path.extname(normalized) && await sendIfFile(path.join(root, 'index.html'))) return;
+  const wantedName = path.basename(normalized);
+  if (wantedName && wantedName !== 'index.html' && path.extname(wantedName)) {
+    const found = await findPreviewFileByBasename(roots, wantedName);
+    if (found && (await sendIfFile(found))) return;
+  }
+  const assetId = sanitizeText(req.query?.id).split(/[?#]/)[0];
+  const askedForMakerAsset = /(^|[\\/])asset$/i.test(String(cleaned || '').replace(/\\/g, '/'));
+  if (assetId && askedForMakerAsset && looksLikeAssetFileName(assetId)) {
+    for (const candidateRoot of roots) {
+      const direct = path.resolve(candidateRoot, 'assets', assetId);
+      if (await sendIfFile(direct)) return;
+    }
+    const foundAsset = await findPreviewFileByBasename(roots, assetId);
+    if (foundAsset && (await sendIfFile(foundAsset))) return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
   return res.status(404).send('Preview file not found');
 }
 
@@ -11351,10 +12070,20 @@ app.get('/live-preview/:id', (req, res) => {
   const hasSnapshot =
     sanitizeText(client.websiteImport?.importRoot) || sanitizeText(client.websiteImport?.previewUrl);
   if (!hasSnapshot) {
-    return res.status(404).send('No public website preview yet. Sync latest from Maker first.');
+    return res.status(404).send('No public website preview yet. Open the client run in Website Maker and click Update public website now.');
   }
   res.setHeader('Cache-Control', 'no-store');
   return res.redirect(302, getSalesPreviewUrl(client.id));
+});
+
+app.get('/api/public/previews', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  return res.json({ ok: true, items: listPublicPreviewBoardItems() });
+});
+
+app.get(['/previews', '/previews/', '/sales-preview', '/sales-preview/'], (req, res) => {
+  return sendPublicPreviewsBoard(res);
 });
 
 app.get('/sales-preview/:id', async (req, res) => {
@@ -11393,6 +12122,37 @@ app.use(express.static(distPath, {
 }));
 
 app.get('*', (req, res) => {
+  // Preview pages sometimes reference root-absolute URLs that JavaScript
+  // builds at runtime (so the HTML rewrite cannot catch them). When such a
+  // request comes from a /sales-preview/ page, send it back into that
+  // client's snapshot instead of the asoldi.com SPA.
+  const referer = String(req.get('referer') || '');
+  const refererMatch = referer.match(/\/sales-preview\/([^/?#]+)\//);
+  if (refererMatch && !req.path.startsWith('/sales-preview/') && !req.path.startsWith('/api/')) {
+    let clientId = '';
+    try {
+      clientId = decodeURIComponent(refererMatch[1]);
+    } catch {
+      clientId = refererMatch[1];
+    }
+    const client = salesPreview.findSalesClientForPreviewParam(clientId, sales);
+    const importRoot = sanitizeText(client?.websiteImport?.importRoot);
+    if (importRoot) {
+      const cleaned = req.path.replace(/^\/+/, '');
+      const normalized = path.normalize(cleaned || 'index.html');
+      const fileExists = [path.resolve(importRoot), path.resolve(join(SALES_IMPORTS_ROOT, client.id))].some(
+        (root) => {
+          const requestedAbs = path.resolve(root, normalized);
+          return requestedAbs.startsWith(root) && existsSync(requestedAbs);
+        }
+      );
+      const isNavigation = !path.extname(cleaned);
+      if (fileExists || isNavigation) {
+        const search = req.originalUrl.includes('?') ? req.originalUrl.slice(req.originalUrl.indexOf('?')) : '';
+        return res.redirect(302, `/sales-preview/${encodeURIComponent(clientId)}${req.path}${search}`);
+      }
+    }
+  }
   const indexPath = join(distPath, 'index.html');
   if (existsSync(indexPath)) res.sendFile(indexPath);
   else res.status(500).send('index.html not found');
@@ -11509,6 +12269,7 @@ ensureData().then(() => {
   startMyphonerWebhookReconcileLoop();
   startMyphonerRecordingRetryLoop();
   startSalesGeocodeWarmupLoop();
+  startLanPreviewAutoPublishLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);

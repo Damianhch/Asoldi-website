@@ -13,6 +13,8 @@ import {
   isAllowedPreviewBundleUploadUrl,
   isPrivateMakerUrl,
   lanAsoldiOriginFromMakerUrl,
+  rewritePreviewAssetPaths,
+  rewriteMakerPreviewRefs,
   toPublicSalesPreviewUrl,
 } from '../lib/laptop-preview.js';
 
@@ -112,6 +114,67 @@ assert.equal(
 assert.equal(
   injectPreviewBaseHref('<html><head><title>x</title></head></html>', 'client-1'),
   '<html><head><base href="/sales-preview/client-1/"><title>x</title></head></html>'
+);
+
+// Root-absolute assets must be pulled back inside the preview folder.
+assert.equal(
+  rewritePreviewAssetPaths('<link rel="stylesheet" href="/css/style.css">', 'client-1'),
+  '<link rel="stylesheet" href="/sales-preview/client-1/css/style.css">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<img src="/img/a.png" srcset="/img/a.png 1x, /img/b.png 2x">', 'client-1'),
+  '<img src="/sales-preview/client-1/img/a.png" srcset="/sales-preview/client-1/img/a.png 1x, /sales-preview/client-1/img/b.png 2x">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('body{background:url("/img/bg.jpg")}', 'client-1'),
+  'body{background:url("/sales-preview/client-1/img/bg.jpg")}'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="//cdn.example.com/x.css">', 'client-1'),
+  '<a href="//cdn.example.com/x.css">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="https://example.com/x">', 'client-1'),
+  '<a href="https://example.com/x">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="relative/page.html">', 'client-1'),
+  '<a href="relative/page.html">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<a href="/sales-preview/client-1/page.html">', 'client-1'),
+  '<a href="/sales-preview/client-1/page.html">'
+);
+assert.equal(
+  rewritePreviewAssetPaths('<link href="localasset://theme.css" rel="stylesheet">', 'client-1'),
+  '<link href="assets/theme.css" rel="stylesheet">'
+);
+
+assert.equal(
+  rewriteMakerPreviewRefs(
+    '<script src="/preview/81809674-2f51-4ae2-9587-20a128dc1591/custom/asset?id=0e3fe9e1bf0a4a5c.js"></script>'
+  ),
+  '<script src="assets/0e3fe9e1bf0a4a5c.js"></script>'
+);
+assert.equal(
+  rewriteMakerPreviewRefs(
+    '<script src="http://localhost:3000/preview/run-9/step/2/asset?id=webflow.js"></script><a href="/preview/run-9/custom?route=%2Fmeny">Meny</a>'
+  ),
+  '<script src="assets/webflow.js"></script><a href="./meny">Meny</a>'
+);
+assert.equal(
+  rewritePreviewAssetPaths(
+    '<script src="/preview/run-9/custom/asset?id=webflow.js"></script><a href="/preview/run-9/custom?route=%2Fmeny">Meny</a>',
+    'client-1'
+  ),
+  '<script src="/sales-preview/client-1/assets/webflow.js"></script><a href="/sales-preview/client-1/meny">Meny</a>'
+);
+assert.equal(
+  rewritePreviewAssetPaths(
+    '<script src="./preview/run-9/custom/asset?id=gsap.js"></script>',
+    'client-1'
+  ),
+  '<script src="/sales-preview/client-1/assets/gsap.js"></script>'
 );
 
 console.log('laptop-preview tests passed');

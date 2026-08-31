@@ -27,6 +27,23 @@ test('createSite from tier 3 defaults ecommerce and catalog type', () => {
   assert.equal(config.websitePlan, 'tier-3-ecommerce');
 });
 
+test('createSite reuses an existing site_key or domain', () => {
+  const first = hub.createSite({
+    name: 'Cafe',
+    domain: 'cafe.no',
+    site_key: 'fixed-key-cafe',
+    websitePlan: 'tier-2-seo',
+  });
+  const again = hub.createSite({
+    name: 'Cafe',
+    domain: 'cafe.no',
+    site_key: 'fixed-key-cafe',
+  });
+  assert.equal(again.id, first.id);
+  assert.equal(again.site_key, 'fixed-key-cafe');
+  assert.equal(again.features.socialSync, true);
+});
+
 test('heartbeat stores package version and lastSeenAt', () => {
   const site = hub.createSite({ name: 'Shop', domain: 'shop.no', websitePlan: 'tier-1-standard' });
   const result = hub.recordHeartbeat(site.site_key, {

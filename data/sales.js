@@ -7,6 +7,7 @@ const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentRec
 const SSU_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived'];
 const SALES_STATUSES = ['active', 'not-sold', 'secondary'];
 const SALES_PRODUCTS = ['asoldi', 'ssu'];
+const MAX_SALES_NOTES_LENGTH = 8000;
 /** Known MyPhoner SSU list id(s). Extra ids can be added via MYPHONER_SSU_LIST_IDS. */
 const DEFAULT_SSU_LIST_IDS = ['210172'];
 
@@ -24,6 +25,14 @@ function makeId() {
 
 function sanitizeText(value = '') {
   return String(value ?? '').trim();
+}
+
+export function sanitizeSalesNotes(value = '') {
+  return String(value ?? '')
+    .replace(/\r\n/g, '\n')
+    .replace(/\u0000/g, '')
+    .trim()
+    .slice(0, MAX_SALES_NOTES_LENGTH);
 }
 
 function normalizeWebsiteDomain(value = '') {
@@ -132,12 +141,15 @@ function normalizeWebsiteImport(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
     importedAt: sanitizeText(input.importedAt),
+    publishedAt: sanitizeText(input.publishedAt),
     sourceRunId: sanitizeText(input.sourceRunId),
     sourceStep: sanitizeText(input.sourceStep),
     sourceBaseUrl: sanitizeText(input.sourceBaseUrl),
     siteFolder: sanitizeText(input.siteFolder),
     importRoot: sanitizeText(input.importRoot),
     previewUrl: sanitizeText(input.previewUrl),
+    previewSlug: sanitizeText(input.previewSlug),
+    publicUrl: sanitizeText(input.publicUrl),
     publicPreviewPublishedAt: sanitizeText(input.publicPreviewPublishedAt),
   };
 }
@@ -156,6 +168,17 @@ function normalizeMakerRun(value = {}) {
     fieldsSyncedAt: sanitizeText(input.fieldsSyncedAt),
     industry: sanitizeText(input.industry),
     createdAt: sanitizeText(input.createdAt),
+  };
+}
+
+function normalizeHubSite(value = {}) {
+  const input = value && typeof value === "object" ? value : {};
+  return {
+    siteKey: sanitizeText(input.siteKey || input.site_key),
+    domain: sanitizeText(input.domain),
+    id: sanitizeText(input.id),
+    createdAt: sanitizeText(input.createdAt),
+    liveUrl: sanitizeText(input.liveUrl),
   };
 }
 
@@ -267,6 +290,7 @@ function normalizeSalesClient(raw = {}) {
     agreedTime,
     meetingAt,
     websiteDomain: product === 'ssu' ? '' : normalizeWebsiteDomain(raw.websiteDomain),
+    notes: sanitizeSalesNotes(raw.notes),
     details: normalizeSalesDetails(raw.details),
     myphoner,
     progression,
@@ -274,6 +298,7 @@ function normalizeSalesClient(raw = {}) {
     calendar: normalizeCalendar(raw.calendar),
     websiteImport: product === 'ssu' ? normalizeWebsiteImport() : normalizeWebsiteImport(raw.websiteImport),
     makerRun: product === 'ssu' ? normalizeMakerRun() : normalizeMakerRun(raw.makerRun),
+    hubSite: product === 'ssu' ? normalizeHubSite() : normalizeHubSite(raw.hubSite),
     status,
     archive: status === 'not-sold' || status === 'secondary' ? archive : normalizeArchive(),
     createdAt,
@@ -379,6 +404,9 @@ export function updateSalesClient(id, updates = {}) {
     makerRun: updates.makerRun
       ? { ...current.makerRun, ...updates.makerRun }
       : current.makerRun,
+    hubSite: updates.hubSite
+      ? { ...current.hubSite, ...updates.hubSite }
+      : current.hubSite,
     archive: updates.archive
       ? { ...current.archive, ...updates.archive }
       : current.archive,
@@ -401,6 +429,12 @@ export function deleteSalesClient(id) {
   if (next.length === state.length) return false;
   writeState(next);
   return true;
+}
+
+export function setSalesNotes(id, notes) {
+  const current = getSalesClientById(id);
+  if (!current) return null;
+  return updateSalesClient(id, { notes: sanitizeSalesNotes(notes) });
 }
 
 export function setSalesProgress(id, key, value) {

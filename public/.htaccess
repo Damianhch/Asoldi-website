@@ -6,6 +6,11 @@
 <IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteBase /
+# Node serves API + public website snapshots. Do not collapse them into the SPA.
+RewriteRule ^api(/|$) - [L]
+RewriteRule ^sales-preview(/|$) - [L]
+RewriteRule ^previews(/|$) - [L]
+RewriteRule ^live-preview(/|$) - [L]
 RewriteRule ^index\.html$ - [L]
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteCond %{REQUEST_FILENAME} !-d
@@ -19,6 +24,7 @@ AddOutputFilterByType DEFLATE text/html text/css application/javascript applicat
 
 <IfModule mod_expires.c>
 ExpiresActive On
+ExpiresByType text/html "access plus 0 seconds"
 ExpiresByType text/css "access plus 1 year"
 ExpiresByType application/javascript "access plus 1 year"
 ExpiresByType image/jpeg "access plus 1 year"

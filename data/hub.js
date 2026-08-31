@@ -67,9 +67,39 @@ export function getAllSites() {
   return readSites();
 }
 
-export function createSite({ name, domain, websitePlan, ecommerceCatalogType, githubRepo, features } = {}) {
+export function createSite({
+  name,
+  domain,
+  site_key,
+  websitePlan,
+  ecommerceCatalogType,
+  githubRepo,
+  features,
+} = {}) {
+  const requestedKey = String(site_key || '').trim();
+  if (requestedKey) {
+    const existingByKey = getSiteByKey(requestedKey);
+    if (existingByKey) {
+      if (domain && existingByKey.domain !== domain) {
+        const updated = updateSite(existingByKey.id, {
+          domain,
+          name: name || existingByKey.name,
+          websitePlan,
+          ecommerceCatalogType,
+          githubRepo,
+          features,
+        });
+        return updated.ok ? { ...updated.site } : { ...existingByKey };
+      }
+      return { ...existingByKey };
+    }
+  }
+  if (domain) {
+    const existingByDomain = getSiteByDomain(domain);
+    if (existingByDomain) return { ...existingByDomain };
+  }
   const sites = readSites();
-  const siteKey = generateSiteKey();
+  const siteKey = requestedKey || generateSiteKey();
   const id = String(Date.now());
   const plan = normalizeWebsitePlan(websitePlan);
   const nextFeatures = features ? normalizeFeatures(features) : featuresFromPlan(plan);

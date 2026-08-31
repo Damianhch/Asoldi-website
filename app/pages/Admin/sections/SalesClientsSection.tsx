@@ -16,16 +16,16 @@ import {
   Plus,
   RefreshCw,
   Search,
+  StickyNote,
   Tag,
   Trash2,
   Undo2,
-  Upload,
   UserRound,
   Volume2,
   Wand2,
   X,
 } from 'lucide-react';
-import { API, getSalesToken, salesAuthHeaders, type SalesClient, type SalesProduct } from '../shared';
+import { API, salesAuthHeaders, type SalesClient, type SalesProduct } from '../shared';
 import 'leaflet/dist/leaflet.css';
 
 type WebsiteOffer = {
@@ -59,10 +59,8 @@ const OFFER_TIERS = [
 ];
 const MAKER_BASE_URL_STORAGE_KEY = 'asoldi.sales.websiteMakerBaseUrl.v1';
 const LAN_MAKER_URL = 'http://192.168.68.92:3000';
-const LAN_ASOLDI_URL = 'http://192.168.68.92:3200';
 const PUBLIC_SALES_URL = 'https://asoldi.com';
 const LOCAL_MAKER_URL = 'http://localhost:3000';
-const IS_LAN_SALES_HOST = typeof window !== 'undefined' && !/(^|\.)asoldi\.com$/i.test(window.location.hostname);
 const SALES_MAP_DEFAULT_CENTER: [number, number] = [63.4305, 10.3951];
 const SALES_MAP_DEFAULT_ZOOM = 5;
 
@@ -104,6 +102,7 @@ type SalesFormState = {
   agreedTime: boolean;
   meetingAt: string;
   websiteDomain: string;
+  notes: string;
   instagramUrl: string;
   facebookUrl: string;
   proffUrl: string;
@@ -123,6 +122,7 @@ const INITIAL_FORM: SalesFormState = {
   agreedTime: false,
   meetingAt: '',
   websiteDomain: '',
+  notes: '',
   instagramUrl: '',
   facebookUrl: '',
   proffUrl: '',
@@ -355,190 +355,11 @@ function isPrivateMakerHost(value = '') {
 }
 
 function clientHasPublicPreviewSnapshot(client: Pick<SalesClient, 'websiteImport'> | null | undefined) {
-  return Boolean(String(client?.websiteImport?.importRoot || '').trim());
-}
-
-function lanAsoldiOriginFromMaker(makerUrl = '') {
-  try {
-    const parsed = new URL(makerUrl);
-    if (isPrivateMakerHost(`${parsed.protocol}//${parsed.host}`)) {
-      return `http://${parsed.hostname}:3200`;
-    }
-  } catch {
-    // Keep the office default when Maker is missing or already public.
-  }
-  return LAN_ASOLDI_URL;
-}
-
-type PreviewBridgeJob = {
-  clientId: string;
-  exportUrl: string;
-  uploadUrl: string;
-  token: string;
-  headers?: Record<string, string>;
-};
-
-type OfficePublisher = {
-  publish: (jobs: PreviewBridgeJob[]) => Promise<void>;
-  close: () => void;
-};
-
-function buildOfficePublisherHtml() {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>Publishing to asoldi.com</title>
-<!-- asoldi-helper-v3 -->
-<style>body{margin:0;font-family:sans-serif;background:#1a1a1a;color:#eee;padding:24px}#s{color:#f5c27a;white-space:pre-wrap}.ok{color:#86efac}.err{color:#fca5a5}</style>
-</head><body>
-<h1 style="font-size:16px">Publishing public preview</h1>
-<p style="color:#bbb;font-size:13px">Copying the Website Maker site onto asoldi.com/sales-preview. Leave this window open.</p>
-<p id="s">Waiting for Sales…</p>
-<script>
-(function(){
-  var busy=false;
-  function set(t,c){var el=document.getElementById('s'); el.textContent=t; el.className=c||'';}
-  function reply(source,origin,msg){
-    try{if(source&&source.postMessage)source.postMessage(msg,origin||'*');}catch(e){}
-    try{if(window.opener)window.opener.postMessage(msg,'*');}catch(e){}
-  }
-  if(window.opener) window.opener.postMessage({type:'asoldi-bridge-ready'},'*');
-  window.addEventListener('message', async function(event){
-    var payload=event.data;
-    if(!payload||payload.type!=='asoldi-publish-preview') return;
-    if(busy) return;
-    var jobs=payload.jobs||[];
-    if(!jobs.length){
-      set('No preview jobs received.','err');
-      reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:false,error:'No preview jobs received.'});
-      return;
-    }
-    busy=true;
-    reply(event.source,event.origin,{type:'asoldi-bridge-accepted'});
-    var results=[];
-    for(var i=0;i<jobs.length;i++){
-      var job=jobs[i];
-      try{
-        set('Exporting '+(i+1)+'/'+jobs.length+' from Website Maker…');
-        var zipRes=await fetch(job.exportUrl,{mode:'cors',credentials:'omit'});
-        if(!zipRes.ok) throw new Error('Maker export failed ('+zipRes.status+')');
-        var zip=await zipRes.blob();
-        if(!zip||!zip.size) throw new Error('Maker export was empty.');
-        var headers=Object.assign({Authorization:'Bearer '+job.token,'Content-Type':'application/zip'}, job.headers||{});
-        set('Uploading '+(i+1)+'/'+jobs.length+' to asoldi.com…');
-        var up=await fetch(job.uploadUrl,{method:'POST',mode:'cors',headers:headers,body:zip});
-        var data=await up.json().catch(function(){return {};});
-        if(!up.ok) throw new Error(data.message||('asoldi.com rejected the preview ('+up.status+')'));
-        results.push({ok:true,clientId:job.clientId,publicPreviewUrl:data.publicPreviewUrl||''});
-      }catch(err){
-        var message=(err&&err.message)?err.message:String(err);
-        if(/failed to fetch|networkerror|load failed/i.test(message)){
-          message='Could not reach Website Maker at http://192.168.68.92:3000. Stay on home Wi-Fi with Maker running.';
-        }
-        results.push({ok:false,clientId:job.clientId,error:message});
-      }
-    }
-    var failed=results.filter(function(row){return !row.ok;});
-    set(failed.length?('Failed: '+(failed[0].error||'Could not publish')):'Published to asoldi.com/sales-preview. You can close this window.', failed.length?'err':'ok');
-    reply(event.source,event.origin,{type:'asoldi-bridge-done',ok:failed.length===0,results:results,error:(failed[0]&&failed[0].error)||''});
-  });
-})();
-</script></body></html>`;
-}
-
-function shouldOpenOfficePublisher(makerBase: string) {
-  if (IS_LAN_SALES_HOST) return false;
-  const origin =
-    healStaleLocalMakerBase(makerBase) || normalizeHttpBaseUrl(makerBase) || LAN_MAKER_URL;
-  return isPrivateMakerHost(origin);
-}
-
-function startOfficeMakerPublisher(_makerBase: string): OfficePublisher {
-  const html = buildOfficePublisherHtml();
-  const iframe = document.createElement('iframe');
-  iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
-  iframe.setAttribute(
-    'csp',
-    "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src *; img-src *; style-src * 'unsafe-inline'"
+  return Boolean(
+    String(client?.websiteImport?.importRoot || '').trim() ||
+      String(client?.websiteImport?.publicUrl || '').trim() ||
+      String(client?.websiteImport?.importedAt || '').trim()
   );
-  iframe.srcdoc = html;
-  iframe.title = 'Publishing to asoldi.com';
-  iframe.style.cssText =
-    'position:fixed;right:16px;bottom:16px;width:380px;height:260px;border:1px solid #444;border-radius:12px;z-index:99999;background:#1a1a1a;box-shadow:0 12px 40px rgba(0,0,0,.45)';
-  document.body.appendChild(iframe);
-
-  return {
-    close() {
-      try {
-        iframe.remove();
-      } catch {
-        // ignore
-      }
-    },
-    publish(jobs) {
-      return new Promise((resolve, reject) => {
-        let settled = false;
-        let accepted = false;
-        let retryTimer = 0;
-        const finish = (handler: () => void) => {
-          if (settled) return;
-          settled = true;
-          window.clearInterval(retryTimer);
-          window.clearTimeout(acceptTimer);
-          window.clearTimeout(doneTimer);
-          window.removeEventListener('message', onMessage);
-          handler();
-        };
-        const sendJobs = () => {
-          try {
-            iframe.contentWindow?.postMessage({ type: 'asoldi-publish-preview', jobs }, '*');
-          } catch {
-            // ignore
-          }
-        };
-        const acceptTimer = window.setTimeout(() => {
-          if (accepted) return;
-          finish(() =>
-            reject(
-              new Error(
-                'The publish helper did not start. Allow popups for asoldi.com and click Backfill again.'
-              )
-            )
-          );
-        }, 12000);
-        const doneTimer = window.setTimeout(() => {
-          finish(() => reject(new Error('Timed out publishing to asoldi.com/sales-preview.')));
-        }, 180_000);
-        const onMessage = (event: MessageEvent) => {
-          if (event.origin !== 'null' && event.origin !== window.location.origin) return;
-          const payload = event.data && typeof event.data === 'object' ? (event.data as Record<string, unknown>) : null;
-          if (!payload) return;
-          if (payload.type === 'asoldi-bridge-ready') {
-            sendJobs();
-            return;
-          }
-          if (payload.type === 'asoldi-bridge-accepted') {
-            accepted = true;
-            window.clearTimeout(acceptTimer);
-            window.clearInterval(retryTimer);
-            return;
-          }
-          if (payload.type === 'asoldi-bridge-done') {
-            if (payload.ok) {
-              try {
-                iframe.remove();
-              } catch {
-                // ignore
-              }
-              finish(() => resolve());
-            } else {
-              finish(() => reject(new Error(String(payload.error || 'Publish failed.'))));
-            }
-          }
-        };
-        window.addEventListener('message', onMessage);
-        sendJobs();
-        retryTimer = window.setInterval(sendJobs, 800);
-      });
-    },
-  };
 }
 
 function openMakerTunnelPopup(makerBase: string): Promise<string> {
@@ -608,6 +429,13 @@ function getPublicPreviewHref(clientId = '') {
   const id = String(clientId || '').trim();
   if (!id) return '';
   return `${PUBLIC_SALES_URL}/sales-preview/${encodeURIComponent(id)}/`;
+}
+
+function getPublicClientPreviewUrl(client: SalesClient) {
+  const id = String(client?.id || '').trim();
+  const stored = String(client.websiteImport?.publicUrl || '').trim();
+  if (id && stored.includes(id)) return stored.endsWith('/') ? stored : `${stored}/`;
+  return getPublicPreviewHref(id);
 }
 
 function buildMakerRunUrl(
@@ -726,19 +554,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [linkingRunId, setLinkingRunId] = useState<string | null>(null);
   const [sendingWelcomeId, setSendingWelcomeId] = useState<string | null>(null);
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
-  const [publishingMakerId, setPublishingMakerId] = useState<string | null>(null);
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [copiedLaptopId, setCopiedLaptopId] = useState<string | null>(null);
-  const [publishingPreviewId, setPublishingPreviewId] = useState<string | null>(null);
   const [startingMakerTunnel, setStartingMakerTunnel] = useState(false);
-  const [backfillingPreviews, setBackfillingPreviews] = useState(false);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const [websiteMakerBaseUrl, setWebsiteMakerBaseUrl] = useState(LAN_MAKER_URL);
@@ -754,6 +578,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [recordingOpenClientId, setRecordingOpenClientId] = useState<string | null>(null);
   const [recordingLoadingClientId, setRecordingLoadingClientId] = useState<string | null>(null);
   const [recordingErrorByClient, setRecordingErrorByClient] = useState<Record<string, string>>({});
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
+  const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
@@ -791,6 +617,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       client.contactPhone,
       client.meetingPlace,
       client.industry,
+      client.notes,
     ]
       .map((entry) => normalizeClientSearchText(entry))
       .filter(Boolean)
@@ -1192,6 +1019,42 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     setShowForm(true);
   }
 
+  function clientNoteDraft(client: SalesClient) {
+    return Object.prototype.hasOwnProperty.call(noteDrafts, client.id)
+      ? noteDrafts[client.id]
+      : (client.notes || '');
+  }
+
+  function applySavedClient(saved: SalesClient) {
+    setClients((prev) => prev.map((entry) => (entry.id === saved.id ? saved : entry)));
+    setNoteDrafts((prev) => {
+      if (!Object.prototype.hasOwnProperty.call(prev, saved.id)) return prev;
+      const next = { ...prev };
+      delete next[saved.id];
+      return next;
+    });
+  }
+
+  async function saveClientNotes(client: SalesClient) {
+    const notes = clientNoteDraft(client);
+    if (notes.trim() === String(client.notes || '').trim()) return;
+    if (savingNoteId === client.id) return;
+    setSavingNoteId(client.id);
+    setError('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/notes`, {
+        method: 'PATCH',
+        body: JSON.stringify({ notes }),
+      });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed saving note');
+    } finally {
+      setSavingNoteId((current) => (current === client.id ? null : current));
+    }
+  }
+
   function openEdit(client: SalesClient) {
     const details = parseDetails(client.details);
     setEditingId(client.id);
@@ -1207,6 +1070,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       agreedTime: Boolean(client.agreedTime),
       meetingAt: toDateTimeLocal(client.meetingAt),
       websiteDomain: client.websiteDomain || '',
+      notes: clientNoteDraft(client),
       instagramUrl: details.instagramUrl,
       facebookUrl: details.facebookUrl,
       proffUrl: details.proffUrl,
@@ -1233,6 +1097,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         agreedTime: form.agreedTime,
         meetingAt: form.agreedTime ? toIsoDateTime(form.meetingAt) : '',
         websiteDomain: form.product === 'ssu' ? '' : form.websiteDomain,
+        notes: form.notes,
         details: {
           instagramUrl: form.instagramUrl,
           facebookUrl: form.facebookUrl,
@@ -1250,8 +1115,17 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       if (Array.isArray(data.warnings) && data.warnings.length) {
         setError(data.warnings.join(' | '));
       }
+      const savedId = editingId;
       setShowForm(false);
       setEditingId(null);
+      if (savedId) {
+        setNoteDrafts((prev) => {
+          if (!Object.prototype.hasOwnProperty.call(prev, savedId)) return prev;
+          const next = { ...prev };
+          delete next[savedId];
+          return next;
+        });
+      }
       await loadSales();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed saving sales client');
@@ -1280,165 +1154,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       setError(err instanceof Error ? err.message : 'Failed updating progression');
     } finally {
       setProgressBusyKey(null);
-    }
-  }
-
-  async function syncWebsiteFromMaker(client: SalesClient) {
-    const fallbackRunId = String(runIdByClient[client.id] || '').trim();
-    const linkedRunId = String(client.makerRun?.runId || '').trim();
-    const runId = linkedRunId || fallbackRunId;
-    if (!runId) {
-      setError('Create or link a Website Maker run before syncing.');
-      return;
-    }
-    let publisher: OfficePublisher | null = null;
-    try {
-      if (shouldOpenOfficePublisher(websiteMakerBaseUrl)) {
-        publisher = startOfficeMakerPublisher(websiteMakerBaseUrl);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Popup blocked. Allow popups for asoldi.com, then try again.');
-      return;
-    }
-    setSyncingId(client.id);
-    setError('');
-    try {
-      let data = await request(`/admin/sales/${client.id}/import-website`, {
-        method: 'POST',
-        body: JSON.stringify({
-          runId,
-          websiteMakerBaseUrl,
-          siteFolder: client.businessName || 'site',
-          step: 'latest',
-        }),
-      });
-      if (data?.browserExportHandoff) {
-        if (!publisher) {
-          throw new Error(
-            'asoldi.com cannot reach office Website Maker. Stay on home Wi-Fi, allow popups, and click Sync again.'
-          );
-        }
-        setNotice('Publishing preview from office Website Maker onto asoldi.com/sales-preview…');
-        data = await completeBrowserExportHandoff(client, data, publisher);
-        publisher = null;
-      } else {
-        publisher?.close();
-        publisher = null;
-      }
-      await loadSales();
-      await loadOffers();
-      const publicUrl = String(data?.publicPreviewUrl || getPublicPreviewHref(client.id));
-      if (data?.warning) {
-        setNotice(`Synced. Public preview may be stale: ${data.warning} ${publicUrl}`);
-      } else {
-        setNotice(`Public preview is ready (same URL as checkout): ${publicUrl}`);
-      }
-    } catch (err) {
-      publisher?.close();
-      setNotice('');
-      setError(err instanceof Error ? err.message : 'Failed syncing website from maker');
-    } finally {
-      setSyncingId(null);
-    }
-  }
-
-  async function completeBrowserExportHandoff(
-    client: SalesClient,
-    handoff: Record<string, unknown>,
-    publisher: OfficePublisher
-  ) {
-    const token = getSalesToken();
-    if (!token) {
-      throw new Error('Not signed in. Refresh Sales and try Sync again.');
-    }
-    const headers =
-      handoff.headers && typeof handoff.headers === 'object'
-        ? (handoff.headers as Record<string, string>)
-        : {};
-    const job: PreviewBridgeJob = {
-      clientId: client.id,
-      exportUrl: String(handoff.exportUrl || ''),
-      uploadUrl: String(handoff.uploadUrl || ''),
-      token,
-      headers,
-    };
-    if (!job.exportUrl || !job.uploadUrl) {
-      throw new Error('Website Maker did not return an export URL for this client.');
-    }
-    await publisher.publish([job]);
-    return { publicPreviewUrl: String(handoff.publicPreviewUrl || getPublicPreviewHref(client.id)) };
-  }
-
-  async function backfillPublicPreviews() {
-    const makerBase =
-      healStaleLocalMakerBase(websiteMakerBaseUrl) ||
-      normalizeHttpBaseUrl(websiteMakerBaseUrl) ||
-      LAN_MAKER_URL;
-    let publisher: OfficePublisher | null = null;
-    try {
-      if (shouldOpenOfficePublisher(makerBase)) {
-        publisher = startOfficeMakerPublisher(makerBase);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Popup blocked. Allow popups for asoldi.com, then try again.');
-      return;
-    }
-    setBackfillingPreviews(true);
-    setError('');
-    setNotice('');
-    try {
-      const listing = await request('/admin/sales/preview-backfill');
-      const list = Array.isArray(listing?.clients) ? listing.clients as Array<{
-        id: string;
-        businessName: string;
-        runId: string;
-      }> : [];
-      if (!list.length) {
-        publisher?.close();
-        publisher = null;
-        setNotice('Every linked Maker run already has a public asoldi.com/sales-preview snapshot.');
-        return;
-      }
-      const token = getSalesToken();
-      if (!token) throw new Error('Not signed in.');
-      if (publisher) {
-        const jobs: PreviewBridgeJob[] = list.map((entry) => ({
-          clientId: entry.id,
-          exportUrl: `${makerBase}/api/runs/${encodeURIComponent(entry.runId)}/export?step=latest&baseUrl=${encodeURIComponent(getPublicPreviewHref(entry.id))}&siteFolder=${encodeURIComponent(entry.businessName || 'site')}`,
-          uploadUrl: `${PUBLIC_SALES_URL}/api/admin/sales/${encodeURIComponent(entry.id)}/receive-preview-bundle`,
-          token,
-          headers: {
-            'X-Source-Run-Id': entry.runId,
-            'X-Source-Step': 'latest',
-            'X-Site-Folder': entry.businessName || 'site',
-          },
-        }));
-        setNotice(`Publishing ${list.length} public preview(s) from office Website Maker. Allow the helper window and stay on home Wi-Fi…`);
-        await publisher.publish(jobs);
-        publisher = null;
-      } else {
-        setNotice(`Publishing ${list.length} public preview(s) through this Asoldi server…`);
-        for (const entry of list) {
-          await request(`/admin/sales/${entry.id}/import-website`, {
-            method: 'POST',
-            body: JSON.stringify({
-              runId: entry.runId,
-              websiteMakerBaseUrl: makerBase,
-              siteFolder: entry.businessName || 'site',
-              step: 'latest',
-            }),
-          });
-        }
-      }
-      await loadSales();
-      await loadOffers();
-      setNotice(`Published ${list.length} public preview(s) to asoldi.com/sales-preview.`);
-    } catch (err) {
-      publisher?.close();
-      setNotice('');
-      setError(err instanceof Error ? err.message : 'Failed backfilling public previews');
-    } finally {
-      setBackfillingPreviews(false);
     }
   }
 
@@ -1525,35 +1240,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function publishMakerRunToProd(client: SalesClient) {
-    const makerRunId = String(client.makerRun?.runId || '').trim();
-    if (!makerRunId) {
-      setError('Create or link a Website Maker run on this LAN client first.');
-      return;
-    }
-    const confirmed = window.confirm(
-      'Publish only this website run (preview/dashboard links) to asoldi.com?\n\nClient name, status, MyPhoner data, and other CRM fields on production will not change.'
-    );
-    if (!confirmed) return;
-    setPublishingMakerId(client.id);
-    setError('');
-    setNotice('');
-    try {
-      const data = await request(`/admin/sales/${client.id}/publish-maker-run-to-prod`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      const extra = typeof data?.warning === 'string' && data.warning ? ` ${data.warning}` : '';
-      setNotice(`Website run ${makerRunId} is now on asoldi.com/sales.${extra}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed publishing website run to asoldi.com');
-    } finally {
-      setPublishingMakerId(null);
-    }
-  }
-
   async function copyLaptopPreviewLink(client: SalesClient) {
-    const url = getPublicPreviewHref(client.id);
+    const url = getPublicClientPreviewUrl(client);
     if (!url) {
       setError('No public preview link for this client.');
       return;
@@ -1562,9 +1250,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       await navigator.clipboard.writeText(url);
       setCopiedLaptopId(client.id);
       if (!clientHasPublicPreviewSnapshot(client)) {
-        setNotice(
-          `Copied ${url} — that URL 404s until you Sync latest from Maker (or Backfill public previews) on home Wi-Fi.`
-        );
+        setNotice(`Copied ${url}`);
       } else {
         setNotice(`Public preview copied. This is the same URL checkout uses: ${url}`);
       }
@@ -1573,26 +1259,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       }, 2500);
     } catch {
       setError(`Could not copy. Paste this: ${url}`);
-    }
-  }
-
-  async function publishPublicPreview(client: SalesClient) {
-    setPublishingPreviewId(client.id);
-    setError('');
-    setNotice('');
-    try {
-      const data = await request(`/admin/sales/${client.id}/publish-preview-to-prod`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      });
-      await loadSales();
-      await loadOffers();
-      const publicUrl = String(data?.publicPreviewUrl || getPublicPreviewHref(client.id));
-      setNotice(`Public preview published: ${publicUrl}`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed publishing public preview to asoldi.com');
-    } finally {
-      setPublishingPreviewId(null);
     }
   }
 
@@ -1612,6 +1278,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       latestReadyStep: String(client.makerRun?.latestReadyStep || ''),
     });
     try {
+      const makerBase = healStaleLocalMakerBase(websiteMakerBaseUrl) || normalizeHttpBaseUrl(websiteMakerBaseUrl);
+      if (makerBase) {
+        await fetch(`${makerBase.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(makerRunId)}`, {
+          cache: 'no-store',
+        }).catch(() => null);
+      }
       const data = await request(`/admin/sales/${client.id}/refresh-maker-handoff`, {
         method: 'POST',
         body: JSON.stringify({
@@ -1956,7 +1628,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 <a href="https://asoldi.com/previews" className="text-emerald-300 hover:underline">
                   https://asoldi.com/previews
                 </a>
-                {' '}or copy the public <code>asoldi.com/sales-preview/…</code> link after Sync. Same URL as checkout.
+                {' '}or copy the public <code>asoldi.com/sales-preview/…</code> link from the client card. Website Maker updates that URL after Step 1.
               </p>
             )}
           </div>
@@ -2093,22 +1765,9 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             </div>
             <p className="mt-2 text-[11px] text-gray-500">
               At home: <code>{LAN_MAKER_URL}</code>. Away: start Maker on this computer, click Use localhost,
-              then New tunnel URL, then Create run. Backfill / Sync opens a small helper window and copies
-              the Maker site onto asoldi.com/sales-preview. Allow popups. It does not download ZIP files and
-              does not start a Cloudflare tunnel.
+              then New tunnel URL, then Create run. Public websites live at
+              {' '}<code>https://asoldi.com/sales-preview/…</code> and update from Website Maker after each finished step.
             </p>
-            <div className="mt-3">
-              <button
-                type="button"
-                onClick={() => void backfillPublicPreviews()}
-                disabled={backfillingPreviews || isSsuBracket}
-                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-emerald-700 text-white text-sm hover:bg-emerald-600 disabled:opacity-50"
-                title="Copy linked Maker sites onto asoldi.com/sales-preview. Allow popups. Stay on home Wi-Fi. No ZIP download."
-              >
-                {backfillingPreviews ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                Backfill public previews
-              </button>
-            </div>
           </div>
           <div className="flex flex-col items-start md:items-end gap-2">
             <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
@@ -2222,6 +1881,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                   ] as { key: ProgressionKey; done: boolean }[])
                 : []),
             ];
+            const publicPreviewUrl = getPublicClientPreviewUrl(client);
+            const importedPreviewUrl = publicPreviewUrl;
+            const previewPublished = Boolean(
+              client.websiteImport?.importedAt ||
+                client.websiteImport?.publicUrl ||
+                client.websiteImport?.publicPreviewPublishedAt
+            );
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const makerRunId = String(client.makerRun?.runId || '').trim();
             const hasRun = Boolean(makerRunId);
@@ -2286,7 +1952,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {!clientIsSsu && hasRun && !clientHasPublicPreviewSnapshot(client) && (
                         <span
                           className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300"
-                          title="Maker preview works on home Wi-Fi. Sync latest from Maker to put the site on asoldi.com/sales-preview."
+                          title="Website Maker publishes this URL after a finished step. Open the run and click Update public website now if you need it immediately."
                         >
                           Not on asoldi.com yet
                         </span>
@@ -2313,6 +1979,14 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     <Pencil size={14} />
                   </button>
                 </div>
+
+                <ClientNotesField
+                  value={clientNoteDraft(client)}
+                  saving={savingNoteId === client.id}
+                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
+                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
+                  onSave={() => void saveClientNotes(client)}
+                />
 
                 <div className="flex flex-wrap gap-1.5">
                   {timeline.map((step) => {
@@ -2365,7 +2039,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         type="button"
                         onClick={() => void copyLaptopPreviewLink(client)}
                         className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                        title={`Copy ${getPublicPreviewHref(client.id)} — same URL as client checkout`}
+                        title={`Copy ${getPublicClientPreviewUrl(client)} — same URL as client checkout`}
                       >
                         {copiedLaptopId === client.id ? <Check size={13} /> : <Copy size={13} />}
                         {copiedLaptopId === client.id ? 'Copied public preview' : 'Copy public preview'}
@@ -2380,18 +2054,15 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         {creatingRunIds.has(client.id) ? <Loader2 size={13} className="animate-spin" /> : <Wand2 size={13} />}
                         Create new run
                       </button>
-                      {IS_LAN_SALES_HOST ? (
                       <button
                         type="button"
-                        onClick={() => void publishMakerRunToProd(client)}
-                        disabled={publishingMakerId === client.id}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 text-white text-xs hover:bg-emerald-600 disabled:opacity-50"
-                        title="Copy only this website run onto asoldi.com/sales. Does not change production CRM fields."
+                        onClick={() => window.open(publicPreviewUrl, '_blank')}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={publicPreviewUrl}
                       >
-                        {publishingMakerId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
-                        Publish website to asoldi.com
+                        <ExternalLink size={13} />
+                        Public preview
                       </button>
-                      ) : null}
                     </>
                   ) : (
                     <button
@@ -2651,7 +2322,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     {!clientIsSsu && (
                     <>
                     <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
-                      <div className="text-sm text-white font-medium">Sync website preview from Maker</div>
+                      <div className="text-sm text-white font-medium">Public website</div>
                       <div className="flex flex-wrap items-center gap-2">
                         <input
                           value={runIdByClient[client.id] || ''}
@@ -2670,17 +2341,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => void syncWebsiteFromMaker(client)}
-                          disabled={syncingId === client.id}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
-                        >
-                          {syncingId === client.id ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-                          Sync latest from Maker
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => window.open(getPublicPreviewHref(client.id), '_blank')}
-                          disabled={!client.websiteImport?.previewUrl}
+                          onClick={() => window.open(importedPreviewUrl, '_blank')}
+                          disabled={!previewPublished && !client.websiteImport?.previewUrl}
                           className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
                         >
                           <ExternalLink size={14} />
@@ -2688,17 +2350,22 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                         </button>
                         <button
                           type="button"
-                          onClick={() => void publishPublicPreview(client)}
-                          disabled={publishingPreviewId === client.id || !client.websiteImport?.previewUrl}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15 disabled:opacity-50"
-                          title="Push the synced snapshot to asoldi.com/sales-preview so it works off the office Wi-Fi"
+                          onClick={() => void navigator.clipboard.writeText(importedPreviewUrl).then(
+                            () => setNotice(`Copied ${importedPreviewUrl}`),
+                            () => setError('Could not copy preview URL')
+                          )}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
                         >
-                          {publishingPreviewId === client.id ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                          Publish public preview
+                          <Copy size={14} />
+                          Copy public URL
                         </button>
                       </div>
+                      <p className="text-[11px] text-gray-400 break-all">
+                        Internet URL: <span className="text-white">{importedPreviewUrl}</span>
+                        {previewPublished ? ' (live on asoldi.com)' : ' (updates from Website Maker after Step 1)'}
+                      </p>
                       <p className="text-[11px] text-gray-500">
-                        Sync copies the current Maker site to asoldi.com/sales-preview (allow the helper popup). That is the temporary public URL Sales, checkout, and the meeting laptop all use. If this client was created before that flow, use Backfill public previews on home Wi-Fi. Re-sync after more custom changes.
+                        Website Maker publishes this URL after each finished step. To push immediately, open the run and click Update public website now.
                       </p>
                     </div>
 
@@ -2851,7 +2518,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                           {client.websiteImport?.previewUrl ? (
                             <p className="text-[11px] text-gray-400">Forhåndsvisning av importert nettside legges automatisk ved tilbudet.</p>
                           ) : (
-                            <p className="text-[11px] text-gray-500">Tips: synkroniser nettstedet fra Maker over for å gi kunden forhåndsvisning i tilbudet.</p>
+                            <p className="text-[11px] text-gray-500">Tips: kjør Step 1 i Website Maker så tilbudet får offentlig forhåndsvisning.</p>
                           )}
 
                           {lastCreatedCode && (
@@ -2935,6 +2602,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                 ) : (
                   <div className="text-xs text-gray-500">No reason added.</div>
                 )}
+                <ClientNotesField
+                  value={clientNoteDraft(client)}
+                  saving={savingNoteId === client.id}
+                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
+                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
+                  onSave={() => void saveClientNotes(client)}
+                />
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
@@ -3049,6 +2723,12 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
 
               <TextArea label="Other links (one per line)" value={form.otherLinks} onChange={(value) => setForm((prev) => ({ ...prev, otherLinks: value }))} />
 
+              <TextArea
+                label="Internal notes (shown on the client card)"
+                value={form.notes}
+                onChange={(value) => setForm((prev) => ({ ...prev, notes: value }))}
+              />
+
               <div className="md:col-span-2 flex justify-end gap-2 mt-2">
                 <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg bg-white/10 text-white">
                   Cancel
@@ -3110,6 +2790,95 @@ function TextArea({
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white resize-y"
       />
+    </div>
+  );
+}
+
+function ClientNotesField({
+  value,
+  saving,
+  dirty,
+  onChange,
+  onSave,
+}: {
+  value: string;
+  saving: boolean;
+  dirty: boolean;
+  onChange: (value: string) => void;
+  onSave: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const hasNote = Boolean(value.trim());
+  const showEditor = editing || dirty || saving;
+
+  useEffect(() => {
+    if (!showEditor) return;
+    const node = textareaRef.current;
+    if (!node) return;
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  }, [showEditor]);
+
+  return (
+    <div className="rounded-xl border border-amber-700/25 bg-amber-950/20 p-2.5 space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-amber-300">
+          <StickyNote size={12} />
+          Note
+        </div>
+        {(dirty || saving) && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onSave}
+            disabled={saving || !dirty}
+            className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-amber-700/40 text-amber-100 text-[11px] hover:bg-amber-700/55 disabled:opacity-50"
+          >
+            {saving ? <Loader2 size={11} className="animate-spin" /> : null}
+            {saving ? 'Saving…' : 'Save note'}
+          </button>
+        )}
+      </div>
+      {showEditor ? (
+        <textarea
+          ref={textareaRef}
+          rows={3}
+          maxLength={8000}
+          value={value}
+          placeholder="Write a note for this client…"
+          onChange={(e) => onChange(e.target.value)}
+          onBlur={() => {
+            onSave();
+            setEditing(false);
+          }}
+          onKeyDown={(e) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+              e.preventDefault();
+              onSave();
+              setEditing(false);
+            }
+          }}
+          className="w-full px-2.5 py-2 rounded-lg bg-black/30 border border-white/10 text-sm text-gray-100 placeholder:text-gray-500 resize-y whitespace-pre-wrap"
+        />
+      ) : hasNote ? (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="w-full text-left text-sm text-amber-50/90 whitespace-pre-wrap break-words max-h-32 overflow-y-auto"
+          title="Click to edit note"
+        >
+          {value}
+        </button>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          className="w-full text-left text-xs text-gray-400 hover:text-gray-200"
+        >
+          Add a note…
+        </button>
+      )}
     </div>
   );
 }
