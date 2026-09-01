@@ -28,23 +28,12 @@ To have **this** site’s /admin driven by the hub, add a site in super-admin wi
 
 ## 2. Add CMS to a client (e.g. mongsushi.no)
 
-1. In the **hub** (/superadmin): Add site **Mong Sushi**, domain **mongsushi.no**. Copy the **site key**.
-2. In the **mongsushi.no project**:
-   - Install the client CMS package: `npm install @asoldi/client-cms` (from the [website-cms](https://github.com/Damianhch/website-cms) repo, published to npm/GitHub Packages).
-   - In the server: mount the CMS routes at `/api/cms`. Example:
-     ```js
-     import createCmsRoutes from '@asoldi/client-cms';
-     app.use('/api/cms', createCmsRoutes({
-       hubUrl: process.env.CMS_HUB_URL || 'https://asoldi.com',
-       siteKey: process.env.CMS_SITE_KEY,
-       dataPath: './data',
-     }));
-     ```
-   - In the React app: add `<Route path="/admin" element={<ClientCMS />} />` and import `ClientCMS` from `@asoldi/client-cms/ClientCMS`.
-   - Set env on the host: `CMS_HUB_URL=https://asoldi.com` (or test URL), `CMS_SITE_KEY=<paste key>`.
-3. Deploy mongsushi.no. Then **mongsushi.no/admin** will show the Client CMS and only the features you enabled in the hub for that site.
+1. In the **hub** (/superadmin): Add site **Mong Sushi**, domain **mongsushi.no** (or let Maker Go Live / Publish to GitHub register it). Copy the **site key** if you need to set env by hand.
+2. **Maker clients:** Website Creator **Publish to GitHub** writes an Express repo (`server.js`, `public/` HTML, vendored CMS, `cms.config.json`). Then in hPanel: **Add Website → Node.js web app → Import Git repository**. Framework **express**, entry **`server.js`**, empty build.
+3. **Hand-built React clients (Mong Sushi):** GitHub repo already has `server.js`. Connect Hostinger Git (classic or Node.js web app). CMS JSON lives in `~/.asoldi-cms-data/<siteKey>` (or `CMS_DATA_PATH`), not in the Git clone.
+4. Optional Hostinger env: `CMS_HUB_URL`, `CMS_SITE_KEY` (overrides `cms.config.json`). No `NPM_TOKEN` when CMS is vendored.
 
-Repeat for each of your 10+ clients: add site in hub → install package + mount routes + route → set env → deploy.
+`domain.com/admin` shows only modules enabled in the hub. Client users/products stay on that Hostinger disk across deploys.
 
 ---
 

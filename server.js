@@ -9912,6 +9912,7 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
     const domain = sanitizeSalesWebsiteDomain(req.body?.domain || req.body?.hubSite?.domain || client.websiteDomain);
     const siteKey = sanitizeText(req.body?.siteKey || req.body?.hubSite?.site_key);
     const liveUrl = sanitizeText(req.body?.liveUrl);
+    const githubRepo = sanitizeText(req.body?.githubRepo || req.body?.hubSite?.githubRepo);
     const goLiveStatus = sanitizeText(req.body?.status).toLowerCase();
     const hubName = sanitizeText(req.body?.hubSite?.name || client.businessName);
     let site = null;
@@ -9920,7 +9921,12 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
         name: hubName || domain || 'New client',
         domain,
         site_key: siteKey,
+        githubRepo,
       });
+      if (site?.id && githubRepo) {
+        const patched = hub.updateSite(site.id, { githubRepo });
+        if (patched.ok) site = patched.site;
+      }
     }
     const clientPatch = {};
     if (domain) clientPatch.websiteDomain = domain;
@@ -9933,6 +9939,7 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
           id: site.id,
           createdAt: site.createdAt,
           liveUrl: liveUrl || (site.domain ? `https://${site.domain}` : ''),
+          githubRepo: site.cms?.githubRepo || githubRepo,
         };
       }
     }

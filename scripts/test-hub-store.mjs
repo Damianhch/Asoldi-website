@@ -42,6 +42,15 @@ test('createSite reuses an existing site_key or domain', () => {
   assert.equal(again.id, first.id);
   assert.equal(again.site_key, 'fixed-key-cafe');
   assert.equal(again.features.socialSync, true);
+
+  const withRepo = hub.createSite({
+    name: 'Cafe',
+    domain: 'cafe.no',
+    site_key: 'fixed-key-cafe',
+    githubRepo: 'Damianhch/website---cafe',
+  });
+  assert.equal(withRepo.id, first.id);
+  assert.equal(withRepo.cms.githubRepo, 'Damianhch/website---cafe');
 });
 
 test('heartbeat stores package version and lastSeenAt', () => {

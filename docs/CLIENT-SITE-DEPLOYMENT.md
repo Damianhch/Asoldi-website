@@ -1,213 +1,179 @@
 # Add CMS to a client site – step-by-step (including Hostinger)
 
-Use this when you want to add the Client CMS to a **client website** (e.g. mongsushi.no) so they get **theirdomain.com/admin**. You already have the main Asoldi site with super-admin; here we set up one client from scratch.
+Use this when you want **clientdomain.com/admin** for a client. The hub (asoldi.com/superadmin) only stores **feature flags, plan, catalog type, site key, and `githubRepo`**. Website code and CMS software live in that client’s **private GitHub repo**. Users, products, and uploads live on **Hostinger disk**, outside the Git clone (`~/.asoldi-cms-data/<siteKey>`).
+
+When the **Users** feature is enabled, the client CMS must support **changing user role** (employee, client, none). See [CMS-USER-ROLES.md](CMS-USER-ROLES.md).
 
 ---
 
-## Summary
+## Summary (new Maker sites)
 
-1. **Hub (main site):** Add the client in super-admin and copy the **site key**.
-2. **Client project:** Install the CMS package, mount API routes, add `/admin` route.
-3. **Hostinger (client):** Set env vars and deploy.
+1. **Hub:** Add the client in super-admin (or let Maker **Publish to GitHub** register the site) and copy the **site key** if you need it by hand.
+2. **Website Creator:** **Publish to GitHub** — Express + vendored CMS + Maker HTML on `main`. No SFTP. No Hostinger API website create.
+3. **hPanel (once per domain):** **Websites → Add Website → Node.js web app → Import Git repository** → that repo. Framework **express**, entry **`server.js`**, **empty** build, Node **22**. Deploy.
 
-After that, **clientdomain.com/admin** shows the CMS with only the features you enabled in the hub for that site.
+Later Maker publishes are push-only; Hostinger auto-deploys `main`.
 
-When the **Users** feature is enabled for a client, the client CMS must support **changing user role** (employee, client, none). See [CMS-USER-ROLES.md](CMS-USER-ROLES.md) for the contract.
+Existing React/Vite clients (Mong Sushi) skip step 2–3 Maker template and keep their own `server.js`. See [Existing React/Vite client sites](#existing-reactvite-client-sites) below.
 
 ---
 
 ## Step 1 – In the hub (main Asoldi site)
 
-1. Open your main site’s **super-admin**: e.g.  
-   `https://seashell-camel-446716.hostingersite.com/superadmin`  
-   (or `https://asoldi.com/superadmin` when you move).
-2. Log in (same as /admin on the main site).
+1. Open **super-admin**: `https://asoldi.com/superadmin` (or the current hub host).
+2. Log in (same as `/admin` on the main site). Username is **`asoldi.com`**.
 3. Click **Add site**:
    - **Name:** e.g. Mong Sushi
-   - **Domain:** e.g. `mongsushi.no` (the client’s live domain, or test domain for staging).
+   - **Domain:** e.g. `mongsushi.no`
    - **Website plan** and, for shops, **ecommerce catalog type** (menu / tiers / normal).
-4. Save, then **copy the site key** (long hex string). You will use this as `CMS_SITE_KEY` on the client.
+   - **GitHub repo** (optional): `Damianhch/website---mongsushi` — Maker fills this on Publish.
+4. Save, then **copy the site key** if you will set Hostinger env by hand.
 
 ---
 
-## Step 2 – In the client website project (on your machine)
+## Step 2 – Maker: Publish to GitHub
 
-Do this in the **client’s repo** (e.g. the mongsushi.no project), not the main Asoldi repo.
+On the Maker PC, after Step 3 (or a custom edit):
 
-### 2a. Configure npm for the private package (local + Hostinger)
+1. Set Maker env: `GITHUB_TOKEN` (create private repos + push), `GITHUB_ORG=Damianhch`, optional `CLIENT_REPOS_ROOT`, `CMS_HUB_URL=https://asoldi.com`.
+2. Open the run → **Publish to GitHub**.
+3. Maker creates or reuses `Damianhch/website---{slug}`, writes `server.js`, `public/` (HTML), `vendor/client-cms`, `cms.config.json`, `HOSTINGER.md`, and pushes `main`.
+4. If that repo is already cloned locally with the matching remote, Maker **does not clone again**.
 
-So the client project can install `@damianhch/client-cms` from GitHub Packages:
+Do **not** SFTP into `public_html`. Do **not** pre-create a classic Hostinger website for that domain (it blocks Node.js web app onboarding). Do **not** put `vite`/`react` in the client `package.json` — Hostinger would treat the app as static and never start `server.js`.
 
-**On your machine (local dev – one-time per machine or project):**
+---
 
-- Set the scope registry (PowerShell, use quotes):
-  ```bash
-  npm config set "@damianhch:registry" "https://npm.pkg.github.com"
-  ```
-- Log in:
-  ```bash
-  npm login --registry=https://npm.pkg.github.com
-  ```
-  Use your GitHub username and a **Personal Access Token** (with `read:packages`) as the password.
+## Step 3 – Optional Hostinger env
 
-**In the client project repo (works on Hostinger too):**
+Maker already wrote `cms.config.json` in the private repo. Public pages and `/admin` work with no extra env.
 
-- In the **root of the client project**, create or edit `.npmrc` with:
+| Variable | Example | Required |
+|---|---|---|
+| `CMS_HUB_URL` | `https://asoldi.com` | No if `cms.config.json` is present |
+| `CMS_SITE_KEY` | hub site key | No if `cms.config.json` is present |
+| `CMS_DATA_PATH` | `/home/u.../.asoldi-cms-data/my-site` | No (default `~/.asoldi-cms-data/<siteKey>`) |
+
+Do **not** set `NPM_TOKEN` when CMS is vendored (`file:vendor/client-cms`).
+
+---
+
+## Step 4 – Connect GitHub in hPanel (once)
+
+1. **Websites → Add Website → Node.js web app → Import Git repository**.
+2. Pick `Damianhch/website---{client}`.
+3. Framework **express**, branch **main**, Node **22**, entry **`server.js`**, **empty** build command.
+4. Deploy. Later Maker publishes / `git push` auto-deploy.
+
+If Hostinger auto-detects Vite, override to Express + `server.js`. If the domain is already a non-Node website, remove that slot first.
+
+After deploy, `clientdomain.com` is the Maker HTML and `clientdomain.com/admin` is the CMS (modules from superadmin). Client users/products stay on that Hostinger disk across deploys.
+
+---
+
+## Existing React/Vite client sites
+
+Use this only for hand-built SPAs such as Mong Sushi. New Maker sites should **not** follow this path.
+
+### Install the package (npm or vendor)
+
+Prefer **vendoring** `website-cms` as `file:vendor/client-cms` so Hostinger does not need `NPM_TOKEN`. If you install from GitHub Packages instead:
+
+- Scope: `npm config set "@damianhch:registry" "https://npm.pkg.github.com"`
+- Project `.npmrc`:
   ```ini
   legacy-peer-deps=true
   @damianhch:registry=https://npm.pkg.github.com
   //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
   ```
-  - Commit this file – it does **not** contain the token itself.
-  - `NPM_TOKEN` will be provided as an env var on Hostinger.
+- `npm install @damianhch/client-cms`
 
-Full details: **[PUBLISH-NPM-PACKAGE-WALKTHROUGH.md](PUBLISH-NPM-PACKAGE-WALKTHROUGH.md)** → Part E (steps 1–2).
+Full registry detail: **[PUBLISH-NPM-PACKAGE-WALKTHROUGH.md](PUBLISH-NPM-PACKAGE-WALKTHROUGH.md)** → Part E.
 
-### 2b. Install the CMS package
+### Server (API)
 
-```bash
-cd path\to\client-website
-npm install @damianhch/client-cms
+Mount **before** `express.static` / SPA fallback. Omit `dataPath` so content lives under `~/.asoldi-cms-data/<siteKey>`:
+
+```js
+import createCmsRoutes from '@damianhch/client-cms';
+
+app.use(express.json());
+app.use('/api/cms', createCmsRoutes({
+  hubUrl: process.env.CMS_HUB_URL || 'https://asoldi.com',
+  siteKey: process.env.CMS_SITE_KEY,
+}));
 ```
 
-### 2c. Mount the CMS in the client app (you do this by hand)
+HTML (non-React) apps should also `import { mountCmsAdmin } from '@damianhch/client-cms'` and call `mountCmsAdmin(app)` so `/admin` is the prebuilt SPA.
 
-Two places: the **server** (API) and the **React app** (route). Same steps for every client project.
+### React app (route + hide client layout on /admin)
 
----
+```jsx
+import { ClientCMS } from '@damianhch/client-cms/ClientCMS';
 
-**Part A – Server (API)**
+function AppInner() {
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const { pathname } = useLocation();
+  const isAdmin = pathname.startsWith('/admin');
 
-1. Find the file where you create the Express `app` and define routes (often `server.js`, `app.js`, or `index.js` in the project root or a `server/` folder).
-2. At the **top**, with the other imports, add:
-   ```js
-   import createCmsRoutes from '@damianhch/client-cms';
-   ```
-3. Ensure the server parses JSON bodies. If you already have `app.use(express.json());`, leave it. If not, add it once (e.g. right after `const app = express();`):
-   ```js
-   app.use(express.json());
-   ```
-4. Mount the CMS API **before** any `express.static(...)` or catch-all `app.get('*', ...)` so that `/api/cms/*` is handled by the CMS and not by static files or the SPA fallback. Add:
-   ```js
-   app.use('/api/cms', createCmsRoutes({
-     hubUrl: process.env.CMS_HUB_URL || 'https://asoldi.com',
-     siteKey: process.env.CMS_SITE_KEY,
-     dataPath: './data',
-   }));
-   ```
-   Put this right after `express.json()` and before `app.use(express.static(...))` (and before any `app.get('*', ...)`).
+  const toggleMenu = () => {
+    setIsMenuOpen((open) => {
+      const next = !open;
+      document.body.style.overflow = next ? 'hidden' : 'unset';
+      return next;
+    });
+  };
 
-That’s the API. The CMS will use a `data/` folder in the project root (create it if it doesn’t exist; the package will write admin and users there).
+  return (
+    <div className="min-h-screen bg-[#121212] font-sans selection:bg-[#E53935] selection:text-white">
+      {!isAdmin && <Navbar onMenuToggle={toggleMenu} isMenuOpen={isMenuOpen} />}
+      {!isAdmin && <MenuOverlay isOpen={isMenuOpen} onClose={toggleMenu} />}
 
----
+      <main className="relative z-0">
+        <Routes>
+          <Route path="/admin" element={<ClientCMS />} />
+          <Route path="/" element={<Home />} />
+          <Route path="/meny" element={<Menu />} />
+          <Route path="/om-oss" element={<About />} />
+          <Route path="/blogg" element={<Blog />} />
+          <Route path="/booking" element={<Booking />} />
+        </Routes>
+      </main>
 
-**Part B – React app (route + hide client layout on /admin)**
+      {!isAdmin && <Footer />}
+    </div>
+  );
+}
 
-1. Find the file where you define your routes (usually `App.jsx`, `App.tsx`, or a router file that uses `<Routes>` and `<Route>` from `react-router-dom`).
-2. At the **top**, with the other imports, add:
-   ```js
-   import { ClientCMS } from '@damianhch/client-cms/ClientCMS';
-   ```
-   The package exports `ClientCMS` as a **named** export, so you must use `{ ClientCMS }` (not a default import).
-3. In your existing React router file (e.g. `App.tsx`), add a small inner component so `useLocation` is called **inside** the router and the client navbar/footer are hidden on `/admin`. Example pattern (adjust names to your project):
-   ```jsx
-   function AppInner() {
-     const [isMenuOpen, setIsMenuOpen] = useState(false);
-     const { pathname } = useLocation();
-     const isAdmin = pathname.startsWith('/admin');
+function App() {
+  return (
+    <HelmetProvider>
+      <Router>
+        <ScrollToTop />
+        <AppInner />
+      </Router>
+    </HelmetProvider>
+  );
+}
+```
 
-     const toggleMenu = () => {
-       setIsMenuOpen((open) => {
-         const next = !open;
-         document.body.style.overflow = next ? 'hidden' : 'unset';
-         return next;
-       });
-     };
+- Always add `<Route path="/admin" element={<ClientCMS />} />`.
+- `useLocation` stays inside the router so the client navbar/footer hide on `/admin`.
 
-     return (
-       <div className="min-h-screen bg-[#121212] font-sans selection:bg-[#E53935] selection:text-white">
-         {!isAdmin && <Navbar onMenuToggle={toggleMenu} isMenuOpen={isMenuOpen} />}
-         {!isAdmin && <MenuOverlay isOpen={isMenuOpen} onClose={toggleMenu} />}
+### Tailwind (React CMS UI only)
 
-         <main className="relative z-0">
-           <Routes>
-             <Route path="/admin" element={<ClientCMS />} />
-             <Route path="/" element={<Home />} />
-             <Route path="/meny" element={<Menu />} />
-             <Route path="/om-oss" element={<About />} />
-             <Route path="/blogg" element={<Blog />} />
-             <Route path="/booking" element={<Booking />} />
-           </Routes>
-         </main>
+If the client uses Tailwind, scan the package so classes are not purged:
 
-         {!isAdmin && <Footer />}
-       </div>
-     );
-   }
+```css
+@import "tailwindcss";
 
-   function App() {
-     return (
-       <HelmetProvider>
-         <Router>
-           <ScrollToTop />
-           <AppInner />
-         </Router>
-       </HelmetProvider>
-     );
-   }
-   ```
-   - Always add the `/admin` route with `<Route path="/admin" element={<ClientCMS />} />`.
-   - The `AppInner` pattern is universal: `useLocation` stays inside the router and every client project hides its own layout on `/admin` so the CMS can take the whole page.
+/* So CMS Tailwind classes are not purged */
+@source "../node_modules/@damianhch/client-cms/**/*.jsx";
+```
 
-**Part C – Tailwind: include CMS styles (do this in every client that uses Tailwind)**
+Maker HTML sites skip this: they serve `vendor/client-cms/admin-dist`.
 
-The CMS package uses Tailwind classes. By default your build only scans your own source files, so those classes get purged and the CMS looks unstyled (everything in a corner, no sidebar styling).
-
-- Open the **main CSS file** where you `@import "tailwindcss"` (e.g. `app/styles.css` or `src/index.css`).
-- Right **after** the tailwind import, add one line so Tailwind also scans the CMS package:
-  ```css
-  @import "tailwindcss";
-
-  /* So CMS Tailwind classes are not purged */
-  @source "../node_modules/@damianhch/client-cms/**/*.jsx";
-  ```
-- Path is relative to that CSS file: if your CSS is in `app/styles.css`, use `../node_modules/...`; if in `src/index.css`, use `../node_modules/...`; adjust if your structure differs.
-- Rebuild. The CMS at `/admin` should then show with full layout and styling.
-
-If the client project does **not** use Tailwind, skip this step (the CMS will still work but look very basic unless the package is changed to ship its own CSS).
-
----
-
-After this, run the client site and set `CMS_HUB_URL` and `CMS_SITE_KEY` in env (or `.env`). Then open **yourclientdomain.com/admin** (or localhost/admin) to use the CMS.
-
----
-
-## Step 3 – Env vars on Hostinger (client deployment)
-
-On the **client’s** Hostinger (or other host), set these in the **environment variables** (or `.env` in production):
-
-| Variable        | Example / value | Required | Used for |
-|----------------|-----------------|----------|----------|
-| `CMS_HUB_URL`  | `https://asoldi.com` or your main site URL (e.g. test URL) | Yes | Where the CMS talks to the hub API |
-| `CMS_SITE_KEY` | The **site key** you copied from super-admin in Step 1 | Yes | Identifies this client in the hub |
-| `NPM_TOKEN`    | `ghp_...` GitHub PAT with `read:packages` | Yes | Lets Hostinger install `@damianhch/client-cms` |
-
-- **CMS_HUB_URL** – Base URL of the main Asoldi site (the hub). The client CMS calls `{CMS_HUB_URL}/api/hub/site-config` (or equivalent) to get features. Use your production URL when the hub is on asoldi.com, or the test URL for staging.
-- **CMS_SITE_KEY** – Identifies this client in the hub. Paste the key you copied when you added the site in super-admin.
-- **NPM_TOKEN** – GitHub Personal Access Token with `read:packages` (and `repo` if the package repo is private). This is read by `.npmrc` so Hostinger’s `npm install` can download `@damianhch/client-cms` without 401 errors.
-
-If the client CMS package also has its own **admin login** (separate from the hub), you may need to set admin credentials on the client host as well (e.g. `CMS_ADMIN_USERNAME`, `CMS_ADMIN_PASSWORD`). Check the **@damianhch/client-cms** README or docs for that. For the hub connection and install, the three above are what you need.
-
----
-
-## Step 4 – Deploy the client site
-
-Build and deploy the client project to Hostinger (or your usual process). Ensure the env vars from Step 3 are set in the Hostinger panel for that project.
-
-After deployment:
-
-- Open **clientdomain.com/admin**.
-- You should see the Client CMS and only the features you enabled for that site in the hub (Users, Analytics, Ecommerce, etc.).
+Hostinger for these existing apps: connect the GitHub repo (classic Git or Node.js web app). Keep `CMS_HUB_URL` and `CMS_SITE_KEY` in env. Vite in `package.json` makes Hostinger treat the app as static — Mong Sushi already has a custom `server.js` on classic Git; do not migrate it onto the Node.js Web App product unless you drop Vite from `package.json` or Hostinger is already starting Node.
 
 ---
 
@@ -215,15 +181,13 @@ After deployment:
 
 | Doc | Use it for |
 |-----|------------|
-| **[PUBLISH-NPM-PACKAGE-WALKTHROUGH.md](PUBLISH-NPM-PACKAGE-WALKTHROUGH.md)** | Creating/publishing the npm package; **Part E** = installing it in a client (registry + login + `npm install`). |
-| **[SETUP-HUB-AND-CLIENTS.md](SETUP-HUB-AND-CLIENTS.md)** | Hub vs client overview; adding a site in the hub; code snippet for mount + route (same as Step 2c above). |
-| **This file (CLIENT-SITE-DEPLOYMENT.md)** | End-to-end: hub → client project → **Hostinger env** → deploy for one client site. |
+| **[SETUP-HUB-AND-CLIENTS.md](SETUP-HUB-AND-CLIENTS.md)** | Hub vs client overview; Maker vs hand-built React. |
+| **This file (CLIENT-SITE-DEPLOYMENT.md)** | End-to-end: hub → Maker GitHub publish → hPanel Node.js web app. |
+| **[PUBLISH-NPM-PACKAGE-WALKTHROUGH.md](PUBLISH-NPM-PACKAGE-WALKTHROUGH.md)** | Publishing `@damianhch/client-cms`; Part E for GitHub Packages (existing React sites only). |
 
 ---
 
 ## Changing domain later
 
-If the client’s domain changes (e.g. mongsushi.no → newdomain.com):
-
-1. In the hub (super-admin), edit the site and set **Domain** to the new domain.
-2. On the client host, you can leave **CMS_SITE_KEY** as is (sites are identified by key). Only update **CMS_HUB_URL** if the main Asoldi hub URL changes.
+1. In super-admin, set **Domain** to the new hostname.
+2. Leave **CMS_SITE_KEY** as is. Update **CMS_HUB_URL** only if the hub URL changes.
