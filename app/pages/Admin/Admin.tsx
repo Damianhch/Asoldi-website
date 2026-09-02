@@ -66,8 +66,20 @@ export const Admin = () => {
     ecommerce: false,
     blog: false,
     socialSync: false,
+    emailMarketing: false,
+    general: false,
   });
   const [copyKey, setCopyKey] = useState<string | null>(null);
+  const [clientAdminSiteId, setClientAdminSiteId] = useState<string | null>(null);
+  const [clientAdminForm, setClientAdminForm] = useState({
+    name: '',
+    email: '',
+    username: '',
+    avatarUrl: '',
+    password: '',
+    createdAt: '',
+    passwordSet: false,
+  });
 
   const fetchUsers = useCallback(async () => {
     const res = await fetch(`${API}/admin/users`, { headers: authHeaders() });
@@ -356,6 +368,44 @@ export const Admin = () => {
     }
   }
 
+  async function handleSaveClientAdmin() {
+    if (!clientAdminSiteId) return;
+    setLoading(true);
+    try {
+      const featureRes = await fetch(`${API}/hub/sites/${clientAdminSiteId}`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ features: editSiteFeatures }),
+      });
+      if (!featureRes.ok) {
+        const data = await featureRes.json().catch(() => ({}));
+        alert(data.message || 'Could not save services');
+        return;
+      }
+      const res = await fetch(`${API}/hub/sites/${clientAdminSiteId}/client-admin`, {
+        method: 'PUT',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: clientAdminForm.name,
+          email: clientAdminForm.email,
+          username: clientAdminForm.username,
+          avatarUrl: clientAdminForm.avatarUrl,
+          password: clientAdminForm.password || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Could not save client admin');
+        return;
+      }
+      setClientAdminSiteId(null);
+      setClientAdminForm((form) => ({ ...form, password: '' }));
+      await fetchSites();
+    } finally {
+      setLoading(false);
+    }
+  }
+
   function copySiteKey(key: string) {
     navigator.clipboard.writeText(key);
     setCopyKey(key);
@@ -435,10 +485,33 @@ export const Admin = () => {
                   ecommerce: !!site.features.ecommerce,
                   blog: !!site.features.blog,
                   socialSync: !!site.features.socialSync,
+                  emailMarketing: !!site.features.emailMarketing,
+                  general: !!site.features.general,
                 });
               }}
               onDelete={handleDeleteSite}
               onCopyKey={copySiteKey}
+              onEditAdmin={(site) => {
+                setClientAdminSiteId(site.id);
+                setClientAdminForm({
+                  name: site.clientAdmin?.name || '',
+                  email: site.clientAdmin?.email || '',
+                  username: site.clientAdmin?.username || '',
+                  avatarUrl: site.clientAdmin?.avatarUrl || '',
+                  password: '',
+                  createdAt: site.clientAdmin?.createdAt || site.createdAt || '',
+                  passwordSet: !!site.clientAdmin?.passwordSet,
+                });
+                setEditSiteFeatures({
+                  users: site.features.users !== false,
+                  analytics: !!site.features.analytics,
+                  ecommerce: !!site.features.ecommerce,
+                  blog: !!site.features.blog,
+                  socialSync: !!site.features.socialSync,
+                  emailMarketing: !!site.features.emailMarketing,
+                  general: !!site.features.general,
+                });
+              }}
             />
           )}
           {tab === 'pages' && <PagesSection />}
@@ -545,6 +618,8 @@ export const Admin = () => {
                 <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.ecommerce} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, ecommerce: e.target.checked }))} /> Ecommerce</label>
                 <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.blog} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, blog: e.target.checked }))} /> Blog</label>
                 <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.socialSync} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, socialSync: e.target.checked }))} /> Social sync</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.emailMarketing} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, emailMarketing: e.target.checked }))} /> Email marketing</label>
+                <label className="flex items-center gap-2 text-white"><input type="checkbox" checked={!!editSiteFeatures.general} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, general: e.target.checked }))} /> General (users & more)</label>
               </div>
               {editSiteFeatures.ecommerce && (
                 <div>
@@ -564,6 +639,37 @@ export const Admin = () => {
               <div className="flex gap-2">
                 <button type="button" onClick={() => handleUpdateSite(editingSiteId)} disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Save</button>
                 <button type="button" onClick={() => setEditingSiteId(null)} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {clientAdminSiteId && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#2a2a2a] rounded-xl border border-white/10 p-6 max-w-lg w-full max-h-[90vh] overflow-y-auto">
+            <h2 className="text-lg font-semibold text-white mb-1">Client admin user</h2>
+            <p className="text-xs text-gray-400 mb-4">Name, email, CMS login, avatar, and which services this client has. A new password syncs to their Hostinger CMS on the next config heartbeat.</p>
+            <div className="space-y-3">
+              <input type="text" value={clientAdminForm.name} onChange={(e) => setClientAdminForm((f) => ({ ...f, name: e.target.value }))} placeholder="Admin name" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              <input type="email" value={clientAdminForm.email} onChange={(e) => setClientAdminForm((f) => ({ ...f, email: e.target.value }))} placeholder="Email" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              <input type="text" value={clientAdminForm.username} onChange={(e) => setClientAdminForm((f) => ({ ...f, username: e.target.value }))} placeholder="CMS username" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              <input type="url" value={clientAdminForm.avatarUrl} onChange={(e) => setClientAdminForm((f) => ({ ...f, avatarUrl: e.target.value }))} placeholder="Avatar URL" className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              {clientAdminForm.avatarUrl && <img src={clientAdminForm.avatarUrl} alt="" className="h-16 w-16 rounded-full object-cover" />}
+              <input type="password" value={clientAdminForm.password} onChange={(e) => setClientAdminForm((f) => ({ ...f, password: e.target.value }))} placeholder={clientAdminForm.passwordSet ? 'New CMS password (leave blank to keep)' : 'CMS password'} className="w-full px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white" />
+              <p className="text-xs text-gray-500">Created {clientAdminForm.createdAt ? new Date(clientAdminForm.createdAt).toLocaleString() : 'when first saved'}</p>
+              <div className="flex flex-wrap gap-3 pt-2">
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.users} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, users: e.target.checked }))} /> Users</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.analytics} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, analytics: e.target.checked }))} /> Analytics</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.ecommerce} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, ecommerce: e.target.checked }))} /> Ecommerce</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.blog} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, blog: e.target.checked }))} /> Blog</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.socialSync} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, socialSync: e.target.checked }))} /> Social</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.emailMarketing} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, emailMarketing: e.target.checked }))} /> Email</label>
+                <label className="flex items-center gap-2 text-white text-sm"><input type="checkbox" checked={!!editSiteFeatures.general} onChange={(e) => setEditSiteFeatures((prev) => ({ ...prev, general: e.target.checked }))} /> General</label>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button type="button" onClick={handleSaveClientAdmin} disabled={loading} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white font-medium disabled:opacity-50">Save</button>
+                <button type="button" onClick={() => setClientAdminSiteId(null)} className="px-4 py-2 rounded-lg bg-white/10 text-white">Cancel</button>
               </div>
             </div>
           </div>

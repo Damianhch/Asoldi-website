@@ -1,14 +1,17 @@
 import { readFileSync, existsSync } from 'fs';
 import { randomBytes } from 'crypto';
+import bcrypt from 'bcryptjs';
 import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 import {
   desiredCmsVersion,
   featuresFromPlan,
   normalizeCatalogType,
   normalizeCmsMeta,
+  normalizeClientAdmin,
   normalizeFeatures,
   normalizeSite,
   normalizeWebsitePlan,
+  publicClientAdmin,
   resolveCatalogTypeForSite,
 } from './hub-model.js';
 
@@ -52,6 +55,7 @@ export function getSiteByDomain(domain) {
 export function getSiteConfig(siteKeyOrDomain, byDomain = false) {
   const site = byDomain ? getSiteByDomain(siteKeyOrDomain) : getSiteByKey(siteKeyOrDomain);
   if (!site) return null;
+  const clientAdmin = normalizeClientAdmin(site.clientAdmin);
   return {
     id: site.id,
     name: site.name,
@@ -60,11 +64,22 @@ export function getSiteConfig(siteKeyOrDomain, byDomain = false) {
     ecommerceCatalogType: site.ecommerceCatalogType,
     websitePlan: site.websitePlan,
     desiredCmsVersion: desiredCmsVersion(site),
+    clientAdmin: publicClientAdmin(clientAdmin),
+    pendingAdmin:
+      clientAdmin.pendingSync && clientAdmin.passwordHash
+        ? {
+            username: clientAdmin.username || clientAdmin.email || 'admin',
+            passwordHash: clientAdmin.passwordHash,
+          }
+        : null,
   };
 }
 
 export function getAllSites() {
-  return readSites();
+  return readSites().map((site) => ({
+    ...site,
+    clientAdmin: publicClientAdmin(site.clientAdmin),
+  }));
 }
 
 export function createSite({
@@ -93,14 +108,14 @@ export function createSite({
           githubRepo,
           features,
         });
-        return updated.ok ? { ...updated.site } : { ...existingByKey };
+        return updated.ok ? { ...updated.site } : { ...existingByKey, clientAdmin: publicClientAdmin(existingByKey.clientAdmin) };
       }
-      return { ...existingByKey };
+      return { ...existingByKey, clientAdmin: publicClientAdmin(existingByKey.clientAdmin) };
     }
   }
   if (domain) {
     const existingByDomain = getSiteByDomain(domain);
-    if (existingByDomain) return { ...existingByDomain };
+    if (existingByDomain) return { ...existingByDomain, clientAdmin: publicClientAdmin(existingByDomain.clientAdmin) };
   }
   const sites = readSites();
   const siteKey = requestedKey || generateSiteKey();
@@ -125,7 +140,7 @@ export function createSite({
   });
   sites.push(site);
   writeSites(sites);
-  return { ...site };
+  return { ...site, clientAdmin: publicClientAdmin(site.clientAdmin) };
 }
 
 export function updateSite(id, patch = {}) {
@@ -151,12 +166,15 @@ export function updateSite(id, patch = {}) {
       ...(patch.githubRepo !== undefined ? { githubRepo: patch.githubRepo } : {}),
     });
   }
+  if (patch.clientAdmin !== undefined) {
+    current.clientAdmin = normalizeClientAdmin({ ...current.clientAdmin, ...patch.clientAdmin });
+  }
   sites[i] = normalizeSite(current);
   writeSites(sites);
-  return { ok: true, site: sites[i] };
+  return { ok: true, site: { ...sites[i], clientAdmin: publicClientAdmin(sites[i].clientAdmin) } };
 }
 
-export function recordHeartbeat(siteKey, { packageVersion, adminUrl, name } = {}) {
+export function recordHeartbeat(siteKey, { packageVersion, adminUrl, name, adminApplied } = {}) {
   const key = String(siteKey || '').trim();
   if (!key) return { ok: false, error: 'site_key required' };
   const sites = readSites();
@@ -169,8 +187,39 @@ export function recordHeartbeat(siteKey, { packageVersion, adminUrl, name } = {}
     adminUrl: adminUrl || sites[i].cms.adminUrl,
   });
   if (name && !sites[i].name) sites[i].name = name;
+  if (adminApplied) {
+    sites[i].clientAdmin = normalizeClientAdmin({
+      ...sites[i].clientAdmin,
+      pendingSync: false,
+    });
+  }
   writeSites(sites);
-  return { ok: true, site: sites[i] };
+  return { ok: true, site: { ...sites[i], clientAdmin: publicClientAdmin(sites[i].clientAdmin) } };
+}
+
+export async function updateClientAdmin(id, patch = {}) {
+  const sites = readSites();
+  const i = sites.findIndex((s) => s.id === id);
+  if (i === -1) return { ok: false, error: 'Site not found' };
+  const current = normalizeClientAdmin(sites[i].clientAdmin);
+  const now = new Date().toISOString();
+  const next = normalizeClientAdmin({
+    ...current,
+    name: patch.name !== undefined ? patch.name : current.name,
+    email: patch.email !== undefined ? patch.email : current.email,
+    username: patch.username !== undefined ? patch.username : current.username,
+    avatarUrl: patch.avatarUrl !== undefined ? patch.avatarUrl : current.avatarUrl,
+    createdAt: current.createdAt || now,
+    updatedAt: now,
+  });
+  if (patch.password) {
+    next.passwordHash = await bcrypt.hash(String(patch.password), 12);
+    next.pendingSync = true;
+  }
+  sites[i].clientAdmin = next;
+  sites[i] = normalizeSite(sites[i]);
+  writeSites(sites);
+  return { ok: true, site: { ...sites[i], clientAdmin: publicClientAdmin(sites[i].clientAdmin) } };
 }
 
 export function deleteSite(id) {

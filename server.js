@@ -9702,6 +9702,7 @@ app.post('/api/hub/heartbeat', (req, res) => {
     packageVersion: sanitizeText(req.body?.packageVersion),
     adminUrl: sanitizeText(req.body?.adminUrl),
     name: sanitizeText(req.body?.name),
+    adminApplied: req.body?.adminApplied === true || req.body?.adminApplied === 'true',
   });
   if (!result.ok) {
     const status = result.error === 'Site not found' ? 404 : 400;
@@ -9725,7 +9726,7 @@ app.get('/api/cms/config', (req, res) => {
   const config = hub.getSiteConfig(host, true);
   if (config) return res.json(config);
   res.json({
-    features: { users: true, analytics: false, ecommerce: false, blog: false, socialSync: false },
+    features: { users: true, analytics: false, ecommerce: false, blog: false, socialSync: false, emailMarketing: false, general: false },
     name: 'Site',
     id: null,
     ecommerceCatalogType: null,
@@ -9755,6 +9756,12 @@ app.post('/api/hub/sites', adminAuth, (req, res) => {
 
 app.put('/api/hub/sites/:id', adminAuth, (req, res) => {
   const result = hub.updateSite(req.params.id, req.body || {});
+  if (!result.ok) return res.status(404).json({ message: result.error });
+  res.json(result.site);
+});
+
+app.put('/api/hub/sites/:id/client-admin', adminAuth, async (req, res) => {
+  const result = await hub.updateClientAdmin(req.params.id, req.body || {});
   if (!result.ok) return res.status(404).json({ message: result.error });
   res.json(result.site);
 });

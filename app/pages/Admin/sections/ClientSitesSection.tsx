@@ -1,5 +1,5 @@
 import React from 'react';
-import { Edit2, Globe, Key, Plus, Trash2 } from 'lucide-react';
+import { Edit2, Globe, Key, Plus, Trash2, UserRound } from 'lucide-react';
 import type { Site } from '../shared';
 import { WEBSITE_PLAN_OPTIONS } from '../shared';
 
@@ -9,6 +9,7 @@ type Props = {
   copyKey: string | null;
   onAdd: () => void;
   onEdit: (site: Site) => void;
+  onEditAdmin?: (site: Site) => void;
   onDelete: (id: string) => void;
   onCopyKey: (key: string) => void;
   hideHeader?: boolean;
@@ -32,7 +33,7 @@ function formatSeen(value?: string) {
   return date.toLocaleString();
 }
 
-export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onDelete, onCopyKey, hideHeader = false }: Props) {
+export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onEditAdmin, onDelete, onCopyKey, hideHeader = false }: Props) {
   return (
     <div className="max-w-4xl">
       {!hideHeader && (
@@ -88,8 +89,15 @@ export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onD
               )}
               {site.features?.blog && <FeatureBadge label="Blog" color="orange" />}
               {site.features?.socialSync && <FeatureBadge label="Social" color="teal" />}
+              {site.features?.emailMarketing && <FeatureBadge label="Email" color="pink" />}
+              {site.features?.general && <FeatureBadge label="General" color="gray" />}
             </div>
             <div className="flex items-center gap-2">
+              {onEditAdmin && (
+                <button type="button" onClick={() => onEditAdmin(site)} title="Client admin user" className="p-2 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white">
+                  <UserRound size={18} />
+                </button>
+              )}
               <button type="button" onClick={() => onEdit(site)} className="p-2 rounded-lg text-gray-400 hover:bg-white/10 hover:text-white">
                 <Edit2 size={18} />
               </button>
@@ -108,13 +116,15 @@ export function ClientSitesSection({ sites, loading, copyKey, onAdd, onEdit, onD
   );
 }
 
-function FeatureBadge({ label, color }: { label: string; color: 'green' | 'blue' | 'purple' | 'orange' | 'teal' }) {
+function FeatureBadge({ label, color }: { label: string; color: 'green' | 'blue' | 'purple' | 'orange' | 'teal' | 'pink' | 'gray' }) {
   const classes = {
     green: 'bg-green-900/50 text-green-300',
     blue: 'bg-blue-900/50 text-blue-300',
     purple: 'bg-purple-900/50 text-purple-300',
     orange: 'bg-orange-900/50 text-orange-300',
     teal: 'bg-teal-900/50 text-teal-300',
+    pink: 'bg-pink-900/50 text-pink-300',
+    gray: 'bg-gray-700/60 text-gray-200',
   };
   return <span className={`px-2 py-1 rounded ${classes[color]}`}>{label}</span>;
 }

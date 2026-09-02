@@ -37,6 +37,8 @@ export type Features = {
   ecommerce?: boolean;
   blog?: boolean;
   socialSync?: boolean;
+  emailMarketing?: boolean;
+  general?: boolean;
 };
 export type WebsitePlanId = 'tier-1-standard' | 'tier-2-seo' | 'tier-3-ecommerce' | 'custom';
 export type EcommerceCatalogType = 'menu' | 'tiers' | 'normal';
@@ -113,6 +115,15 @@ export type Site = {
   websitePlan?: WebsitePlanId;
   ecommerceCatalogType?: EcommerceCatalogType | null;
   cms?: SiteCmsMeta;
+  clientAdmin?: {
+    name?: string;
+    email?: string;
+    username?: string;
+    avatarUrl?: string;
+    createdAt?: string;
+    updatedAt?: string;
+    passwordSet?: boolean;
+  };
   createdAt: string;
 };
 
@@ -248,6 +259,8 @@ export const DEFAULT_FEATURES: Features = {
   ecommerce: false,
   blog: false,
   socialSync: false,
+  emailMarketing: false,
+  general: false,
 };
 
 export const WEBSITE_PLAN_OPTIONS: { id: WebsitePlanId; name: string }[] = [
@@ -266,9 +279,9 @@ export const CATALOG_TYPE_OPTIONS: { id: EcommerceCatalogType; name: string }[] 
 export function featuresFromPlan(planId: WebsitePlanId): Features {
   switch (planId) {
     case 'tier-2-seo':
-      return { users: true, analytics: false, ecommerce: false, blog: true, socialSync: true };
+      return { users: true, analytics: false, ecommerce: false, blog: true, socialSync: true, emailMarketing: true, general: false };
     case 'tier-3-ecommerce':
-      return { users: true, analytics: true, ecommerce: true, blog: true, socialSync: true };
+      return { users: true, analytics: true, ecommerce: true, blog: true, socialSync: true, emailMarketing: true, general: true };
     case 'custom':
       return { ...DEFAULT_FEATURES };
     case 'tier-1-standard':

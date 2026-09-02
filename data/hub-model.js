@@ -13,6 +13,8 @@ export const DEFAULT_FEATURES = {
   ecommerce: false,
   blog: false,
   socialSync: false,
+  emailMarketing: false,
+  general: false,
 };
 
 export function normalizeWebsitePlan(planId) {
@@ -33,6 +35,8 @@ export function normalizeFeatures(features) {
     ecommerce: !!features?.ecommerce,
     blog: !!features?.blog,
     socialSync: !!features?.socialSync,
+    emailMarketing: !!features?.emailMarketing,
+    general: !!features?.general,
   };
 }
 
@@ -45,6 +49,8 @@ export function featuresFromPlan(planId) {
         ecommerce: false,
         blog: true,
         socialSync: true,
+        emailMarketing: true,
+        general: false,
       };
     case 'tier-3-ecommerce':
       return {
@@ -53,6 +59,8 @@ export function featuresFromPlan(planId) {
         ecommerce: true,
         blog: true,
         socialSync: true,
+        emailMarketing: true,
+        general: true,
       };
     case 'custom':
       return { ...DEFAULT_FEATURES };
@@ -60,6 +68,48 @@ export function featuresFromPlan(planId) {
     default:
       return { ...DEFAULT_FEATURES };
   }
+}
+
+export function emptyClientAdmin() {
+  return {
+    name: '',
+    email: '',
+    username: '',
+    avatarUrl: '',
+    createdAt: '',
+    updatedAt: '',
+    passwordHash: '',
+    pendingSync: false,
+  };
+}
+
+export function normalizeClientAdmin(raw) {
+  const base = emptyClientAdmin();
+  if (!raw || typeof raw !== 'object') return base;
+  const createdAt = String(raw.createdAt || '');
+  return {
+    name: String(raw.name || '').trim(),
+    email: String(raw.email || '').trim().toLowerCase(),
+    username: String(raw.username || '').trim(),
+    avatarUrl: String(raw.avatarUrl || '').trim(),
+    createdAt,
+    updatedAt: String(raw.updatedAt || createdAt),
+    passwordHash: String(raw.passwordHash || ''),
+    pendingSync: raw.pendingSync === true,
+  };
+}
+
+export function publicClientAdmin(raw) {
+  const row = normalizeClientAdmin(raw);
+  return {
+    name: row.name,
+    email: row.email,
+    username: row.username,
+    avatarUrl: row.avatarUrl,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    passwordSet: Boolean(row.passwordHash),
+  };
 }
 
 export function emptyCmsMeta() {
@@ -106,6 +156,7 @@ export function normalizeSite(site) {
       ecommerceCatalogType: site.ecommerceCatalogType,
     }),
     cms: normalizeCmsMeta(site.cms),
+    clientAdmin: normalizeClientAdmin(site.clientAdmin),
     createdAt: site.createdAt || new Date().toISOString(),
   };
 }

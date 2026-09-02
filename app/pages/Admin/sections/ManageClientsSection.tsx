@@ -9,6 +9,7 @@ type Props = {
   copyKey: string | null;
   onAdd: () => void;
   onEdit: (site: Site) => void;
+  onEditAdmin?: (site: Site) => void;
   onDelete: (id: string) => void;
   onCopyKey: (key: string) => void;
 };
@@ -19,6 +20,7 @@ export function ManageClientsSection({
   copyKey,
   onAdd,
   onEdit,
+  onEditAdmin,
   onDelete,
   onCopyKey,
 }: Props) {
@@ -55,6 +57,7 @@ export function ManageClientsSection({
           copyKey={copyKey}
           onAdd={onAdd}
           onEdit={onEdit}
+          onEditAdmin={onEditAdmin}
           onDelete={onDelete}
           onCopyKey={onCopyKey}
           hideHeader
