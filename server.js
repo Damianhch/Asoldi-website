@@ -84,6 +84,7 @@ const __dirname = dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3000;
 const distPath = join(__dirname, 'dist');
+const publicPath = join(__dirname, 'public');
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'change-me-in-production';
 
 function signToken(payload) {
@@ -12131,6 +12132,12 @@ app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     if (filePath.endsWith('.css')) res.setHeader('Content-Type', 'text/css; charset=utf-8');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+  }
+}));
+
+app.use(express.static(publicPath, {
+  setHeaders: (res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
   }
 }));

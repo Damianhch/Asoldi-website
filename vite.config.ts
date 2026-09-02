@@ -7,7 +7,9 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
     root: 'app',
-    publicDir: path.resolve(__dirname, 'public'),
+    // Dev still serves /media from public/. Production must not copy the
+    // gigabytes of mp4/wav into dist — that OOMs Hostinger. Express serves public/.
+    publicDir: mode === 'development' ? path.resolve(__dirname, 'public') : false,
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
