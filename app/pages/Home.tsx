@@ -26,7 +26,7 @@ export const Home = () => {
         structuredData={getLocalBusinessSchema()}
       />
       <Hero />
-      <ImageMarquee />
+      <ImageMarquee className="hidden lg:block" />
       <Features />
       <AllServicesMP4 />
       <VideoIntro />

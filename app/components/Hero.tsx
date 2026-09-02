@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Star } from 'lucide-react';
 import { Button } from './Button';
+import { ImageMarquee } from './ImageMarquee';
 
 export const Hero = () => {
   const services = [
@@ -24,7 +25,7 @@ export const Hero = () => {
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 md:gap-12 items-center min-h-[calc(100dvh-7rem)] lg:min-h-0">
           
           {/* Left Column - Text & Services (no CTA on mobile) */}
-          <div className="lg:col-span-5 flex flex-col justify-center items-center text-center md:items-start md:text-left">
+          <div className="lg:col-span-8 flex flex-col justify-center items-center text-center md:items-start md:text-left">
             <motion.h1 
               initial={{ opacity: 0, y: 30 }}
               animate={{ opacity: 1, y: 0 }}
@@ -48,7 +49,7 @@ export const Hero = () => {
               ))}
             </div>
 
-            {/* CTA - desktop only (mobile CTA is under image) */}
+            {/* CTA - desktop only (mobile CTA sits under social proof) */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -59,19 +60,15 @@ export const Hero = () => {
             </motion.div>
           </div>
 
-          {/* Middle Column - Image */}
-          <div className="lg:col-span-4 relative flex flex-col items-center justify-center gap-3 lg:gap-0">
-            <motion.div 
+          {/* Mobile/tablet: website carousel in the old portrait slot */}
+          <div className="lg:hidden relative flex flex-col items-center justify-center gap-3">
+            <motion.div
               initial={{ opacity: 0, scale: 0.9 }}
               animate={{ opacity: 1, scale: 1 }}
               transition={{ duration: 0.8 }}
               className="relative w-full max-w-[280px] md:max-w-[400px] aspect-[5/4] md:aspect-[3/4] rounded-t-[120px] md:rounded-t-[200px] overflow-hidden border-x border-t border-white/10 mx-auto"
             >
-              <img 
-                src="/media/asoldi%20capture%202.PNG"
-                alt="Asoldi"
-                className="w-full h-full object-cover object-center"
-              />
+              <ImageMarquee compact />
             </motion.div>
             {/* Social proof - mobile only, exact same style as original row */}
             <motion.a
@@ -113,7 +110,7 @@ export const Hero = () => {
                 <path fill="#EB4335" d="M130.6 49.3c24.4 0 40.8 10.5 50.2 19.3l36.7-35.8C195.3 11.6 165.8 0 130.6 0 80 0 35.8 30.2 14.3 71.8l42.1 32.7c10.5-32 39.6-55.2 74.2-55.2"/>
               </svg>
             </motion.a>
-            {/* CTA - mobile only, under image social proof */}
+            {/* CTA - mobile only, under social proof */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
