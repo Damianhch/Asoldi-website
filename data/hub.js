@@ -80,9 +80,13 @@ export function createSite({
   if (requestedKey) {
     const existingByKey = getSiteByKey(requestedKey);
     if (existingByKey) {
-      if (domain && existingByKey.domain !== domain) {
+      const shouldPatch =
+        (domain && existingByKey.domain !== domain) ||
+        githubRepo ||
+        (name && name !== existingByKey.name);
+      if (shouldPatch) {
         const updated = updateSite(existingByKey.id, {
-          domain,
+          domain: domain || existingByKey.domain,
           name: name || existingByKey.name,
           websitePlan,
           ecommerceCatalogType,
