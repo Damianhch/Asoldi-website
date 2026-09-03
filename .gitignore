@@ -12,3 +12,9 @@ data/admin.json
 data/sites.json
 data/reset-tokens.json
 .builds/data/
+
+# Call recordings blow Hostinger's disk quota (errno 122 during npm install).
+# Keep them on the server under public/myphoner-audio or data/myphoner-audio.
+public/myphoner-audio/*
+!public/myphoner-audio/.gitkeep
+data/myphoner-audio/

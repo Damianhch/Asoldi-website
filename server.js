@@ -1552,6 +1552,7 @@ async function listLocalRecordingFiles() {
   const recordingDirs = [
     path.join(distPath, 'myphoner-audio'),
     path.join(__dirname, 'public', 'myphoner-audio'),
+    path.join(__dirname, 'data', 'myphoner-audio'),
   ];
   const filesByName = new Map();
   for (const dirPath of recordingDirs) {

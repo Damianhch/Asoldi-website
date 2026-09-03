@@ -8,6 +8,7 @@
     "dev": "vite --port=3000 --host=0.0.0.0",
     "dev:api": "cross-env PORT=3001 node server.js",
     "build": "node scripts/hostinger-build.mjs",
+    "preinstall": "node scripts/hostinger-clean.mjs",
     "postinstall": "node scripts/hostinger-build.mjs",
     "preview": "vite preview",
     "start": "node server.js",
