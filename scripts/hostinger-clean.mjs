@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-/** Vite used to copy public/ into dist. Leftover copies fill Hostinger's disk quota (errno 122). */
+/** Only dist/ copies. Never touch public/media or public/myphoner-audio. */
 const DIST_LEFTOVERS = ['media', 'myphoner-audio', 'myphoner-recordings'];
 
 export function cleanHostingerDist() {

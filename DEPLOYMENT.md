@@ -26,7 +26,7 @@ Before going live, update the domain and verify business info in **one place**:
    Hostinger deploys from your repo. Do **not** commit the `dist/` folder (it is in `.gitignore`).
 
 2. **Build on deploy**  
-   Hostinger runs `npm install`; **preinstall** deletes leftover `dist/media` copies, then **postinstall** runs the Vite build. Do **not** commit `public/myphoner-audio` (hundreds of MB of `.wav` files fill the app disk quota and `npm install` fails with `TAR_ENTRY_ERROR` / errno 122). Drop recordings onto the server under `public/myphoner-audio` or `data/myphoner-audio` after deploy if Sales needs them.
+   Hostinger runs `npm install`; **preinstall** deletes leftover copies under `dist/media` and `dist/myphoner-audio` only (Vite used to duplicate `public/` there). The real files in `public/` stay. Then **postinstall** runs the Vite build.
 
 3. **Run**  
    Start command: `npm start` (runs `node server.js`), which serves the built files from `dist/` and supports SPA routing.
