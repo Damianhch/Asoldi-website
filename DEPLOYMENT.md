@@ -12,7 +12,7 @@ Before going live, update the domain and verify business info in **one place**:
 - [ ] **Domain URL** in `app/index.html`: update Open Graph and canonical URLs in the `<head>`
 - [ ] **Business info** in `app/config.ts`: verify name, address, phone, email, opening hours, social links
 - [ ] **Images**: ensure `public/media/og-image.jpg` exists for social sharing (or add your image and keep the path in `app/constants.ts`)
-- [ ] **Build**: run `npm run build:vite` locally and commit `dist/`. Hostinger must not run Vite.
+- [ ] **Build**: `package.json` has `"postinstall": "npm run build"` and `"build": "vite build"` (Vite stays in `dependencies` for Hostinger).
 
 ## Media and images
 
@@ -23,13 +23,13 @@ Before going live, update the domain and verify business info in **one place**:
 ## Hostinger deployment
 
 1. **Push to GitHub**  
-   Hostinger deploys from your repo. Commit the Vite `dist/` JS bundle (no media inside it). Live images/video/audio stay in `public/` and are served by Express.
+   Hostinger deploys from your repo. Images/video/audio stay in `public/` (Express serves them). Vite must not copy that folder into `dist/`.
 
-2. **Do not run Vite on Hostinger**  
-   hPanel must be **Express**, entry **`server.js`**, build command empty or `build` (that script only deletes leftover `dist/media` copies). If Hostinger is on the Vite/React preset it copies `public/` into `dist/` and the log hits tens of thousands of lines. `npm start` runs Express.
+2. **Build on deploy**  
+   Same as the last working asoldi.com deploy: `npm install` runs **postinstall → vite build**, then Hostinger runs **build → vite build** again. The build script deletes leftover `dist/media` copies first, then runs Vite. Framework **Express**, entry **`server.js`**.
 
 3. **Run**  
-   Start command: `npm start` (`node server.js`), which serves `dist/` plus `public/` (media).
+   Start command: `npm start` (`node server.js`), which serves `dist/` plus `public/`.
 
 4. **SPA routing**  
    `public/.htaccess` is copied into `dist/` on build so Apache (if used in front of Node) can redirect all routes to `index.html`.

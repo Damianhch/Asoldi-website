@@ -21,7 +21,7 @@ export default defineConfig(({ command, mode }) => {
     },
     build: {
       outDir: '../dist',
-      emptyOutDir: false,
+      emptyOutDir: true,
       sourcemap: false,
       minify: 'esbuild',
       rollupOptions: {
