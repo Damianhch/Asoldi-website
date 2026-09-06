@@ -3,13 +3,13 @@ import { defineConfig, loadEnv } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
     root: 'app',
-    // Dev still serves /media from public/. Production must not copy the
-    // gigabytes of mp4/wav into dist — that OOMs Hostinger. Express serves public/.
-    publicDir: mode === 'development' ? path.resolve(__dirname, 'public') : false,
+    // Dev serves /media from public/. Vite build must never copy that folder
+    // into dist (Hostinger logs tens of thousands of lines and fills the disk).
+    publicDir: command === 'serve' ? path.resolve(__dirname, 'public') : false,
     plugins: [react(), tailwindcss()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
@@ -21,7 +21,7 @@ export default defineConfig(({ mode }) => {
     },
     build: {
       outDir: '../dist',
-      emptyOutDir: true,
+      emptyOutDir: false,
       sourcemap: false,
       minify: 'esbuild',
       rollupOptions: {

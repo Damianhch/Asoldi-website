@@ -1,44 +1,37 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { execSync, spawnSync } from 'node:child_process';
+import { existsSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import './hostinger-clean.mjs';
+import { cleanHostingerDist } from './hostinger-clean.mjs';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distIndex = path.join(root, 'dist', 'index.html');
-const stampPath = path.join(root, 'dist', '.asoldi-build-id');
 const vite = path.join(root, 'node_modules', 'vite', 'bin', 'vite.js');
 
-function gitHead() {
-  try {
-    return execSync('git rev-parse HEAD', { cwd: root, encoding: 'utf8' }).trim();
-  } catch {
-    return '';
-  }
+cleanHostingerDist();
+
+if (!existsSync(vite)) {
+  console.error('Vite is not installed. Run this on a machine with npm install (devDependencies).');
+  process.exit(1);
 }
 
-const head = gitHead();
-const stamp = existsSync(stampPath) ? readFileSync(stampPath, 'utf8').trim() : '';
-
-// Skip only when this same commit already built dist (postinstall + later npm run build).
-// A leftover dist/ from a previous deploy must not block a new commit.
-if (head && stamp === head && existsSync(distIndex)) {
-  console.log(`dist/ already built for ${head.slice(0, 7)}, skipping Vite`);
-  process.exit(0);
+for (const name of ['assets', 'index.html']) {
+  const target = path.join(root, 'dist', name);
+  if (existsSync(target)) rmSync(target, { recursive: true, force: true });
 }
 
 const result = spawnSync(
   process.execPath,
-  ['--max-old-space-size=1024', vite, 'build'],
-  { stdio: 'inherit', cwd: root, env: process.env },
+  ['--max-old-space-size=4096', vite, 'build'],
+  {
+    stdio: 'inherit',
+    cwd: root,
+    env: { ...process.env, NODE_ENV: 'production' },
+  },
 );
 
 if ((result.status ?? 1) !== 0) {
   process.exit(result.status ?? 1);
 }
 
-if (head) {
-  writeFileSync(stampPath, `${head}\n`);
-}
-
+writeFileSync(path.join(root, 'dist', '.asoldi-prebuilt'), 'prebuilt on maker, not on Hostinger\n');
 process.exit(0);

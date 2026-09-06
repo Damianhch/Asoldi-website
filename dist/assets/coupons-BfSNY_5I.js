@@ -1,0 +1,1 @@
+function o(e){return String(e||"").trim().toUpperCase().replace(/\s+/g,"")}function a(e){const r=String(e||"").replace(/[^\d]/g,""),n=Number.parseInt(r,10);return Number.isFinite(n)?n:0}function s(e,r=",-/mnd"){return`${Math.max(0,Math.round(e)).toLocaleString("nb-NO").replace(/\u00A0/g," ")}${r}`}export{s as f,o as n,a as p};

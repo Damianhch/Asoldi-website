@@ -1,6 +1,10 @@
 node_modules/
 build/
-dist/
+# JS bundle is committed so Hostinger does not run Vite.
+# Leftover media copies from old deploys must never be committed.
+dist/media/
+dist/myphoner-audio/
+dist/myphoner-recordings/
 coverage/
 .DS_Store
 *.log
