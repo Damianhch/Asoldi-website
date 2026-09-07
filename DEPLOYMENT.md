@@ -1,71 +1,47 @@
 # SEO & Hostinger Deployment Guide
 
-This project is optimized for SEO and deployment to **Hostinger** (Node.js hosting).
+This project is an **Express** Node.js app on Hostinger, with a React UI that is built **locally** and committed in `dist/`.
+
+Official Hostinger docs:
+- [Express.js](https://docs.hostinger.com/node.js/overview-1/express) — server mode, **blank** build script, entry `server.js`
+- [Build Settings](https://docs.hostinger.com/node.js/build-settings) — build field is an **npm script name** (e.g. `build`), not `vite build`
+- [GitHub deploys](https://docs.hostinger.com/node.js/github) — pull → `npm install` → optional build script → start
+- [React / Vite](https://docs.hostinger.com/node.js/overview-1/react) — Hostinger’s React preset is **static only** (no `server.js`). Do not use it for asoldi.com.
 
 ## Pre-deployment checklist
 
-Before going live, update the domain and verify business info in **one place**:
+- [ ] **Domain URL** in `app/config.ts`: `SITE_URL` and `DOMAIN_NAME`
+- [ ] **Domain URL** in `public/sitemap.xml` and `public/robots.txt`
+- [ ] **Business info** in `app/config.ts`
+- [ ] After UI changes: `npm run build:web` and commit the new `dist/`
+- [ ] Images/video/audio stay in `public/` (Express serves them). Do not copy them into `dist/`.
 
-- [ ] **Domain URL** in `app/config.ts`: set `SITE_URL` and `DOMAIN_NAME` (e.g. `https://asoldi.com`, `asoldi.com`)
-- [ ] **Domain URL** in `public/sitemap.xml`: replace `https://asoldi.com` in all `<loc>` tags if using a different domain
-- [ ] **Domain URL** in `public/robots.txt`: update `Sitemap: https://asoldi.com/sitemap.xml`
-- [ ] **Domain URL** in `app/index.html`: update Open Graph and canonical URLs in the `<head>`
-- [ ] **Business info** in `app/config.ts`: verify name, address, phone, email, opening hours, social links
-- [ ] **Images**: ensure `public/media/og-image.jpg` exists for social sharing (or add your image and keep the path in `app/constants.ts`)
-- [ ] **Build**: `package.json` has `"postinstall": "npm run build"` and `"build": "vite build"` (Vite stays in `dependencies` for Hostinger).
+## Hostinger settings (do not change)
 
-## Media and images
+Leave hPanel as it already is:
 
-- **Location**: Put all images in `public/media/`
-- **Mapping**: Add paths in `app/constants.ts` under the `IMAGES` object (e.g. `ogImage: "/media/og-image.jpg"`)
-- **Usage**: In components, use `IMAGES.yourKey` so all assets stay local (no CDN dependency)
+| Field | Value |
+|---|---|
+| Framework | **express** (not Vite / React) |
+| Build command | `build` if Hostinger will not accept empty — our `package.json` `build` script is a no-op that logs one line |
+| Output directory | *(blank, Express)* |
+| Entry file | `server.js` |
+| Start | `node server.js` (`npm start`) |
+| Node | 22 |
 
-## Hostinger deployment
+Hostinger **does not** run `vite build`. Vite/React live in `devDependencies` so auto-detect stays Express and production `npm install` does not pull the bundler.
 
-1. **Push to GitHub**  
-   Hostinger deploys from your repo. Images/video/audio stay in `public/` (Express serves them). Vite must not copy that folder into `dist/`.
+There is **no `postinstall`**. A postinstall Vite compile runs during `npm install`. If that dies (disk/RAM), Hostinger never starts the build step and the build log is **0 lines**.
 
-2. **Build on deploy**  
-   Same as the last working asoldi.com deploy: `npm install` runs **postinstall → vite build**, then Hostinger runs **build → vite build** again (`"build": "vite build"`). Vite deletes leftover `dist/media` copies after it starts (never `public/`). Framework **Express**, entry **`server.js`**.
-
-3. **Run**  
-   Start command: `npm start` (`node server.js`), which serves `dist/` plus `public/`.
-
-4. **SPA routing**  
-   `public/.htaccess` is copied into `dist/` on build so Apache (if used in front of Node) can redirect all routes to `index.html`.
-
-## Local development
+## Local frontend build (not on Hostinger)
 
 ```bash
 npm install
-npm run dev    # Vite dev server (root: app/)
-npm run build  # Output: dist/
-npm start      # Serve dist/ with Express (production-like)
+npm run build:web   # vite build → dist/ (~1MB JS, no public/ media)
+npm start           # Express serves dist/ then public/
 ```
 
-## SEO features included
+## Media
 
-- **Dynamic meta tags** (react-helmet-async): title, description, canonical, Open Graph, Twitter Card, geo tags
-- **Structured data (JSON-LD)**: LocalBusiness/ProfessionalService on homepage; Service on service pages; AboutPage, ContactPage where relevant
-- **Sitemap** at `public/sitemap.xml` and **robots.txt** at `public/robots.txt`
-- **Build-time Tailwind** (no CDN), semantic HTML, and descriptive image alt text
-
-## Project structure (production)
-
-```
-app/                 # React source (entry: app/index.html, app/index.tsx)
-  config.ts          # Site URL + business info (edit before deploy)
-  constants.ts       # IMAGES paths for public/media/
-  components/
-  pages/
-public/
-  media/             # Put images here; reference in constants.ts
-  .htaccess          # SPA routing (copied to dist/)
-  sitemap.xml
-  robots.txt
-dist/                # Build output (generated; do not commit)
-server.js            # Express server for Hostinger
-package.json         # postinstall = build; start = node server.js
-```
-
-After deployment, verify all routes load, meta tags update on navigation, and mobile layout works.
+- Hub marketing video + Sales wavs stay in `public/` (git).
+- Leftover **`dist/media` / `dist/myphoner-audio`** on the server are duplicates from old Vite copies. Delete those in File Manager if install still fails with disk quota. Never delete `public/`.
