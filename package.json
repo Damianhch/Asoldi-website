@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "vite --port=3000 --host=0.0.0.0",
     "dev:api": "cross-env PORT=3001 node server.js",
+    "preinstall": "node scripts/hostinger-preinstall.mjs",
     "build": "node -e \"console.log('asoldi.com is Express; Hostinger starts server.js with committed dist/')\"",
     "build:web": "vite build",
     "preview": "vite preview",

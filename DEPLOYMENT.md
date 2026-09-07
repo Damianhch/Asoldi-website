@@ -31,7 +31,9 @@ Leave hPanel as it already is:
 
 Hostinger **does not** run `vite build`. Vite/React live in `devDependencies` so auto-detect stays Express and production `npm install` does not pull the bundler.
 
-There is **no `postinstall`**. A postinstall Vite compile runs during `npm install`. If that dies (disk/RAM), Hostinger never starts the build step and the build log is **0 lines**.
+There is **no `postinstall`**. A postinstall Vite compile runs during `npm install` and can fill the disk. Express **Default** settings have no Build command, so a failed `npm install` shows **0 lines** in Build logs.
+
+`preinstall` runs first on Hostinger: it deletes leftover **`dist/media`** / **`dist/myphoner-audio`** copies (never `public/`, never `~/.asoldi-website-data`). User data is already outside git. Recordings in `public/` stay in the tree so a checkout does not delete them.
 
 ## Local frontend build (not on Hostinger)
 
@@ -41,7 +43,8 @@ npm run build:web   # vite build → dist/ (~1MB JS, no public/ media)
 npm start           # Express serves dist/ then public/
 ```
 
-## Media
+## Media and user data
 
-- Hub marketing video + Sales wavs stay in `public/` (git).
-- Leftover **`dist/media` / `dist/myphoner-audio`** on the server are duplicates from old Vite copies. Delete those in File Manager if install still fails with disk quota. Never delete `public/`.
+- Hub marketing video + Sales wavs stay in `public/` (still in git so a Hostinger checkout does not delete them).
+- Sales/admin JSON lives in `~/.asoldi-website-data` (not in git). Deploys do not replace it.
+- Leftover **`dist/media` / `dist/myphoner-audio`** are Vite duplicates. `preinstall` deletes those on Hostinger. Never delete `public/`.
