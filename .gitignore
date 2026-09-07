@@ -1,7 +1,8 @@
 node_modules/
 build/
-# JS bundle is committed so Hostinger does not run Vite.
-# Leftover media copies from old deploys must never be committed.
+# Hostinger Express Default uses dist/ as server output (dist/server.js).
+# The React bundle is committed in web/. Leftover Vite media copies stay ignored.
+web/media/
 dist/media/
 dist/myphoner-audio/
 dist/myphoner-recordings/

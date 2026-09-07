@@ -83,6 +83,7 @@ const __dirname = dirname(__filename);
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const webPath = join(__dirname, 'web');
 const distPath = join(__dirname, 'dist');
 const publicPath = join(__dirname, 'public');
 const ADMIN_SECRET = process.env.ADMIN_SECRET || 'change-me-in-production';
@@ -12180,7 +12181,7 @@ app.use(
   })
 );
 
-app.use(express.static(distPath, {
+app.use(express.static(webPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
     if (filePath.endsWith('.css')) res.setHeader('Content-Type', 'text/css; charset=utf-8');
@@ -12226,7 +12227,7 @@ app.get('*', (req, res) => {
       }
     }
   }
-  const indexPath = join(distPath, 'index.html');
+  const indexPath = join(webPath, 'index.html');
   if (existsSync(indexPath)) res.sendFile(indexPath);
   else res.status(500).send('index.html not found');
 });
