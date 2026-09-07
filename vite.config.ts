@@ -23,8 +23,8 @@ export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, '.', '');
   return {
     root: 'app',
-    // Dev serves /media from public/. Never copy that folder into the JS
-    // bundle dir (Hostinger Express Default uses dist/ as server output).
+    // Dev serves /media from public/. Production Vite must not copy that
+    // folder into dist (that filled the disk and produced 31k-line logs).
     publicDir: command === 'serve' ? path.resolve(__dirname, 'public') : false,
     plugins: [react(), tailwindcss(), stripLeftoverDistMedia()],
     define: {
@@ -36,7 +36,7 @@ export default defineConfig(({ command, mode }) => {
       },
     },
     build: {
-      outDir: '../web',
+      outDir: '../dist',
       emptyOutDir: true,
       sourcemap: false,
       minify: 'esbuild',
