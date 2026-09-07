@@ -1,7 +1,23 @@
 import path from 'path';
+import { existsSync, rmSync } from 'fs';
 import { defineConfig, loadEnv } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+
+function stripLeftoverDistMedia() {
+  return {
+    name: 'strip-leftover-dist-media',
+    apply: 'build',
+    buildStart() {
+      for (const name of ['media', 'myphoner-audio', 'myphoner-recordings']) {
+        const target = path.resolve(__dirname, 'dist', name);
+        if (!existsSync(target)) continue;
+        console.log(`Removing leftover dist/${name} (public/ originals stay)`);
+        rmSync(target, { recursive: true, force: true });
+      }
+    },
+  };
+}
 
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, '.', '');
@@ -10,7 +26,7 @@ export default defineConfig(({ command, mode }) => {
     // Dev serves /media from public/. Vite build must never copy that folder
     // into dist (Hostinger logs tens of thousands of lines and fills the disk).
     publicDir: command === 'serve' ? path.resolve(__dirname, 'public') : false,
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), stripLeftoverDistMedia()],
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },

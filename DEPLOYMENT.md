@@ -26,7 +26,7 @@ Before going live, update the domain and verify business info in **one place**:
    Hostinger deploys from your repo. Images/video/audio stay in `public/` (Express serves them). Vite must not copy that folder into `dist/`.
 
 2. **Build on deploy**  
-   Same as the last working asoldi.com deploy: `npm install` runs **postinstall → vite build**, then Hostinger runs **build → vite build** again. The build script deletes leftover `dist/media` copies first, then runs Vite. Framework **Express**, entry **`server.js`**.
+   Same as the last working asoldi.com deploy: `npm install` runs **postinstall → vite build**, then Hostinger runs **build → vite build** again (`"build": "vite build"`). Vite deletes leftover `dist/media` copies after it starts (never `public/`). Framework **Express**, entry **`server.js`**.
 
 3. **Run**  
    Start command: `npm start` (`node server.js`), which serves `dist/` plus `public/`.
