@@ -16,6 +16,7 @@ export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
     description: 'Simpel og funksjonell nettside.',
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
@@ -38,6 +39,7 @@ export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
     popular: true,
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
@@ -56,6 +58,7 @@ export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
     description: 'Full nettbutikk-funksjonalitet og analyse.',
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
@@ -77,6 +80,7 @@ export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
     description: 'Skreddersydde løsninger for avanserte behov.',
     includedFeatures: [
       'Full nettsideutvikling',
+      'Valgfri mengde sider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Ubegrenset innholdsendringer',

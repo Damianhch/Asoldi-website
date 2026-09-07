@@ -452,6 +452,34 @@ function buildMakerRunUrl(
   return `${base}/run/${encodeURIComponent(id)}`;
 }
 
+function extractMakerRunIdFromUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const url = new URL(raw, 'https://asoldi.local');
+    const draftId = String(url.searchParams.get('draftRunId') || '').trim();
+    if (draftId) return draftId;
+    const path = String(url.pathname || '');
+    const preview = path.match(
+      /^\/preview\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\/|$)/i,
+    );
+    if (preview) return preview[1];
+    const runPage = path.match(
+      /^\/run\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\/|$)/i,
+    );
+    if (runPage) return runPage[1];
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function storedMakerUrlBelongsToRun(storedUrl = '', runId = '') {
+  const id = String(runId || '').trim().toLowerCase();
+  const extracted = extractMakerRunIdFromUrl(storedUrl).toLowerCase();
+  return Boolean(id && extracted && extracted === id);
+}
+
 function resolveOpenInMakerUrl({
   baseUrl = '',
   runId = '',
@@ -468,7 +496,10 @@ function resolveOpenInMakerUrl({
   const id = String(runId || '').trim();
   const base = healStaleLocalMakerBase(baseUrl) || LAN_MAKER_URL;
   if (!id) return '';
-  const stored = String(storedDashboardUrl || '').trim();
+  const storedRaw = String(storedDashboardUrl || '').trim();
+  // Never follow a stored /run/<other-id> leftover from another client's Maker
+  // callback. Sales "Open in maker" must stay on this client's makerRun.runId.
+  const stored = storedMakerUrlBelongsToRun(storedRaw, id) ? storedRaw : '';
   const status = String(intakeStatus || '').trim().toLowerCase();
   const storedLooksLikeIntake = /\/run-v2(?:\?|$)/i.test(stored) && /[?&]draftRunId=/i.test(stored);
   const storedLooksLikeRun = /\/run\/[^/?#]+/i.test(stored) && !storedLooksLikeIntake;
@@ -1900,14 +1931,23 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
               intakeStatus: String(client.makerRun?.intakeStatus || ''),
               latestReadyStep: String(client.makerRun?.latestReadyStep || ''),
             });
-            const makerPreviewUrl =
-              remapMakerUrlToBase(healStaleLocalMakerBase(websiteMakerBaseUrl) || websiteMakerBaseUrl, storedPreviewUrl) ||
-              buildMakerRunUrl(
-                websiteMakerBaseUrl,
-                makerRunId,
-                'preview',
-                String(client.makerRun?.latestReadyStep || '3'),
-              );
+            const makerPreviewUrl = storedMakerUrlBelongsToRun(storedPreviewUrl, makerRunId)
+              ? remapMakerUrlToBase(
+                  healStaleLocalMakerBase(websiteMakerBaseUrl) || websiteMakerBaseUrl,
+                  storedPreviewUrl,
+                ) ||
+                buildMakerRunUrl(
+                  websiteMakerBaseUrl,
+                  makerRunId,
+                  'preview',
+                  String(client.makerRun?.latestReadyStep || '3'),
+                )
+              : buildMakerRunUrl(
+                  websiteMakerBaseUrl,
+                  makerRunId,
+                  'preview',
+                  String(client.makerRun?.latestReadyStep || '3'),
+                );
             const expanded = expandedId === client.id;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;

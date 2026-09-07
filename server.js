@@ -6550,6 +6550,37 @@ function startMyphonerRecordingRetryLoop() {
   }, MYPHONER_RECORDING_RETRY_TICK_MS);
 }
 
+function extractMakerRunIdFromPath(pathOrUrl = '') {
+  const raw = sanitizeText(pathOrUrl);
+  if (!raw) return '';
+  try {
+    const parsed = /^https?:\/\//i.test(raw) ? new URL(raw) : new URL(raw, 'https://asoldi.local');
+    const draftId = sanitizeText(parsed.searchParams.get('draftRunId'));
+    if (draftId) return draftId;
+    const path = String(parsed.pathname || '');
+    const preview = path.match(
+      /^\/preview\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\/|$)/i
+    );
+    if (preview) return preview[1];
+    const runPage = path.match(
+      /^\/run\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?:\/|$)/i
+    );
+    if (runPage) return runPage[1];
+  } catch {
+    return '';
+  }
+  return '';
+}
+
+function pinMakerHandoffPathToRunId(pathOrUrl = '', runId = '') {
+  const raw = sanitizeText(pathOrUrl);
+  const id = sanitizeText(runId);
+  if (!raw || !id) return '';
+  const extracted = extractMakerRunIdFromPath(raw);
+  if (extracted && extracted.toLowerCase() !== id.toLowerCase()) return '';
+  return raw;
+}
+
 function joinMakerUrl(baseUrl = '', pathOrUrl = '') {
   const raw = sanitizeText(pathOrUrl);
   if (!raw) return '';
@@ -6606,7 +6637,7 @@ function parseHandoffNeedsIntake(handoff = {}, dashboardPath = '') {
   if (status === 'configured') return false;
   if (status === 'pending') return true;
 
-  const path = sanitizeText(dashboardPath) || normalizeMakerDashboardPath(payload.dashboardPath);
+  const path = sanitizeText(dashboardPath);
   if (/\/run-v2(?:\?|$)/i.test(path) && /[?&]draftRunId=/i.test(path)) return true;
   if (/^\/run\//i.test(path)) return false;
   // Unknown: prefer intake for Sales drafts until Maker reports configured.
@@ -6615,14 +6646,20 @@ function parseHandoffNeedsIntake(handoff = {}, dashboardPath = '') {
 
 function buildMakerRunLinks(websiteMakerBaseUrl, runId, handoff = {}) {
   const encodedRunId = encodeURIComponent(runId);
-  const intakePath = sanitizeText(handoff.intakePath) || `/run-v2?draftRunId=${encodedRunId}`;
-  const handoffDashboardPath = normalizeMakerDashboardPath(handoff.dashboardPath);
+  const fallbackIntakePath = `/run-v2?draftRunId=${encodedRunId}`;
+  const intakePath =
+    pinMakerHandoffPathToRunId(sanitizeText(handoff.intakePath), runId) || fallbackIntakePath;
+  const handoffDashboardPath = pinMakerHandoffPathToRunId(
+    normalizeMakerDashboardPath(handoff.dashboardPath),
+    runId
+  );
   const wantsIntake = parseHandoffNeedsIntake(handoff, handoffDashboardPath);
   const fallbackDashboardPath = wantsIntake ? intakePath : `/run/${encodedRunId}`;
   const fallbackPreviewPath = `/preview/${encodedRunId}/step/3/view?route=/`;
   const dashboardPath = handoffDashboardPath || fallbackDashboardPath;
-  const previewViewPath = sanitizeText(handoff.previewViewPath || handoff.previewPath);
-  const exportPath = sanitizeText(handoff.exportPath);
+  const previewViewPath =
+    pinMakerHandoffPathToRunId(sanitizeText(handoff.previewViewPath || handoff.previewPath), runId);
+  const exportPath = pinMakerHandoffPathToRunId(sanitizeText(handoff.exportPath), runId);
   const links = {
     dashboardUrl: joinMakerUrl(websiteMakerBaseUrl, dashboardPath || fallbackDashboardPath),
     previewUrl: joinMakerUrl(websiteMakerBaseUrl, previewViewPath || fallbackPreviewPath),
@@ -9863,6 +9900,20 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   const nextRunId = runId || sanitizeText(client.makerRun?.runId);
   if (!nextRunId) {
     return res.status(400).json({ message: 'runId is required.' });
+  }
+
+  const linkedRunId = sanitizeText(client.makerRun?.runId);
+  // A Maker run can carry the wrong salesClientId (reused workspace, test on
+  // another business). Never retarget this client's linked run / copy / name
+  // from a callback whose runId is not the one Sales already has open.
+  if (linkedRunId && linkedRunId !== nextRunId) {
+    return res.json({
+      ok: true,
+      ignored: true,
+      reason: 'callback-run-does-not-match-linked-run',
+      linkedRunId,
+      callbackRunId: nextRunId,
+    });
   }
 
   // Maker → Sales field sync (links + core parameters edited in Website Maker).

@@ -9,6 +9,7 @@ const websiteTiers = [
     price: 999,
     features: [
       "Full nettsideutvikling",
+      "Opp til 5 hovedsider",
       "Hosting og vedlikehold",
       "Kontaktskjema & standard seksjoner"
     ]
@@ -18,6 +19,7 @@ const websiteTiers = [
     price: 1499,
     features: [
       "Full nettsideutvikling",
+      "Opp til 5 hovedsider",
       "Hosting og vedlikehold",
       "Rank høyere på google, google maps og ai"
     ]
@@ -27,6 +29,7 @@ const websiteTiers = [
     price: 1999,
     features: [
       "Full nettsideutvikling",
+      "Opp til 5 hovedsider",
       "Hosting og vedlikehold",
       "Selg i nettbutikk med e-commerce funksjonalitet"
     ]
@@ -36,6 +39,7 @@ const websiteTiers = [
     price: null,
     features: [
       "Full nettsideutvikling",
+      "Valgfri mengde sider",
       "Hosting og vedlikehold",
       "Skreddersydde funksjoner etter behov"
     ]

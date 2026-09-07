@@ -22,9 +22,10 @@ export const CLIENT_WEBSITE_PLANS: ClientWebsitePlan[] = [
     domainPrice: '79,-/mnd',
     emailPrice: '49,-/mnd',
     description: 'Simpel og funksjonell nettside.',
-    features: ['Full nettsideutvikling', 'Hosting og vedlikehold', 'Kontaktskjema & standard seksjoner'],
+    features: ['Full nettsideutvikling', 'Opp til 5 hovedsider', 'Hosting og vedlikehold', 'Kontaktskjema & standard seksjoner'],
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
@@ -52,6 +53,7 @@ export const CLIENT_WEBSITE_PLANS: ClientWebsitePlan[] = [
     features: ['Alt i Tier 1', 'SEO optimalisering', 'E-postliste innsamling'],
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
@@ -75,6 +77,7 @@ export const CLIENT_WEBSITE_PLANS: ClientWebsitePlan[] = [
     features: ['Alt i Tier 2', 'Nettbutikk-funksjonalitet', 'Analyse-dashbord'],
     includedFeatures: [
       'Full nettsideutvikling',
+      'Opp til 5 hovedsider',
       'Hosting og vedlikehold',
       'Kontaktskjema & standard seksjoner',
       'Opptil 4 innholdsendringer/mnd',
