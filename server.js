@@ -15,7 +15,7 @@ import { SALES_CONTACT_CORRECTIONS } from './data/sales-contact-corrections.js';
 import * as clientPortal from './data/client-portal.js';
 import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
-import { getPersistentDataDir } from './data/storage-path.js';
+import { getPersistentDataDir, pruneAllDataBackups } from './data/storage-path.js';
 import * as salesPreview from './lib/sales-preview-import.js';
 import {
   fillExportZipWithMakerAssets,
@@ -33,6 +33,13 @@ import * as myphonerApi from './lib/myphoner-api.js';
 import * as myphonerIntegration from './data/myphoner-integration.js';
 import * as myphonerSsuWins from './lib/myphoner-ssu-wins.js';
 import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-email.js';
+import {
+  DEVELOPMENT_KEYS,
+  buildDevelopmentItems,
+  findLinkedSalesClient,
+  parseDevelopmentItemId,
+  siteMatchesSalesClient,
+} from './lib/development-phase.js';
 import {
   PUBLIC_SALES_ORIGIN,
   buildLaptopPreviewEntry,
@@ -7268,6 +7275,21 @@ function consumeOAuthState(state) {
 
 // Sales area is accessible to the single admin account and to users with the `sales` role.
 // Each principal gets a stable accountKey used to scope their own Google Calendar tokens.
+function developmentAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload || (payload.role !== 'admin' && payload.role !== 'developer')) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  req.developmentUser = {
+    role: payload.role,
+    isAdmin: payload.role === 'admin',
+    userId: payload.userId,
+  };
+  next();
+}
+
 function salesAuth(req, res, next) {
   const auth = req.headers.authorization;
   const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
@@ -7872,7 +7894,7 @@ app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
     const result = await store.updateUserPassword(id, password);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
-  if (role !== undefined && ['employee', 'client', 'sales', 'none'].includes(role)) {
+  if (role !== undefined && ['employee', 'client', 'sales', 'developer', 'none'].includes(role)) {
     const result = await store.updateUserRole(id, role);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
@@ -9776,6 +9798,7 @@ app.get('/api/cms/config', (req, res) => {
 
 // --- Super-admin: hub sites CRUD (admin only)
 app.get('/api/hub/sites', adminAuth, (_req, res) => {
+  hub.reconcileDeliveryPhases(sales.getSalesClients());
   res.json(hub.getAllSites());
 });
 
@@ -9982,26 +10005,27 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
         domain,
         site_key: siteKey,
         githubRepo,
+        deliveryPhase: 'development',
       });
-      if (site?.id && githubRepo) {
-        const patched = hub.updateSite(site.id, { githubRepo });
+      if (site?.id) {
+        const patched = hub.updateSite(site.id, {
+          githubRepo,
+          deliveryPhase: site.development?.nettsideFerdig ? 'client' : 'development',
+        });
         if (patched.ok) site = patched.site;
       }
     }
     const clientPatch = {};
     if (domain) clientPatch.websiteDomain = domain;
-    if (goLiveStatus === 'ready') {
-      clientPatch.progression = { domainConnected: true, live: true };
-      if (site) {
-        clientPatch.hubSite = {
-          siteKey: site.site_key,
-          domain: site.domain,
-          id: site.id,
-          createdAt: site.createdAt,
-          liveUrl: liveUrl || (site.domain ? `https://${site.domain}` : ''),
-          githubRepo: site.cms?.githubRepo || githubRepo,
-        };
-      }
+    if (goLiveStatus === 'ready' && site) {
+      clientPatch.hubSite = {
+        siteKey: site.site_key,
+        domain: site.domain,
+        id: site.id,
+        createdAt: site.createdAt,
+        liveUrl: liveUrl || (site.domain ? `https://${site.domain}` : ''),
+        githubRepo: site.cms?.githubRepo || githubRepo,
+      };
     }
     const updatedClient = Object.keys(clientPatch).length
       ? sales.updateSalesClient(client.id, clientPatch)
@@ -11728,7 +11752,7 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   if (sales.isSsuSalesProduct(client.product)) {
     return res.status(400).json({
-      message: 'SSU leads are not website clients. Mark contract/payment instead of “Got the client”.',
+      message: 'SSU leads are not website clients. Mark contract signed to keep them in sales.',
     });
   }
 
@@ -11746,12 +11770,15 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
       ecommerceCatalogType: req.body?.ecommerceCatalogType,
       githubRepo: req.body?.githubRepo,
       features: req.body?.features,
+      deliveryPhase: 'development',
     });
+  if (site?.id) {
+    hub.updateSite(site.id, { deliveryPhase: 'development' });
+  }
 
   sales.updateSalesClient(client.id, {
     progression: {
-      domainConnected: Boolean(client.websiteDomain || site.domain),
-      live: true,
+      contractSigned: true,
     },
     hubSite: {
       siteKey: site.site_key,
@@ -11760,13 +11787,99 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
       createdAt: site.createdAt,
     },
   });
-  sales.setSalesStatus(client.id, 'secondary', { reason: 'got-client' });
 
   res.json({
     ok: true,
-    site,
+    phase: 'development',
+    site: hub.getAllSites().find((entry) => entry.id === site.id) || site,
     client: sales.getSalesClientById(client.id),
     movedClient: client,
+  });
+});
+
+function listDevelopmentBoard() {
+  return buildDevelopmentItems(sales.getSalesClients(), hub.getAllSites());
+}
+
+function resolveDevelopmentTarget(itemId) {
+  const parsed = parseDevelopmentItemId(itemId);
+  const salesClients = sales.getSalesClients();
+  const sites = hub.getAllSites();
+  if (parsed.kind === 'sales') {
+    const client = sales.getSalesClientById(parsed.id);
+    if (!client) return null;
+    const site = sites.find((entry) => siteMatchesSalesClient(entry, client)) || null;
+    return { client, site };
+  }
+  if (parsed.kind === 'site') {
+    const site = sites.find((entry) => String(entry.id) === parsed.id) || null;
+    if (!site) return null;
+    return { client: findLinkedSalesClient(site, salesClients), site };
+  }
+  return null;
+}
+
+app.get('/api/admin/development', developmentAuth, (_req, res) => {
+  hub.reconcileDeliveryPhases(sales.getSalesClients());
+  res.json({ items: listDevelopmentBoard() });
+});
+
+app.patch('/api/admin/development/:id', developmentAuth, (req, res) => {
+  const key = sanitizeText(req.body?.key);
+  const value = parseBoolean(req.body?.value, false);
+  if (!DEVELOPMENT_KEYS.includes(key)) {
+    return res.status(400).json({ message: 'Development step is required.' });
+  }
+  const target = resolveDevelopmentTarget(req.params.id);
+  if (!target) return res.status(404).json({ message: 'Development client not found.' });
+
+  let client = target.client;
+  let site = target.site;
+  if (client) {
+    const updated = sales.setSalesDevelopment(client.id, key, value);
+    if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+    client = updated;
+  }
+
+  const nextDevelopment = {
+    ...(site?.development || {}),
+    ...(client?.development || {}),
+    [key]: value,
+  };
+  const nextPhase = nextDevelopment.nettsideFerdig ? 'client' : 'development';
+
+  if (site?.id) {
+    const patched = hub.updateSite(site.id, {
+      development: nextDevelopment,
+      deliveryPhase: nextPhase,
+    });
+    if (patched.ok) site = patched.site;
+  } else if (nextPhase === 'client' && client) {
+    site = hub.createSite({
+      name: client.businessName || 'New client',
+      domain: client.websiteDomain || '',
+      site_key: client.hubSite?.siteKey || '',
+      deliveryPhase: 'client',
+      development: nextDevelopment,
+    });
+    sales.updateSalesClient(client.id, {
+      hubSite: {
+        siteKey: site.site_key,
+        domain: site.domain,
+        id: site.id,
+        createdAt: site.createdAt,
+      },
+    });
+    client = sales.getSalesClientById(client.id);
+  }
+
+  res.json({
+    ok: true,
+    item: listDevelopmentBoard().find((entry) => (
+      (client && entry.salesClientId === client.id) || (site && entry.siteId === site.id)
+    )) || null,
+    items: listDevelopmentBoard(),
+    movedToClients: Boolean(nextDevelopment.nettsideFerdig),
   });
 });
 
@@ -12323,9 +12436,23 @@ async function runStartupSalesLinkBackfill() {
 }
 
 async function ensureData() {
+  try {
+    const pruned = pruneAllDataBackups();
+    if (pruned.removed) {
+      console.log(
+        `[data] pruned ${pruned.removed} old JSON snapshots from ${pruned.backupDir} (kept ${pruned.kept} per ${pruned.sources} files)`
+      );
+    }
+  } catch (error) {
+    console.warn('[data] backup prune failed:', error?.message || error);
+  }
   await ensureAdminExists();
   employees.ensureWorkersForUsers(await store.getAllUsers());
   ensureHubDefaultSite();
+  const delivery = hub.reconcileDeliveryPhases(sales.getSalesClients());
+  if (delivery.changed) {
+    console.log(`[hub] reconciled delivery phases: moved=${delivery.changed}, development=${delivery.development}`);
+  }
   await fs.mkdir(SALES_IMPORTS_ROOT, { recursive: true }).catch(() => {});
   const correctionSummary = applyConfiguredSalesContactCorrections({ createMissing: true });
   if (correctionSummary.updated || correctionSummary.created) {

@@ -1,3 +1,5 @@
+import { normalizeDeliveryPhase, normalizeDevelopment } from '../lib/development-phase.js';
+
 export const WEBSITE_PLANS = [
   { id: 'tier-1-standard', name: 'Tier 1: Standard' },
   { id: 'tier-2-seo', name: 'Tier 2: SEO' },
@@ -157,6 +159,8 @@ export function normalizeSite(site) {
     }),
     cms: normalizeCmsMeta(site.cms),
     clientAdmin: normalizeClientAdmin(site.clientAdmin),
+    deliveryPhase: normalizeDeliveryPhase(site.deliveryPhase, 'client'),
+    development: normalizeDevelopment(site.development),
     createdAt: site.createdAt || new Date().toISOString(),
   };
 }

@@ -1,6 +1,8 @@
 # Add CMS to a client site – step-by-step (including Hostinger)
 
-Use this when you want **clientdomain.com/admin** for a client. The hub (asoldi.com/superadmin) only stores **feature flags, plan, catalog type, site key, and `githubRepo`**. Website code and CMS software live in that client’s **private GitHub repo**. Users, products, and uploads live on **Hostinger disk**, outside the Git clone (`~/.asoldi-cms-data/<siteKey>`).
+Use this when you want **clientdomain.com/admin** for a client. Full split: [deployment-split.md](deployment-split.md).
+
+The hub (asoldi.com/superadmin) only stores **feature flags, plan, catalog type, site key, and `githubRepo`**. The private GitHub repo **is the website** (Express + Maker HTML in `public/` + CMS software). Users, products, and CMS-uploaded media (images, video, audio) live on **Hostinger disk**, outside the Git clone (`~/.asoldi-cms-data/<siteKey>`). Generated page images from Maker stay in Git `public/`.
 
 When the **Users** feature is enabled, the client CMS must support **changing user role** (employee, client, none). See [CMS-USER-ROLES.md](CMS-USER-ROLES.md).
 

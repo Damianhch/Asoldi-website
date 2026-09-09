@@ -14,6 +14,15 @@ export function salesAuthHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+export function getDevelopmentToken() {
+  return getToken() || localStorage.getItem('employeeToken');
+}
+
+export function developmentAuthHeaders() {
+  const token = getDevelopmentToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 export function setToken(token: string) {
   localStorage.setItem('adminToken', token);
   localStorage.setItem('superAdminToken', token);
@@ -42,9 +51,16 @@ export type Features = {
 };
 export type WebsitePlanId = 'tier-1-standard' | 'tier-2-seo' | 'tier-3-ecommerce' | 'custom';
 export type EcommerceCatalogType = 'menu' | 'tiers' | 'normal';
-export type UserRole = 'employee' | 'client' | 'sales' | 'none';
+export type DeliveryPhase = 'development' | 'client';
+export type SalesDevelopment = {
+  hostingerEnvironmentSetup: boolean;
+  githubRepoPushed: boolean;
+  v1Ferdig: boolean;
+  nettsideFerdig: boolean;
+};
+export type UserRole = 'employee' | 'client' | 'sales' | 'developer' | 'none';
 export type EmployeeProduct = 'asoldi' | 'ssu';
-export type EmployeeRoleOption = 'none' | 'client' | 'sales' | 'employee-asoldi' | 'employee-ssu';
+export type EmployeeRoleOption = 'none' | 'client' | 'sales' | 'developer' | 'employee-asoldi' | 'employee-ssu';
 
 export type AdminUser = {
   id: string;
@@ -75,6 +91,7 @@ export type ClientPaymentRequest = {
 export function toEmployeeRoleOption(user: AdminUser): EmployeeRoleOption {
   if (user.role === 'client') return 'client';
   if (user.role === 'sales') return 'sales';
+  if (user.role === 'developer') return 'developer';
   if (user.role === 'employee') {
     return user.employeeProduct === 'ssu' ? 'employee-ssu' : 'employee-asoldi';
   }
@@ -90,6 +107,8 @@ export function fromEmployeeRoleOption(option: EmployeeRoleOption): {
       return { role: 'client' };
     case 'sales':
       return { role: 'sales' };
+    case 'developer':
+      return { role: 'developer' };
     case 'employee-asoldi':
       return { role: 'employee', employeeProduct: 'asoldi' };
     case 'employee-ssu':
@@ -125,9 +144,11 @@ export type Site = {
     passwordSet?: boolean;
   };
   createdAt: string;
+  deliveryPhase?: DeliveryPhase;
+  development?: SalesDevelopment;
 };
 
-export type ManageClientsView = 'clients' | 'sales';
+export type ManageClientsView = 'clients' | 'development' | 'sales';
 
 export type SalesProgression = {
   step0AgreeMeetingTime: boolean;
@@ -135,6 +156,24 @@ export type SalesProgression = {
   paymentReceived: boolean;
   domainConnected: boolean;
   live: boolean;
+};
+
+export type DevelopmentItem = {
+  id: string;
+  salesClientId: string;
+  siteId: string;
+  businessName: string;
+  contactPerson: string;
+  contactEmail: string;
+  contactPhone: string;
+  meetingPlace: string;
+  websiteDomain: string;
+  notes: string;
+  makerRun: SalesMakerRunMeta | null;
+  websiteImport: SalesWebsiteImportMeta | null;
+  hubSite?: SalesClient['hubSite'] | null;
+  siteKey: string;
+  development: SalesDevelopment;
 };
 
 export type SalesReminders = {
@@ -236,6 +275,7 @@ export type SalesClient = {
   details: SalesClientDetails;
   myphoner: SalesMyphonerMeta;
   progression: SalesProgression;
+  development?: SalesDevelopment;
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;
   websiteImport: SalesWebsiteImportMeta;

@@ -14,6 +14,7 @@ import {
   publicClientAdmin,
   resolveCatalogTypeForSite,
 } from './hub-model.js';
+import { normalizeDeliveryPhase, normalizeDevelopment, resolveSiteDeliveryPhase } from '../lib/development-phase.js';
 
 const SITES_PATH = getDataFilePath('sites.json');
 
@@ -82,6 +83,22 @@ export function getAllSites() {
   }));
 }
 
+export function reconcileDeliveryPhases(salesClients = []) {
+  const sites = readSites();
+  let changed = 0;
+  const next = sites.map((site) => {
+    const deliveryPhase = resolveSiteDeliveryPhase(site, salesClients);
+    if (site.deliveryPhase === deliveryPhase) return site;
+    changed += 1;
+    return { ...site, deliveryPhase };
+  });
+  if (changed) writeSites(next);
+  return {
+    changed,
+    development: next.filter((site) => site.deliveryPhase === 'development').length,
+  };
+}
+
 export function createSite({
   name,
   domain,
@@ -90,6 +107,8 @@ export function createSite({
   ecommerceCatalogType,
   githubRepo,
   features,
+  deliveryPhase,
+  development,
 } = {}) {
   const requestedKey = String(site_key || '').trim();
   if (requestedKey) {
@@ -107,6 +126,8 @@ export function createSite({
           ecommerceCatalogType,
           githubRepo,
           features,
+          deliveryPhase,
+          development,
         });
         return updated.ok ? { ...updated.site } : { ...existingByKey, clientAdmin: publicClientAdmin(existingByKey.clientAdmin) };
       }
@@ -136,6 +157,8 @@ export function createSite({
     cms: {
       githubRepo: githubRepo || '',
     },
+    deliveryPhase: normalizeDeliveryPhase(deliveryPhase, 'client'),
+    development: normalizeDevelopment(development),
     createdAt: new Date().toISOString(),
   });
   sites.push(site);
@@ -168,6 +191,12 @@ export function updateSite(id, patch = {}) {
   }
   if (patch.clientAdmin !== undefined) {
     current.clientAdmin = normalizeClientAdmin({ ...current.clientAdmin, ...patch.clientAdmin });
+  }
+  if (patch.deliveryPhase !== undefined) {
+    current.deliveryPhase = normalizeDeliveryPhase(patch.deliveryPhase, current.deliveryPhase || 'client');
+  }
+  if (patch.development !== undefined) {
+    current.development = normalizeDevelopment({ ...current.development, ...patch.development });
   }
   sites[i] = normalizeSite(current);
   writeSites(sites);

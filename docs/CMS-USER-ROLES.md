@@ -5,12 +5,14 @@ When the **Users** feature is enabled (in the hub or via config), the CMS must s
 - **Main site (Asoldi)** – `/admin` on the main site includes Manage clients (hub) and Users with roles.
 - **Client CMS** – When the Users feature is activated for a client site in the hub, that site’s CMS (e.g. from `@damianhch/client-cms`) must also support changing user roles.
 
-## The three roles
+## The roles
 
-| Role       | Description |
-|-----------|-------------|
+| Role         | Description |
+|--------------|-------------|
 | **employee** | Can log in at /login (ansatt) and access the Ansatt (employee) page. |
-| **client**   | Reserved for future client-specific behaviour. |
+| **sales**    | Staff login goes to `/sales`. |
+| **developer**| Staff login goes to `/developer` (signed-contract websites and delivery checklist). |
+| **client**   | Client portal at `/kunde`. |
 | **none**     | Default for new users. No special access. |
 
 - New users are created with role **none**. Admins must set **employee** (or **client**) manually.

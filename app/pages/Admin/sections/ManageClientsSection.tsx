@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { ClientSitesSection } from './ClientSitesSection';
+import { DevelopmentClientsSection } from './DevelopmentClientsSection';
 import { SalesClientsSection } from './SalesClientsSection';
 import type { ManageClientsView, Site } from '../shared';
 
@@ -25,12 +26,15 @@ export function ManageClientsSection({
   onCopyKey,
 }: Props) {
   const [view, setView] = useState<ManageClientsView>('clients');
+  const liveSites = sites.filter((site) => site.deliveryPhase !== 'development');
 
   return (
     <div className="max-w-6xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
-        <p className="text-gray-400 text-sm">Track active hub clients and move sales prospects into delivery when they are ready.</p>
+        <p className="text-gray-400 text-sm">
+          Track live hub clients, websites in development, and sales prospects. Signed contracts move to Development, not Clients.
+        </p>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -43,6 +47,13 @@ export function ManageClientsSection({
         </button>
         <button
           type="button"
+          onClick={() => setView('development')}
+          className={`px-4 py-2 rounded-lg text-sm font-medium ${view === 'development' ? 'bg-[#FF5B00] text-white' : 'bg-white/10 text-gray-300 hover:bg-white/15'}`}
+        >
+          Development
+        </button>
+        <button
+          type="button"
           onClick={() => setView('sales')}
           className={`px-4 py-2 rounded-lg text-sm font-medium ${view === 'sales' ? 'bg-[#FF5B00] text-white' : 'bg-white/10 text-gray-300 hover:bg-white/15'}`}
         >
@@ -52,7 +63,7 @@ export function ManageClientsSection({
 
       {view === 'clients' ? (
         <ClientSitesSection
-          sites={sites}
+          sites={liveSites}
           loading={loading}
           copyKey={copyKey}
           onAdd={onAdd}
@@ -62,8 +73,10 @@ export function ManageClientsSection({
           onCopyKey={onCopyKey}
           hideHeader
         />
+      ) : view === 'development' ? (
+        <DevelopmentClientsSection hideHeader />
       ) : (
-        <SalesClientsSection onPromotedToClient={() => setView('clients')} />
+        <SalesClientsSection onMovedToDevelopment={() => setView('development')} />
       )}
     </div>
   );

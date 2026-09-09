@@ -200,6 +200,7 @@ const EditableUserRow: React.FC<{
           <option value="employee-asoldi">Employee: Asoldi</option>
           <option value="employee-ssu">Employee: SSU</option>
           <option value="sales">Sales</option>
+          <option value="developer">Developer</option>
           <option value="client">Client</option>
         </select>
       </td>

@@ -36,7 +36,8 @@ export const EmployeeLogin = () => {
       if (data.token) localStorage.setItem('employeeToken', data.token);
       window.dispatchEvent(new Event('employee-auth-changed'));
       const next = safeNextPath(searchParams.get('next') || '');
-      const defaultPath = data?.user?.role === 'sales' ? '/sales' : '/ansatt';
+      const defaultPath =
+        data?.user?.role === 'sales' ? '/sales' : data?.user?.role === 'developer' ? '/developer' : '/ansatt';
       navigate(next || defaultPath, { replace: true });
     } catch {
       setError('Noe gikk galt. Prøv igjen.');

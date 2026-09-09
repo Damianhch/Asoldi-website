@@ -1,47 +1,51 @@
 # Hub and client CMS – quick setup
 
-## This repo = hub + one client (this site)
+Canonical split (GitHub vs Hostinger disk vs Superadmin): [deployment-split.md](deployment-split.md).
 
-- **Super-admin (you):** https://seashell-camel-446716.hostingersite.com/superadmin  
-  When you move to asoldi.com, use https://asoldi.com/superadmin. Same login as this site’s /admin.
-- **Client CMS (this site):** https://seashell-camel-446716.hostingersite.com/admin  
-  Features are controlled from the hub (super-admin). No need to set `CMS_SITE_KEY` if you add this site in the hub with the same domain.
+## This repo = the hub (asoldi.com)
+
+- **Super-admin:** https://asoldi.com/superadmin  
+  Same login as this site’s `/admin`. Stores **flags, plan, catalog type, site key, `githubRepo` only** — not client users or products.
+- **This site’s own `/admin`:** https://asoldi.com/admin  
+  Features come from the hub row whose domain is `asoldi.com`.
+
+Do **not** Git-auto-deploy asoldi.com while Sales recordings live in the git tree. Hub deploy steps: [DEPLOYMENT.md](../DEPLOYMENT.md).
 
 ---
 
 ## 1. Use the hub (first time)
 
-1. Deploy this repo to Hostinger (or your host) so it serves the main site.
-2. Open **/superadmin** (e.g. https://seashell-camel-446716.hostingersite.com/superadmin).
-3. Log in with the same credentials you use for **/admin** on this site.
+1. Deploy the hub per [DEPLOYMENT.md](../DEPLOYMENT.md).
+2. Open **https://asoldi.com/superadmin**.
+3. Log in with the same credentials as `/admin` on this site. Username is **`asoldi.com`**.
 4. Click **Add site**:
-   - **Name:** e.g. Asoldi (or Mong Sushi for a client).
-   - **Domain:** e.g. `seashell-camel-446716.hostingersite.com` for this site, or `mongsushi.no` for the client.
-   - **Website plan:** Tier 1 / Tier 2 / Tier 3 / Custom (sets default CMS modules).
-   - If ecommerce is included, pick **catalog type** (menu, tiers, or normal products).
-5. Save and **copy the site key** (long hex string). For client projects you’ll set it as `CMS_SITE_KEY` in env.
-   Edit the site later to toggle Users, Analytics, Ecommerce, Blog, and Social sync, and to store the GitHub repo used for CMS version bumps.
+   - **Name:** e.g. Mong Sushi
+   - **Domain:** e.g. `mongsushi.no`
+   - **Website plan:** Tier 1 / Tier 2 / Tier 3 / Custom
+   - If ecommerce is included, pick **catalog type** (menu, tiers, or normal products)
+   - **GitHub repo** (optional): Maker fills this on Publish (`Damianhch/website---{slug}`)
+5. Save and **copy the site key**. Maker writes it into `cms.config.json`; you only need Hostinger env if that file is missing.
 
-To have **this** site’s /admin driven by the hub, add a site in super-admin with domain = this site’s host (e.g. `seashell-camel-446716.hostingersite.com`). Then /admin will load config by domain and show only the features you turn on for that site in the hub.
-
----
-
-## 2. Add CMS to a client (e.g. mongsushi.no)
-
-1. In the **hub** (/superadmin): Add site **Mong Sushi**, domain **mongsushi.no** (or let Maker Go Live / Publish to GitHub register it). Copy the **site key** if you need to set env by hand.
-2. **Maker clients:** Website Creator **Publish to GitHub** writes an Express repo (`server.js`, `public/` HTML, vendored CMS, `cms.config.json`). Then in hPanel: **Add Website → Node.js web app → Import Git repository**. Framework **express**, entry **`server.js`**, empty build.
-3. **Hand-built React clients (Mong Sushi):** GitHub repo already has `server.js`. Connect Hostinger Git (classic or Node.js web app). CMS JSON lives in `~/.asoldi-cms-data/<siteKey>` (or `CMS_DATA_PATH`), not in the Git clone.
-4. Optional Hostinger env: `CMS_HUB_URL`, `CMS_SITE_KEY` (overrides `cms.config.json`). No `NPM_TOKEN` when CMS is vendored.
-
-`domain.com/admin` shows only modules enabled in the hub. Client users/products stay on that Hostinger disk across deploys.
+Edit the site later to toggle Users, Analytics, Ecommerce, Blog, and Social sync.
 
 ---
 
-## 3. Change domain later (universal)
+## 2. Add CMS to a new client (every new website)
 
-When you move this site from the test URL to **asoldi.com**:
+1. In **https://asoldi.com/superadmin**: Add the site (or let Maker Publish register it). Copy the site key only if you will set env by hand.
+2. **Website Creator → Publish to GitHub.** That private repo **is** the website: Express `server.js`, Maker HTML in `public/`, vendored CMS, `cms.config.json`. No SFTP. No Hostinger API “create website”.
+3. **Once in hPanel:** Websites → Add Website → Node.js web app → Import that GitHub repo. Framework **express**, entry **`server.js`**, **empty build**, Node **22**.
+4. Later publishes are `git push` only. Hostinger auto-deploys `main`.
 
-1. In the hub (still on test URL or already on asoldi.com), edit the site and set **Domain** to **asoldi.com**.
-2. If the hub itself moves to asoldi.com, set **CMS_HUB_URL=https://asoldi.com** on every client host. **CMS_SITE_KEY** does not change.
+Client CMS JSON and CMS-uploaded media (images, video, audio) live on that Hostinger disk at `~/.asoldi-cms-data/<siteKey>`. They are **not** in Git. Generated page images from Maker **are** in Git `public/` — that is the public website.
 
-Sites are identified by **site key** in the hub; domain is just for display and for lookup when the client doesn’t send a key. So changing domain in the hub does not break existing client installs.
+Hand-built React clients (Mong Sushi) keep their own `server.js` and classic Git until you choose to migrate. Do not recreate them as a Node.js web app while Vite is still in `package.json`. Full steps: [CLIENT-SITE-DEPLOYMENT.md](CLIENT-SITE-DEPLOYMENT.md).
+
+---
+
+## 3. Change a client domain later
+
+Sites are identified by **site key**. Domain is for display and lookup when the client does not send a key.
+
+1. In superadmin, edit the site and set **Domain** to the new host.
+2. If the hub URL itself changes, set `CMS_HUB_URL` on every client host. **CMS_SITE_KEY** does not change.

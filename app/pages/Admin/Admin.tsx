@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, FileText, Globe, LogOut, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
+import { BarChart3, ChevronDown, FileText, FolderCog, Globe, LogOut, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
@@ -33,6 +33,7 @@ export const Admin = () => {
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [tab, setTab] = useState<Tab>('clients');
+  const [websiteNavOpen, setWebsiteNavOpen] = useState(true);
   const [features, setFeatures] = useState<Features>(DEFAULT_FEATURES);
   const [siteName, setSiteName] = useState('');
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -449,8 +450,27 @@ export const Admin = () => {
           </div>
           <nav className="flex-1 p-2 space-y-1">
             <SidebarButton active={tab === 'clients'} onClick={() => setTab('clients')} icon={<Globe size={18} />} label="Manage clients" />
-            <SidebarButton active={tab === 'pages'} onClick={() => setTab('pages')} icon={<FileText size={18} />} label="Pages" />
-            {features.users !== false && <SidebarButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={18} />} label="Users" />}
+            <div className="pt-1">
+              <button
+                type="button"
+                onClick={() => setWebsiteNavOpen((open) => !open)}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left text-xs font-semibold uppercase tracking-wide ${
+                  tab === 'pages' || tab === 'users' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
+                }`}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <FolderCog size={16} />
+                  Manage website
+                </span>
+                <ChevronDown size={14} className={`transition-transform ${websiteNavOpen ? '' : '-rotate-90'}`} />
+              </button>
+              {websiteNavOpen && (
+                <div className="ml-3 mt-1 space-y-1">
+                  <SidebarButton active={tab === 'pages'} onClick={() => setTab('pages')} icon={<FileText size={18} />} label="Pages" />
+                  {features.users !== false && <SidebarButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={18} />} label="Users" />}
+                </div>
+              )}
+            </div>
             <SidebarButton active={tab === 'employees'} onClick={() => setTab('employees')} icon={<UserPlus size={18} />} label="Employees" />
             {features.ecommerce && <SidebarButton active={tab === 'ecommerce'} onClick={() => setTab('ecommerce')} icon={<ShoppingBag size={18} />} label="Ecommerce" />}
             {features.blog && <SidebarButton active={tab === 'blog'} onClick={() => setTab('blog')} icon={<Newspaper size={18} />} label="Blog" />}

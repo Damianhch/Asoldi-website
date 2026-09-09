@@ -79,7 +79,7 @@ export async function getUserByUsername(username) {
 }
 
 const DEFAULT_ROLE = 'none';
-const ROLES = ['employee', 'client', 'sales', 'none'];
+const ROLES = ['employee', 'client', 'sales', 'developer', 'none'];
 const DEFAULT_EMPLOYEE_PRODUCT = 'asoldi';
 const EMPLOYEE_PRODUCTS = ['asoldi', 'ssu'];
 
@@ -227,7 +227,7 @@ export async function verifyStaff(username, password) {
   if (!user) return { ok: false };
   const valid = await verifyPassword(password, user.passwordHash);
   const role = normalizeRole(user.role);
-  if (!valid || (role !== 'employee' && role !== 'sales')) return { ok: false };
+  if (!valid || (role !== 'employee' && role !== 'sales' && role !== 'developer')) return { ok: false };
   return {
     ok: true,
     user: {

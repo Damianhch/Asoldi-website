@@ -4,13 +4,13 @@ There are **two different things** to keep in sync. Mixing them is what made LAN
 
 ## 1) Code / structure → publish to asoldi.com
 
-Same as before:
+Product split (hub vs client Git vs disk): [deployment-split.md](deployment-split.md). Hub recipe: [DEPLOYMENT.md](../DEPLOYMENT.md).
 
 1. Edit and test on LAN (`http://192.168.68.92:3200`)
-2. Commit / push the **Asoldi-website** repo
-3. Hostinger deploys that commit to **https://asoldi.com**
+2. Commit the **Asoldi-website** repo
+3. Deploy to **https://asoldi.com** with a **small archive** (no Sales wavs / large `public/media`). Do **not** Git-auto-deploy while those files are still in the repo — Hostinger clones a second copy and fills the disk.
 
-Git never contains sales clients or Admin users. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN.
+Git never contains sales clients or Admin users. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN. Call recordings live on Hostinger `nodejs/public/myphoner-audio`; keep a copy under `~/.asoldi-website-data/myphoner-audio` before overwrite deploys.
 
 ## 2) Sales / client data → production is the only source of truth
 
@@ -102,6 +102,12 @@ That folder is gitignored (client media / PII, often hundreds of MB). Copy it fr
 
 See Website Maker `docs/other-pc-setup-checklist.md` section 7.
 
+## Delivery phase (Sales → Development → Clients)
+
+`sites.json` now has `deliveryPhase` (`development` | `client`) and an optional development checklist. `sales-clients.json` keeps the same contact/preview fields and adds `development` steps. Nothing is deleted when a signed contract leaves Sales/Clients — it is only shown on the Development board until **Nettside ferdig**.
+
+Byneset Bydelskafe is forced into Development until that last step is checked.
+
 ## Password hashes
 
 The public admin API does not return user password hashes. Existing local hashes are kept when the username already exists; brand-new LAN users get `LAN_USER_SYNC_PASSWORD` or `ADMIN_PASSWORD`.
@@ -111,3 +117,23 @@ Optional env (see `.env.example`):
 - `PROD_ADMIN_URL` (default `https://asoldi.com`)
 - `PROD_ADMIN_USERNAME` / `PROD_ADMIN_PASSWORD`
 - `LAN_USER_SYNC_PASSWORD`
+
+## 5) Hostinger `backups/` folder (inodes)
+
+Every write to live JSON (`sales-clients.json`, `sites.json`, users, offers, …) also used to drop a **new timestamped copy** into `backups/` with **no cleanup**. That folder is never read by the app. Live data is the sibling `*.json` files in the parent directory.
+
+Safe to delete on Hostinger:
+
+- Everything inside `backups/` except optionally `*.latest.json`
+- Or the whole `backups/` directory (it is recreated on the next save)
+
+Do **not** delete:
+
+- The parent folder’s live files (`sales-clients.json`, `sites.json`, `users.json`, `admin.json`, …)
+- `myphoner-audio` (call-recording copy)
+
+The app now keeps only `DATA_BACKUP_KEEP` dated snapshots per file (default 5) and prunes on startup. One-shot cleanup:
+
+```bash
+node scripts/prune-data-backups.mjs --dir /home/u439392007/domains/asoldi.com/.asoldi-website-data --wipe-stamped
+```

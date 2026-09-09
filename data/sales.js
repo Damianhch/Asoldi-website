@@ -1,9 +1,11 @@
 import { readFileSync, existsSync } from 'fs';
 import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
+import { DEVELOPMENT_KEYS, normalizeDevelopment } from '../lib/development-phase.js';
 
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
 const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
+const ASOLDI_SALES_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned'];
 const SSU_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived'];
 const SALES_STATUSES = ['active', 'not-sold', 'secondary'];
 const SALES_PRODUCTS = ['asoldi', 'ssu'];
@@ -82,7 +84,7 @@ export function isSsuSalesProduct(product = '') {
 }
 
 export function getProgressionKeysForProduct(product = '') {
-  return isSsuSalesProduct(product) ? [...SSU_PROGRESSION_KEYS] : [...PROGRESSION_KEYS];
+  return isSsuSalesProduct(product) ? [...SSU_PROGRESSION_KEYS] : [...ASOLDI_SALES_PROGRESSION_KEYS];
 }
 
 function normalizeMeetingMode(value) {
@@ -294,6 +296,7 @@ function normalizeSalesClient(raw = {}) {
     details: normalizeSalesDetails(raw.details),
     myphoner,
     progression,
+    development: product === 'ssu' ? normalizeDevelopment() : normalizeDevelopment(raw.development),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
     websiteImport: product === 'ssu' ? normalizeWebsiteImport() : normalizeWebsiteImport(raw.websiteImport),
@@ -395,6 +398,9 @@ export function updateSalesClient(id, updates = {}) {
     progression: updates.progression
       ? { ...current.progression, ...updates.progression }
       : current.progression,
+    development: updates.development
+      ? { ...current.development, ...updates.development }
+      : current.development,
     calendar: updates.calendar
       ? { ...current.calendar, ...updates.calendar }
       : current.calendar,
@@ -446,6 +452,17 @@ export function setSalesProgress(id, key, value) {
   }
   return updateSalesClient(id, {
     progression: {
+      [key]: Boolean(value),
+    },
+  });
+}
+
+export function setSalesDevelopment(id, key, value) {
+  if (!DEVELOPMENT_KEYS.includes(key)) return null;
+  const current = getSalesClientById(id);
+  if (!current || isSsuSalesProduct(current.product)) return null;
+  return updateSalesClient(id, {
+    development: {
       [key]: Boolean(value),
     },
   });

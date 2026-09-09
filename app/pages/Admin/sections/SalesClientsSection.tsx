@@ -87,7 +87,7 @@ type MeetingMapPin = {
 };
 
 type Props = {
-  onPromotedToClient?: () => void;
+  onMovedToDevelopment?: () => void;
 };
 
 type SalesFormState = {
@@ -565,7 +565,7 @@ function normalizeMakerDashboardDraftUrl(value = '') {
   }
 }
 
-export function SalesClientsSection({ onPromotedToClient }: Props) {
+export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [clients, setClients] = useState<SalesClient[]>([]);
   const [productCounts, setProductCounts] = useState<{ asoldi: number; ssu: number }>({ asoldi: 0, ssu: 0 });
   const [productBracket, setProductBracket] = useState<SalesProduct>('asoldi');
@@ -589,7 +589,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
   const [sendingWelcomeId, setSendingWelcomeId] = useState<string | null>(null);
   const [sendingReminderId, setSendingReminderId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
-  const [promotingId, setPromotingId] = useState<string | null>(null);
   const [creatingRunIds, setCreatingRunIds] = useState<Set<string>>(() => new Set());
   const [openingMakerId, setOpeningMakerId] = useState<string | null>(null);
   const [copiedLaptopId, setCopiedLaptopId] = useState<string | null>(null);
@@ -1170,6 +1169,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
       openEdit(client);
       return;
     }
+    const nextValue = !client.progression?.[key];
     setProgressBusyKey(`${client.id}:${key}`);
     setError('');
     try {
@@ -1177,10 +1177,13 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
         method: 'PATCH',
         body: JSON.stringify({
           key,
-          value: !client.progression?.[key],
+          value: nextValue,
         }),
       });
       await loadSales();
+      if (key === 'contractSigned' && nextValue && !isSsuClient(client)) {
+        onMovedToDevelopment?.();
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed updating progression');
     } finally {
@@ -1439,20 +1442,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
     }
   }
 
-  async function promoteClient(client: SalesClient) {
-    setPromotingId(client.id);
-    setError('');
-    try {
-      await request(`/admin/sales/${client.id}/got-client`, { method: 'POST' });
-      await loadSales();
-      onPromotedToClient?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed promoting client');
-    } finally {
-      setPromotingId(null);
-    }
-  }
-
   async function markNotSold(client: SalesClient) {
     const label = client.businessName || 'this client';
     const reasonInput = window.prompt(`Optional reason for archiving "${label}" as not sold:`, '');
@@ -1651,7 +1640,7 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             <p className="text-sm text-gray-400 mt-1">
               {isSsuBracket
                 ? 'SSU partner leads from MyPhoner. Meeting time/type and contract/payment only — no website Maker flow.'
-                : 'Website leads: meetings, Google Calendar, Website Maker previews, and promote won clients to Clients.'}
+                : 'Website leads: meetings, Google Calendar, and Website Maker previews. A signed contract moves the website to Development.'}
             </p>
             {!isSsuBracket && (
               <p className="text-[11px] text-gray-500 mt-2">
@@ -1904,12 +1893,8 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
             const timeline: { key: ProgressionKey; done: boolean }[] = [
               { key: 'step0AgreeMeetingTime', done: step0Done },
               { key: 'contractSigned', done: Boolean(client.progression?.contractSigned) },
-              { key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived) },
-              ...(!clientIsSsu
-                ? ([
-                    { key: 'domainConnected', done: Boolean(client.progression?.domainConnected) },
-                    { key: 'live', done: Boolean(client.progression?.live) },
-                  ] as { key: ProgressionKey; done: boolean }[])
+              ...(clientIsSsu
+                ? ([{ key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived) }] as { key: ProgressionKey; done: boolean }[])
                 : []),
             ];
             const publicPreviewUrl = getPublicClientPreviewUrl(client);
@@ -1982,6 +1967,11 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                       {client.status === 'secondary' && (
                         <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300">
                           Secondary
+                        </span>
+                      )}
+                      {!clientIsSsu && client.progression?.contractSigned && !client.development?.nettsideFerdig && (
+                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-sky-900/30 border border-sky-700/30 text-sky-300">
+                          In development
                         </span>
                       )}
                       {isPastDueMeeting && (
@@ -2206,17 +2196,6 @@ export function SalesClientsSection({ onPromotedToClient }: Props) {
                     {expanded ? 'Hide details' : 'Details & tools'}
                   </button>
                   <div className="flex items-center gap-2">
-                    {!clientIsSsu && (
-                      <button
-                        type="button"
-                        onClick={() => promoteClient(client)}
-                        disabled={promotingId === client.id}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
-                      >
-                        {promotingId === client.id ? <Loader2 size={13} className="animate-spin" /> : null}
-                        Got the client
-                      </button>
-                    )}
                     <button
                       type="button"
                       onClick={() => void markNotSold(client)}
