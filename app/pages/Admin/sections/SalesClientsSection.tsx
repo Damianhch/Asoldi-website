@@ -354,10 +354,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [noteDrafts, setNoteDrafts] = useState<Record<string, string>>({});
   const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const [meetingNotesClient, setMeetingNotesClient] = useState<SalesClient | null>(null);
+  const [previewMissingToastId, setPreviewMissingToastId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
   const recordingBlobUrlsRef = useRef<Record<string, string>>({});
+  const previewMissingTimerRef = useRef<number | null>(null);
 
   // Website offers (tier + nettsidekode given to a client).
   const [offers, setOffers] = useState<WebsiteOffer[]>([]);
@@ -578,6 +580,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       if (!url) continue;
       URL.revokeObjectURL(url);
     }
+    if (previewMissingTimerRef.current) window.clearTimeout(previewMissingTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -1055,6 +1058,18 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  function openPublicPreview(client: SalesClient) {
+    if (!clientHasPublicPreviewSnapshot(client)) {
+      setPreviewMissingToastId(client.id);
+      if (previewMissingTimerRef.current) window.clearTimeout(previewMissingTimerRef.current);
+      previewMissingTimerRef.current = window.setTimeout(() => {
+        setPreviewMissingToastId((current) => (current === client.id ? null : current));
+      }, 3000);
+      return;
+    }
+    window.open(getPublicClientPreviewUrl(client), '_blank');
+  }
+
   function applyClientNameSearch(e?: React.FormEvent) {
     if (e) e.preventDefault();
     setClientSearchQuery(normalizeClientSearchText(clientSearchInput));
@@ -1296,12 +1311,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
                       <h3 className="text-white font-semibold truncate">{client.businessName || 'Unnamed business'}</h3>
-                      {client.contactPhone ? (
-                        <span className="shrink-0 inline-flex items-center gap-1 text-xs text-gray-300">
-                          <Phone size={11} />
-                          {client.contactPhone}
-                        </span>
-                      ) : null}
                       <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-300">
                         {client.meetingMode === 'in-person' ? 'In person' : 'Online'}
                       </span>
@@ -1325,23 +1334,22 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           Past due
                         </span>
                       )}
-                      {!clientIsSsu && !clientHasPublicPreviewSnapshot(client) && (
-                        <span
-                          className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300"
-                          title="Utvikler publiserer den offentlige preview-URL-en etter et ferdig Maker-steg."
-                        >
-                          Not on asoldi.com yet
-                        </span>
-                      )}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                       <CalendarClock size={12} className="shrink-0" />
                       <span className="truncate">{client.agreedTime ? formatWhen(client.meetingAt) : 'Step 0 pending'}</span>
                     </div>
-                    {client.contactPerson ? (
+                    {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                         <UserRound size={12} className="shrink-0" />
-                        <span className="truncate">{client.contactPerson}</span>
+                        <span className="truncate">{client.contactPerson || 'No contact person'}</span>
+                        {client.contactPhone ? (
+                          <span className="shrink-0 inline-flex items-center gap-1">
+                            <span aria-hidden="true">·</span>
+                            <Phone size={11} />
+                            {client.contactPhone}
+                          </span>
+                        ) : null}
                       </div>
                     ) : null}
                   </div>
@@ -1410,17 +1418,27 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   })}
                 </div>
 
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {!clientIsSsu && (
-                    <button
-                      type="button"
-                      onClick={() => window.open(publicPreviewUrl, '_blank')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                      title={publicPreviewUrl}
-                    >
-                      <ExternalLink size={13} />
-                      Open preview
-                    </button>
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => openPublicPreview(client)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={publicPreviewUrl}
+                      >
+                        <ExternalLink size={13} />
+                        Open preview
+                      </button>
+                      {previewMissingToastId === client.id && (
+                        <div
+                          role="status"
+                          className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
+                        >
+                          Not on asoldi.com yet
+                        </div>
+                      )}
+                    </div>
                   )}
                   <button
                     type="button"
@@ -1645,14 +1663,24 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                     <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
                       <div className="text-sm text-white font-medium">Public preview</div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => window.open(publicPreviewUrl, '_blank')}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
-                        >
-                          <ExternalLink size={14} />
-                          Open preview
-                        </button>
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => openPublicPreview(client)}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                          >
+                            <ExternalLink size={14} />
+                            Open preview
+                          </button>
+                          {previewMissingToastId === client.id && (
+                            <div
+                              role="status"
+                              className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
+                            >
+                              Not on asoldi.com yet
+                            </div>
+                          )}
+                        </div>
                         <button
                           type="button"
                           onClick={() => void navigator.clipboard.writeText(publicPreviewUrl).then(
