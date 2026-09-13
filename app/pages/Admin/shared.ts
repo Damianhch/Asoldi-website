@@ -38,7 +38,7 @@ export function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social';
+export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social' | 'email';
 
 export type Features = {
   users?: boolean;
@@ -233,6 +233,19 @@ export type SalesClientDetails = {
   proffUrl: string;
   otherLinks: string;
   googleBusinessProfile: string;
+  emailCustomNeed: string;
+  meetingQuote?: {
+    tierId: string;
+    customMode: boolean;
+    oneTime: boolean;
+    pages: number;
+    selected: string[];
+    oneTimeAddOns: string[];
+    customSections: string;
+    startDate: string;
+    productGoal: string;
+    identity: string;
+  };
 };
 
 export type SalesMyphonerMeta = {

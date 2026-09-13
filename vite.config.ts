@@ -30,6 +30,9 @@ export default defineConfig(({ command, mode }) => {
     define: {
       'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
     },
+    optimizeDeps: {
+      include: ['grapesjs', 'grapesjs-preset-newsletter'],
+    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, 'app'),
@@ -48,6 +51,7 @@ export default defineConfig(({ command, mode }) => {
               if (id.includes('motion')) return 'motion';
               if (id.includes('react-router')) return 'router';
               if (id.includes('lucide-react')) return 'icons';
+              if (id.includes('grapesjs')) return 'email-editor';
             }
           },
           chunkFileNames: 'assets/[name]-[hash].js',
@@ -70,6 +74,10 @@ export default defineConfig(({ command, mode }) => {
           changeOrigin: true,
         },
         '/live-preview': {
+          target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
+          changeOrigin: true,
+        },
+        '/email': {
           target: process.env.API_PROXY_TARGET || 'http://localhost:3001',
           changeOrigin: true,
         },

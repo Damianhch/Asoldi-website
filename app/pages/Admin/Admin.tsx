@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, ChevronDown, FileText, FolderCog, Globe, LogOut, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
+import { BarChart3, ChevronDown, FileText, FolderCog, Globe, LogOut, Mail, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
@@ -26,6 +26,10 @@ import {
   WEBSITE_PLAN_OPTIONS,
   featuresFromPlan,
 } from './shared';
+
+const EmailTemplateStudio = lazy(() =>
+  import('../sales/EmailTemplateStudio').then((m) => ({ default: m.EmailTemplateStudio }))
+);
 
 export const Admin = () => {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
@@ -474,6 +478,7 @@ export const Admin = () => {
             <SidebarButton active={tab === 'employees'} onClick={() => setTab('employees')} icon={<UserPlus size={18} />} label="Employees" />
             {features.ecommerce && <SidebarButton active={tab === 'ecommerce'} onClick={() => setTab('ecommerce')} icon={<ShoppingBag size={18} />} label="Ecommerce" />}
             {features.blog && <SidebarButton active={tab === 'blog'} onClick={() => setTab('blog')} icon={<Newspaper size={18} />} label="Blog" />}
+            <SidebarButton active={tab === 'email'} onClick={() => setTab('email')} icon={<Mail size={18} />} label="E-post" />
             {features.socialSync && <SidebarButton active={tab === 'social'} onClick={() => setTab('social')} icon={<Share2 size={18} />} label="Social sync" />}
             {features.analytics && <SidebarButton active={tab === 'analytics'} onClick={() => setTab('analytics')} icon={<BarChart3 size={18} />} label="Analytics" />}
           </nav>
@@ -559,6 +564,11 @@ export const Admin = () => {
           {tab === 'analytics' && <PlaceholderSection title="Analytics" description="Connect Google Analytics or Business Profile. Coming soon." />}
           {tab === 'ecommerce' && <PlaceholderSection title="Ecommerce" description="Asoldi’s own shop catalog. Client product catalogs are managed on each client domain’s /admin." />}
           {tab === 'blog' && <PlaceholderSection title="Blog" description="Write and publish posts from this CMS. Coming soon." />}
+          {tab === 'email' && (
+            <Suspense fallback={<p className="text-gray-400">Laster e-posteditor…</p>}>
+              <EmailTemplateStudio embedded />
+            </Suspense>
+          )}
           {tab === 'social' && <PlaceholderSection title="Social sync" description="Reviews and social media sync. Coming soon." />}
         </main>
       </div>

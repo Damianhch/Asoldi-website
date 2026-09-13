@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildDevelopmentItems,
+  buildPreviewItems,
   isLiveHubClient,
   isDevelopmentSalesClient,
+  isPreviewSalesClient,
   resolveSiteDeliveryPhase,
 } from '../lib/development-phase.js';
 
@@ -83,4 +85,35 @@ test('unsigned contract stays in sales and does not create a development card', 
   };
   assert.equal(isDevelopmentSalesClient(unsigned), false);
   assert.equal(buildDevelopmentItems([unsigned], [mong]).length, 0);
+});
+
+test('unsigned active asoldi client appears on the preview board', () => {
+  const unsigned = {
+    ...bynesetSales,
+    id: 'sales-preview',
+    businessName: 'New Cafe',
+    status: 'active',
+    progression: { contractSigned: false },
+    development: { nettsideFerdig: false },
+    hubSite: {},
+  };
+  assert.equal(isPreviewSalesClient(unsigned), true);
+  const preview = buildPreviewItems([unsigned], [mong]);
+  assert.equal(preview.length, 1);
+  assert.equal(preview[0].businessName, 'New Cafe');
+  assert.equal(buildDevelopmentItems([unsigned], [mong]).length, 0);
+});
+
+test('signed client leaves preview and stays on deployment', () => {
+  assert.equal(isPreviewSalesClient(bynesetSales), false);
+  assert.equal(buildPreviewItems([bynesetSales], [byneset]).length, 0);
+  assert.equal(buildDevelopmentItems([bynesetSales], [byneset]).length, 1);
+});
+
+test('ssu and archived clients stay off the preview board', () => {
+  const ssu = { ...bynesetSales, product: 'ssu', progression: { contractSigned: false } };
+  const archived = { ...bynesetSales, status: 'not-sold', progression: { contractSigned: false } };
+  assert.equal(isPreviewSalesClient(ssu), false);
+  assert.equal(isPreviewSalesClient(archived), false);
+  assert.equal(buildPreviewItems([ssu, archived], []).length, 0);
 });

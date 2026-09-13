@@ -31,6 +31,8 @@ const LoginForgotPassword = lazy(() => import('./pages/LoginForgotPassword').the
 const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then((m) => ({ default: m.LoginResetPassword })));
 const Ansatt = lazy(() => import('./pages/Ansatt').then((m) => ({ default: m.Ansatt })));
 const SalesWorkspace = lazy(() => import('./pages/sales/SalesWorkspace').then((m) => ({ default: m.SalesWorkspace })));
+const SalesEmailComposer = lazy(() => import('./pages/sales/SalesEmailComposer').then((m) => ({ default: m.SalesEmailComposer })));
+const EmailTemplateStudioPage = lazy(() => import('./pages/sales/EmailTemplateStudio').then((m) => ({ default: m.EmailTemplateStudioPage })));
 const DeveloperWorkspace = lazy(() => import('./pages/developer/DeveloperWorkspace').then((m) => ({ default: m.DeveloperWorkspace })));
 const LaptopPreviews = lazy(() => import('./pages/sales/LaptopPreviews').then((m) => ({ default: m.LaptopPreviews })));
 const ClientOnboarding = lazy(() => import('./pages/client/ClientOnboarding').then((m) => ({ default: m.ClientOnboarding })));
@@ -92,12 +94,16 @@ function AppLayout() {
           <Route path="/login/kunde" element={<ClientAuth />} />
           <Route path="/login/kunde/forgot-password" element={<ClientForgotPassword />} />
           <Route path="/login/kunde/reset-password" element={<ClientResetPassword />} />
+          <Route path="/login/client/forgot-password" element={<ClientForgotPassword />} />
+          <Route path="/login/client/reset-password" element={<ClientResetPassword />} />
           <Route path="/login/forgot-password" element={<LoginForgotPassword />} />
           <Route path="/login/reset-password" element={<LoginResetPassword />} />
           <Route path="/admin" element={<Admin />} />
           <Route path="/superadmin" element={<Admin />} />
           <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/sales" element={<SalesWorkspace />} />
+          <Route path="/sales/email" element={<SalesEmailComposer />} />
+          <Route path="/sales/email/templates" element={<EmailTemplateStudioPage />} />
           <Route path="/developer" element={<DeveloperWorkspace />} />
           <Route path="/previews" element={<LaptopPreviews />} />
           <Route path="/kunde" element={<ClientHome />} />

@@ -216,6 +216,29 @@ function normalizeReminders(value = {}) {
   };
 }
 
+function normalizeMeetingQuote(value = {}) {
+  const input = value && typeof value === 'object' ? value : {};
+  const selected = Array.isArray(input.selected)
+    ? input.selected.map((entry) => sanitizeText(entry)).filter(Boolean)
+    : [];
+  const oneTimeAddOns = Array.isArray(input.oneTimeAddOns)
+    ? input.oneTimeAddOns.map((entry) => sanitizeText(entry)).filter(Boolean)
+    : [];
+  const pages = Number(input.pages);
+  return {
+    tierId: sanitizeText(input.tierId) || 'starter',
+    customMode: Boolean(input.customMode),
+    oneTime: Boolean(input.oneTime),
+    pages: Number.isFinite(pages) && pages >= 1 ? Math.round(pages) : 5,
+    selected,
+    oneTimeAddOns,
+    customSections: sanitizeText(input.customSections).slice(0, MAX_SALES_NOTES_LENGTH),
+    startDate: sanitizeText(input.startDate),
+    productGoal: sanitizeText(input.productGoal).slice(0, MAX_SALES_NOTES_LENGTH),
+    identity: sanitizeText(input.identity).slice(0, MAX_SALES_NOTES_LENGTH),
+  };
+}
+
 function normalizeSalesDetails(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
@@ -224,6 +247,8 @@ function normalizeSalesDetails(value = {}) {
     proffUrl: sanitizeText(input.proffUrl),
     otherLinks: sanitizeText(input.otherLinks),
     googleBusinessProfile: sanitizeText(input.googleBusinessProfile),
+    emailCustomNeed: sanitizeText(input.emailCustomNeed),
+    meetingQuote: normalizeMeetingQuote(input.meetingQuote),
   };
 }
 
@@ -437,10 +462,14 @@ export function deleteSalesClient(id) {
   return true;
 }
 
-export function setSalesNotes(id, notes) {
+export function setSalesNotes(id, notes, meetingQuote) {
   const current = getSalesClientById(id);
   if (!current) return null;
-  return updateSalesClient(id, { notes: sanitizeSalesNotes(notes) });
+  const updates = { notes: sanitizeSalesNotes(notes) };
+  if (meetingQuote && typeof meetingQuote === 'object') {
+    updates.details = { meetingQuote };
+  }
+  return updateSalesClient(id, updates);
 }
 
 export function setSalesProgress(id, key, value) {

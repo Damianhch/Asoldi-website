@@ -1,0 +1,217 @@
+export type PricingService = {
+  id: string;
+  name: string;
+  price: number;
+  scalesWithPages?: boolean;
+  oneTimeMonths?: number;
+};
+
+export type MeetingQuoteState = {
+  tierId: string;
+  customMode: boolean;
+  oneTime: boolean;
+  pages: number;
+  selected: string[];
+  oneTimeAddOns: string[];
+  customSections: string;
+  startDate: string;
+  productGoal: string;
+  identity: string;
+};
+
+export const PRICING = {
+  oneTimeMultiplier: 9,
+  minMonthly: 999,
+  pageScaling: { includedPages: 5, ratePercent: 0.1 },
+  packagePrices: {
+    starter: 999,
+    seo: 1499,
+    nettbutikk: 1999,
+  } as Record<string, number>,
+  alwaysOn: [{ id: 'webdesign', name: 'Layout, responsivitet og generell webdesign', price: 0 }] as PricingService[],
+  defaultOn: [
+    { id: 'meeting', name: 'Veilednings- og gjennomgangsmøte', price: 0 },
+    { id: 'domain', name: 'Koble til domene', price: 0 },
+  ] as PricingService[],
+  base: [
+    { id: 'hosting', name: 'Hosting & vedlikehold', price: 600, scalesWithPages: true },
+    { id: 'contact', name: 'Kontaktskjema & standard seksjoner', price: 200 },
+    { id: 'changes', name: 'Innholdsendringer (opptil 4/mnd)', price: 199 },
+  ] as PricingService[],
+  tiers: [
+    { id: 'starter', label: 'Starter', delivery: '2 uker', includes: ['blog'] },
+    { id: 'seo', label: 'SEO', delivery: '2 uker', includes: ['seo', 'social', 'email', 'blog'] },
+    { id: 'nettbutikk', label: 'Nettbutikk', delivery: '3 uker', includes: ['seo', 'social', 'email', 'ecom', 'dashboard', 'blog'] },
+    { id: 'custom', label: 'Skreddersydd', delivery: 'Etter avtale', includes: [] as string[] },
+  ],
+  addOns: [
+    { id: 'seo', name: 'SEO optimalisering', price: 300, scalesWithPages: true },
+    { id: 'social', name: 'Anmeldelser & sosiale medier synk', price: 100 },
+    { id: 'email', name: 'E-postliste innsamling', price: 100 },
+    { id: 'ecom', name: 'Nettbutikk-funksjonalitet', price: 900 },
+    { id: 'dashboard', name: 'Analyse-dashbord', price: 150 },
+    { id: 'blog', name: 'Blogg-integrasjon', price: 400 },
+    { id: 'unlimited', name: 'Ubegrenset innholdsendringer (oppgradering fra 4/mnd)', price: 1000, oneTimeMonths: 6 },
+    { id: 'customapp', name: 'Skreddersydde web-applikasjoner', price: 2000 },
+    { id: 'api', name: 'Avanserte API-integrasjoner', price: 1500 },
+    { id: 'server', name: 'Dedikert server & prioritert support', price: 800, scalesWithPages: true },
+  ] as PricingService[],
+  multilingual: {
+    id: 'multilingual',
+    name: 'Flerspråklig funksjonalitet',
+    price: 690,
+    scalesWithPages: true,
+  } as PricingService,
+  oneTimeAddOns: [
+    { id: 'pos', name: 'Koble opp til kassasystem', price: 6000 },
+    { id: 'thirdpartyhost', name: 'Koble til tredjeparts host og domene', price: 2500 },
+  ] as PricingService[],
+};
+
+export function emptyMeetingQuote(): MeetingQuoteState {
+  return {
+    tierId: 'starter',
+    customMode: false,
+    oneTime: false,
+    pages: PRICING.pageScaling.includedPages,
+    selected: presetIds('starter'),
+    oneTimeAddOns: [],
+    customSections: '',
+    startDate: '',
+    productGoal: '',
+    identity: '',
+  };
+}
+
+export function normalizeMeetingQuote(value: unknown): MeetingQuoteState {
+  const input = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const fallback = emptyMeetingQuote();
+  const selected = Array.isArray(input.selected)
+    ? input.selected.map((id) => String(id || '').trim()).filter(Boolean)
+    : fallback.selected;
+  const oneTimeAddOns = Array.isArray(input.oneTimeAddOns)
+    ? input.oneTimeAddOns.map((id) => String(id || '').trim()).filter(Boolean)
+    : [];
+  const pages = Number(input.pages);
+  return {
+    tierId: String(input.tierId || fallback.tierId),
+    customMode: Boolean(input.customMode),
+    oneTime: Boolean(input.oneTime),
+    pages: Number.isFinite(pages) && pages >= 1 ? Math.round(pages) : fallback.pages,
+    selected,
+    oneTimeAddOns,
+    customSections: String(input.customSections || ''),
+    startDate: String(input.startDate || ''),
+    productGoal: String(input.productGoal || ''),
+    identity: String(input.identity || ''),
+  };
+}
+
+export function fmtKr(n: number) {
+  return `${Math.round(n).toLocaleString('nb-NO')} kr`;
+}
+
+export function allPaidRecurringServices() {
+  return [...PRICING.defaultOn, ...PRICING.base, ...PRICING.addOns, PRICING.multilingual];
+}
+
+export function getTier(id: string) {
+  return PRICING.tiers.find((tier) => tier.id === id) || PRICING.tiers[0];
+}
+
+export function presetIds(tierId: string) {
+  const ids = new Set([
+    ...PRICING.defaultOn.map((s) => s.id),
+    ...PRICING.base.map((b) => b.id),
+  ]);
+  (getTier(tierId).includes || []).forEach((id) => ids.add(id));
+  return [...ids];
+}
+
+export function customBaselineIds() {
+  return [...PRICING.defaultOn.map((s) => s.id), ...PRICING.base.map((b) => b.id)];
+}
+
+function extraPages(pages: number) {
+  return Math.max(0, pages - PRICING.pageScaling.includedPages);
+}
+
+export function adjustedPrice(item: PricingService, pages: number) {
+  const perPage = item.scalesWithPages ? item.price * PRICING.pageScaling.ratePercent : 0;
+  const scale = perPage * extraPages(pages);
+  return { base: item.price, perPage, scale, total: item.price + scale };
+}
+
+function packageIds(tierId: string) {
+  if (!tierId || tierId === 'custom') return new Set<string>();
+  return new Set(presetIds(tierId));
+}
+
+function isTimeCapped(item: PricingService, oneTime: boolean) {
+  return Boolean(item.oneTimeMonths && oneTime);
+}
+
+function recurringUnit(item: PricingService, pages: number, oneTime: boolean) {
+  if (isTimeCapped(item, oneTime)) return 0;
+  return adjustedPrice(item, pages).total;
+}
+
+export function quotedMonthly(quote: MeetingQuoteState) {
+  const selected = new Set(quote.selected);
+  if (quote.customMode || quote.tierId === 'custom') {
+    let monthly = 0;
+    allPaidRecurringServices().forEach((item) => {
+      if (selected.has(item.id)) monthly += recurringUnit(item, quote.pages, quote.oneTime);
+    });
+    return Math.max(PRICING.minMonthly, monthly);
+  }
+  const pkg = packageIds(quote.tierId);
+  let scale = 0;
+  let addons = 0;
+  allPaidRecurringServices().forEach((item) => {
+    if (pkg.has(item.id)) scale += adjustedPrice(item, quote.pages).scale;
+    else if (selected.has(item.id)) addons += recurringUnit(item, quote.pages, quote.oneTime);
+  });
+  return (PRICING.packagePrices[quote.tierId] || PRICING.minMonthly) + scale + addons;
+}
+
+export function setupCost(quote: MeetingQuoteState) {
+  const picked = new Set(quote.oneTimeAddOns);
+  return PRICING.oneTimeAddOns
+    .filter((item) => picked.has(item.id))
+    .reduce((sum, item) => sum + item.price, 0);
+}
+
+export function cappedOneTimeCharge(quote: MeetingQuoteState) {
+  if (!quote.oneTime) return 0;
+  const selected = new Set(quote.selected);
+  let sum = 0;
+  allPaidRecurringServices().forEach((item) => {
+    if (!item.oneTimeMonths || !selected.has(item.id)) return;
+    sum += item.price * item.oneTimeMonths;
+  });
+  return sum;
+}
+
+export function grandTotal(quote: MeetingQuoteState) {
+  const monthly = quotedMonthly(quote);
+  const setup = setupCost(quote);
+  const capped = cappedOneTimeCharge(quote);
+  if (quote.oneTime) return monthly * PRICING.oneTimeMultiplier + setup + capped;
+  return monthly;
+}
+
+export function packageService(quote: MeetingQuoteState, itemId: string) {
+  if (quote.customMode || quote.tierId === 'custom') return false;
+  if (PRICING.alwaysOn.some((item) => item.id === itemId)) return true;
+  return packageIds(quote.tierId).has(itemId);
+}
+
+export function namedPackageMonthly(tierId: string, pages: number) {
+  const pkg = packageIds(tierId);
+  let scale = 0;
+  allPaidRecurringServices().forEach((item) => {
+    if (pkg.has(item.id)) scale += adjustedPrice(item, pages).scale;
+  });
+  return (PRICING.packagePrices[tierId] || PRICING.minMonthly) + scale;
+}

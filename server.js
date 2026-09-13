@@ -16,6 +16,7 @@ import * as clientPortal from './data/client-portal.js';
 import * as offers from './data/offers.js';
 import * as resetTokens from './data/reset-tokens.js';
 import { getPersistentDataDir, pruneAllDataBackups } from './data/storage-path.js';
+import { applyPersistentProductionEnv } from './lib/persistent-env.js';
 import * as salesPreview from './lib/sales-preview-import.js';
 import {
   fillExportZipWithMakerAssets,
@@ -25,6 +26,11 @@ import {
   renderPublicPreviewsBoard,
 } from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
+import {
+  buildPasswordResetEmail,
+  canIssuePasswordReset,
+  passwordResetPathForRole,
+} from './lib/password-reset.js';
 import * as clientForms from './lib/client-forms.js';
 import * as employeeWordPress from './lib/employee-wordpress.js';
 import * as employeeLuca from './lib/employee-luca.js';
@@ -32,10 +38,29 @@ import * as employeeMyPhoner from './lib/employee-myphoner.js';
 import * as myphonerApi from './lib/myphoner-api.js';
 import * as myphonerIntegration from './data/myphoner-integration.js';
 import * as myphonerSsuWins from './lib/myphoner-ssu-wins.js';
-import { buildSalesReminderEmail, buildSalesThankYouEmail } from './lib/sales-email.js';
+import {
+  buildSalesReminderEmail,
+  buildSalesThankYouEmail,
+  buildSalesEmailPreviewPage,
+  renderSalesUnsubscribePage,
+  htmlToPlainText,
+} from './lib/sales-email.js';
+import {
+  composeEmailForClient,
+  deleteEmailTemplate,
+  getEmailDraft,
+  getEmailTemplateById,
+  importEmailTemplate,
+  listEmailTemplates,
+  mergeFieldsMeta,
+  saveEmailDraft,
+  saveEmailTemplate,
+} from './lib/email-templates-store.js';
+import { renderSalesEmailDocument } from './lib/sales-email-layout.js';
 import {
   DEVELOPMENT_KEYS,
   buildDevelopmentItems,
+  buildPreviewItems,
   findLinkedSalesClient,
   parseDevelopmentItemId,
   siteMatchesSalesClient,
@@ -84,6 +109,7 @@ import {
 import dotenv from 'dotenv';
 
 dotenv.config();
+applyPersistentProductionEnv();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -125,7 +151,7 @@ async function ensureAdminExists() {
 // registered before the global JSON body parser below.
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
 
-app.use(express.json());
+app.use(express.json({ limit: '2mb' }));
 
 // Rate limit forgot-password (5 per IP per 15 min)
 const forgotPasswordAttempts = new Map();
@@ -7308,7 +7334,27 @@ function salesAuth(req, res, next) {
 function canAccessSalesClient(req, client) {
   if (!client) return false;
   if (req.salesUser?.isAdmin) return true;
+  if (req.developmentUser) return true;
   return Boolean(client.ownerId) && client.ownerId === req.salesUser?.accountKey;
+}
+
+function salesOrDevelopmentAuth(req, res, next) {
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  if (!payload || (payload.role !== 'admin' && payload.role !== 'sales' && payload.role !== 'developer')) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  if (payload.role === 'admin') {
+    req.salesUser = { accountKey: `admin:${payload.username || 'admin'}`, isAdmin: true, role: 'admin' };
+    req.developmentUser = { role: 'admin', isAdmin: true, userId: payload.userId };
+  } else if (payload.role === 'sales') {
+    req.salesUser = { accountKey: `sales:${payload.userId}`, isAdmin: false, role: 'sales', userId: payload.userId };
+  } else {
+    req.developmentUser = { role: 'developer', isAdmin: false, userId: payload.userId };
+    req.salesUser = { accountKey: `developer:${payload.userId}`, isAdmin: false, role: 'developer', userId: payload.userId };
+  }
+  next();
 }
 
 async function accountKeyToEmail(accountKey = '') {
@@ -7569,6 +7615,7 @@ async function backfillMissingSalesCalendarEvents({
   limit = 0,
   actorAccountKey = '',
   productFilter = '',
+  notifyAttendees = false,
 } = {}) {
   const allClients = sales.getSalesClients();
   const productScoped = productFilter
@@ -7621,7 +7668,7 @@ async function backfillMissingSalesCalendarEvents({
     }
 
     const syncResult = await maybeSyncCalendar(client, client, {
-      notifyAttendees: false,
+      notifyAttendees: Boolean(notifyAttendees),
       actorAccountKey,
       fallbackAccountKeys: await resolveCalendarFallbackAccountKeys(client?.ownerId || '', actorAccountKey),
     });
@@ -7647,30 +7694,34 @@ async function backfillMissingSalesCalendarEvents({
   };
 }
 
-async function sendSalesThankYou(client, { force = false } = {}) {
+async function sendSalesThankYou(client, { force = false, actorAccountKey = '' } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
-  if (
-    normalizeMeetingMode(client?.meetingMode) === 'online'
-    && !isRealGoogleMeetLink(client?.calendar?.meetLink)
-  ) {
-    return { sent: false, reason: 'missing-meet-link' };
+
+  const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+  const syncResult = await maybeSyncCalendar(client, client, {
+    notifyAttendees: true,
+    requireMeetLink: isOnline,
+    actorAccountKey,
+  });
+  client = syncResult.client || client;
+  if (isOnline && !isRealGoogleMeetLink(client?.calendar?.meetLink)) {
+    return { sent: false, reason: 'missing-meet-link', client, warnings: syncResult.warnings || [] };
   }
-  // Always send the Asoldi template over SMTP. Online meetings include an .ics
-  // attachment clients can Accept — Google Calendar notify emails are not a substitute.
-  const message = buildSalesThankYouEmail(client, client.calendar || {});
+
+  const composed = composeEmailForClient(client, 'thank-you').message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
     to: client.contactEmail,
+    from: composed.from,
+    replyTo: composed.replyTo,
     bcc: salesEmailCopyBcc(client.contactEmail),
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
-    attachments: message.attachments,
-    headers: message.headers,
-    icalEvent: message.icalEvent,
+    subject: composed.subject,
+    text: composed.text,
+    html: composed.html,
+    attachments: composed.attachments,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
   return {
@@ -7679,6 +7730,7 @@ async function sendSalesThankYou(client, { force = false } = {}) {
     channel: 'email',
     meetLink,
     copyTo: salesEmailCopyBcc(client.contactEmail),
+    warnings: syncResult.warnings || [],
   };
 }
 
@@ -7687,14 +7739,17 @@ async function sendSalesReminderNow(client, kind = '24h') {
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   const reminderKind = kind === '1h' ? '1h' : '24h';
-  const message = buildSalesReminderEmail(client, client.calendar || {}, reminderKind);
+  const composed = composeEmailForClient(client, reminderKind === '1h' ? 'reminder-1h' : 'reminder-24h').message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
     to: client.contactEmail,
+    from: composed.from,
+    replyTo: composed.replyTo,
     bcc: salesEmailCopyBcc(client.contactEmail),
-    subject: message.subject,
-    text: message.text,
-    html: message.html,
+    subject: composed.subject,
+    text: composed.text,
+    html: composed.html,
+    attachments: composed.attachments,
   });
   const updated = sales.markSalesReminderSent(client.id, reminderKind);
   return {
@@ -7769,27 +7824,11 @@ async function sendDueSalesReminders() {
       const reminder1hAt = client.reminders?.reminder1hAt ? new Date(client.reminders.reminder1hAt).getTime() : 0;
 
       if (reminder24hAt && nowMs >= reminder24hAt && !client.reminders?.reminder24hSentAt) {
-        const message = buildSalesReminderEmail(client, client.calendar || {}, '24h');
-        await emailLib.sendEmail({
-          to: client.contactEmail,
-          bcc: salesEmailCopyBcc(client.contactEmail),
-          subject: message.subject,
-          text: message.text,
-          html: message.html,
-        });
-        sales.markSalesReminderSent(client.id, '24h');
+        await sendSalesReminderNow(client, '24h');
       }
 
       if (reminder1hAt && nowMs >= reminder1hAt && !client.reminders?.reminder1hSentAt) {
-        const message = buildSalesReminderEmail(client, client.calendar || {}, '1h');
-        await emailLib.sendEmail({
-          to: client.contactEmail,
-          bcc: salesEmailCopyBcc(client.contactEmail),
-          subject: message.subject,
-          text: message.text,
-          html: message.html,
-        });
-        sales.markSalesReminderSent(client.id, '1h');
+        await sendSalesReminderNow(client, '1h');
       }
     }
   } catch (error) {
@@ -8107,6 +8146,150 @@ app.post('/api/admin/integrations/myphoner/reconcile', adminAuth, async (_req, r
       message: sanitizeText(error?.message) || 'Failed to reconcile Myphoner webhooks.',
     });
   }
+});
+
+async function backfillMyphonerWinnersFromLists({
+  listIds = [],
+  dryRun = true,
+  missingOnly = true,
+} = {}) {
+  if (!myphonerApi.isMyPhonerConfigured()) {
+    return { ok: false, skipped: 'myphoner-not-configured' };
+  }
+  const ids = [...new Set((Array.isArray(listIds) ? listIds : []).map((id) => sanitizeText(id)).filter(Boolean))];
+  const summary = {
+    ok: true,
+    dryRun: Boolean(dryRun),
+    missingOnly: Boolean(missingOnly),
+    scanned: 0,
+    winners: 0,
+    alreadyInSales: 0,
+    missing: 0,
+    created: 0,
+    updated: 0,
+    failed: 0,
+    lists: [],
+  };
+
+  for (const listId of ids) {
+    const listRow = {
+      listId,
+      listName: '',
+      scanned: 0,
+      winners: 0,
+      alreadyInSales: 0,
+      missing: 0,
+      created: 0,
+      updated: 0,
+      failed: 0,
+      missingLeads: [],
+      errors: [],
+    };
+    const listInfo = await myphonerApi.getMyPhonerList(listId);
+    const listPayload = listInfo?.data?.list && typeof listInfo.data.list === 'object'
+      ? listInfo.data.list
+      : (listInfo?.data && typeof listInfo.data === 'object' ? listInfo.data : {});
+    listRow.listName = sanitizeText(listPayload.name || listPayload.title || listPayload.list_name);
+    const listedResponse = await myphonerApi.listAllMyPhonerLeadsInList(
+      listId,
+      { per_page: 100, order: 'last_updated_first' },
+      { maxPages: 80, pageDelayMs: 0 }
+    );
+    if (!listedResponse.success) {
+      listRow.errors.push(sanitizeText(listedResponse.error) || 'list-fetch-failed');
+      summary.lists.push(listRow);
+      continue;
+    }
+    const listed = Array.isArray(listedResponse.data) ? listedResponse.data : [];
+    listRow.scanned = listed.length;
+    summary.scanned += listed.length;
+
+    for (const lead of listed) {
+      if (!myphonerSsuWins.isWinnerLead(lead)) continue;
+      const leadId = myphonerSsuWins.getLeadId(lead);
+      if (!leadId) continue;
+      listRow.winners += 1;
+      summary.winners += 1;
+      const existing = sales.getSalesClientByMyphonerLeadId(leadId);
+      if (existing) {
+        listRow.alreadyInSales += 1;
+        summary.alreadyInSales += 1;
+        if (missingOnly) continue;
+      } else {
+        listRow.missing += 1;
+        summary.missing += 1;
+        if (listRow.missingLeads.length < 80) {
+          listRow.missingLeads.push({
+            leadId,
+            businessName: extractMyphonerLeadBusinessName(lead, getLeadDataMap(lead)),
+          });
+        }
+      }
+      if (dryRun) continue;
+      try {
+        const result = await processMyphonerWinnerFromResource(`/api/v2/leads/${leadId}`);
+        if (result?.created) {
+          listRow.created += 1;
+          summary.created += 1;
+        } else {
+          listRow.updated += 1;
+          summary.updated += 1;
+        }
+      } catch (error) {
+        listRow.failed += 1;
+        summary.failed += 1;
+        listRow.errors.push(`${leadId}:${sanitizeText(error?.message) || 'upsert-failed'}`);
+      }
+    }
+    summary.lists.push(listRow);
+  }
+  return summary;
+}
+
+const myphonerWinnerBackfillJobs = new Map();
+
+app.post('/api/admin/integrations/myphoner/backfill-winners', adminAuth, async (req, res) => {
+  const listIds = Array.isArray(req.body?.listIds)
+    ? req.body.listIds
+    : String(req.body?.listIds || '')
+      .split(',')
+      .map((id) => sanitizeText(id))
+      .filter(Boolean);
+  const dryRun = parseBoolean(req.body?.dryRun, true);
+  const missingOnly = parseBoolean(req.body?.missingOnly, true);
+  const jobId = randomBytes(8).toString('hex');
+  myphonerWinnerBackfillJobs.set(jobId, {
+    status: 'running',
+    startedAt: nowIso(),
+    dryRun,
+    listIds,
+  });
+  setImmediate(() => {
+    backfillMyphonerWinnersFromLists({ listIds, dryRun, missingOnly })
+      .then((result) => {
+        myphonerWinnerBackfillJobs.set(jobId, {
+          status: result?.skipped ? 'skipped' : 'done',
+          startedAt: myphonerWinnerBackfillJobs.get(jobId)?.startedAt,
+          finishedAt: nowIso(),
+          result,
+        });
+      })
+      .catch((error) => {
+        myphonerWinnerBackfillJobs.set(jobId, {
+          status: 'failed',
+          startedAt: myphonerWinnerBackfillJobs.get(jobId)?.startedAt,
+          finishedAt: nowIso(),
+          error: sanitizeText(error?.message) || 'Failed to backfill Myphoner winners into Sales.',
+        });
+      });
+  });
+  return res.json({ ok: true, jobId, status: 'running', dryRun, listIds });
+});
+
+app.get('/api/admin/integrations/myphoner/backfill-winners/:jobId', adminAuth, (req, res) => {
+  const job = myphonerWinnerBackfillJobs.get(sanitizeText(req.params.jobId));
+  if (!job) return res.status(404).json({ ok: false, message: 'Backfill job not found.' });
+  return res.json({ ok: true, jobId: sanitizeText(req.params.jobId), ...job });
 });
 
 app.post('/api/admin/integrations/myphoner/ssu-wins-backfill', adminAuth, async (req, res) => {
@@ -8494,36 +8677,10 @@ app.post('/api/client/auth/login', async (req, res) => {
 });
 
 app.post('/api/client/auth/forgot-password', async (req, res) => {
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimitForgotPassword(ip)) {
-    return res.status(429).json({ message: 'For mange forespørsler. Prøv igjen om 15 minutter.' });
-  }
-  const email = normalizeEmail(req.body?.email);
-  if (!isValidEmail(email)) {
-    return res.status(400).json({ message: 'Skriv inn en gyldig e-postadresse.' });
-  }
-  const user = await store.getUserByUsername(email);
-  if (!user || user.role !== 'client') {
-    return res.json({ ok: true, message: 'Hvis e-posten finnes, sender vi en lenke for tilbakestilling.' });
-  }
-  if (!emailLib.canSendEmail()) {
-    return res.status(503).json({ message: 'E-post er ikke konfigurert. Kontakt administrator.' });
-  }
-  const token = randomBytes(32).toString('base64url');
-  resetTokens.saveResetToken(token, user.id, user.username);
-  const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-  const resetUrl = `${baseUrl.replace(/\/$/, '')}/login/kunde/reset-password?token=${token}`;
-  try {
-    await emailLib.sendEmail({
-      to: user.username,
-      subject: 'Tilbakestill passord – Asoldi Kundeportal',
-      text: `Hei,\n\nDu ba om å tilbakestille passordet ditt i kundeportalen. Klikk på lenken under:\n\n${resetUrl}\n\nLenken utløper om 1 time.\n\nHilsen Asoldi`,
-      html: `<p>Hei,</p><p>Du ba om å tilbakestille passordet ditt i kundeportalen.</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Lenken utløper om 1 time.</p><p>Hilsen Asoldi</p>`,
-    });
-  } catch (error) {
-    return res.status(500).json({ message: 'Kunne ikke sende e-post. Prøv igjen senere.' });
-  }
-  return res.json({ ok: true, message: 'Hvis e-posten finnes, sender vi en lenke for tilbakestilling.' });
+  return handleForgotPasswordRequest(req, res, {
+    identity: normalizeEmail(req.body?.email),
+    requireEmail: true,
+  });
 });
 
 app.post('/api/client/auth/reset-password', async (req, res) => {
@@ -9449,6 +9606,49 @@ function issueResetTokenForUser(user, req, resetPath) {
   return { token, resetUrl };
 }
 
+async function sendForgotPasswordForUser(user, req) {
+  const resetPath = passwordResetPathForRole(user?.role);
+  if (!resetPath) return { sent: false, reason: 'unsupported-role' };
+  const { resetUrl } = issueResetTokenForUser(user, req, resetPath);
+  const mail = buildPasswordResetEmail({ role: user.role, resetUrl });
+  await emailLib.sendEmail({
+    to: user.username,
+    subject: mail.subject,
+    text: mail.text,
+    html: mail.html,
+  });
+  return { sent: true, resetUrl };
+}
+
+async function handleForgotPasswordRequest(req, res, { identity, requireEmail = false } = {}) {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
+  if (!rateLimitForgotPassword(ip)) {
+    return res.status(429).json({ message: 'For mange forespørsler. Prøv igjen om 15 minutter.' });
+  }
+  const lookup = String(identity || '').trim();
+  if (!lookup) {
+    return res.status(400).json({ message: requireEmail ? 'Skriv inn en gyldig e-postadresse.' : 'E-post kreves' });
+  }
+  if (requireEmail && !isValidEmail(lookup)) {
+    return res.status(400).json({ message: 'Skriv inn en gyldig e-postadresse.' });
+  }
+  const user = await store.getUserByUsername(lookup);
+  const generic = { ok: true, message: 'Hvis e-posten finnes, sender vi en lenke for tilbakestilling.' };
+  if (!user || !canIssuePasswordReset(user.role)) {
+    return res.json(generic);
+  }
+  if (!emailLib.canSendEmail()) {
+    return res.status(503).json({ message: 'E-post er ikke konfigurert. Kontakt administrator.' });
+  }
+  try {
+    await sendForgotPasswordForUser(user, req);
+  } catch (error) {
+    console.error('Forgot password email error:', error?.message || error);
+    return res.status(500).json({ message: 'Kunne ikke sende e-post. Prøv igjen senere.' });
+  }
+  return res.json(generic);
+}
+
 app.post('/api/client-auth/check-email', async (req, res) => {
   const email = sanitizeText(req.body?.email || '').toLowerCase();
   if (!email) return res.status(400).json({ message: 'E-post er påkrevd.' });
@@ -9529,33 +9729,10 @@ app.post('/api/client-auth/login', async (req, res) => {
 });
 
 app.post('/api/client-auth/forgot-password', async (req, res) => {
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimitForgotPassword(ip)) {
-    return res.status(429).json({ message: 'For mange forespørsler. Prøv igjen om 15 minutter.' });
-  }
-  const email = sanitizeText(req.body?.email || '').toLowerCase();
-  if (!email) return res.status(400).json({ message: 'E-post er påkrevd.' });
-
-  const user = await store.getUserByUsername(email);
-  if (!user || user.role !== 'client') {
-    return res.json({ ok: true, message: 'Hvis e-posten finnes, sender vi en lenke for å tilbakestille passordet.' });
-  }
-  if (!emailLib.canSendEmail()) {
-    return res.status(503).json({ message: 'E-post er ikke konfigurert.' });
-  }
-
-  const { resetUrl } = issueResetTokenForUser(user, req, '/login/client/reset-password');
-  try {
-    await emailLib.sendEmail({
-      to: user.username,
-      subject: 'Tilbakestill passord – Asoldi kundeportal',
-      text: `Hei,\n\nDu ba om å tilbakestille passordet ditt for kundeportalen.\n\nKlikk her: ${resetUrl}\n\nLenken utløper om 1 time.\n\nHilsen Asoldi`,
-      html: `<p>Hei,</p><p>Du ba om å tilbakestille passordet ditt for kundeportalen.</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Lenken utløper om 1 time.</p><p>Hilsen Asoldi</p>`,
-    });
-  } catch (error) {
-    return res.status(500).json({ message: 'Kunne ikke sende e-post akkurat nå.' });
-  }
-  return res.json({ ok: true, message: 'Hvis e-posten finnes, sender vi en lenke for å tilbakestille passordet.' });
+  return handleForgotPasswordRequest(req, res, {
+    identity: normalizeEmail(req.body?.email),
+    requireEmail: true,
+  });
 });
 
 app.post('/api/client-auth/reset-password', async (req, res) => {
@@ -9583,37 +9760,8 @@ app.post('/api/client-auth/reset-password', async (req, res) => {
 });
 
 app.post('/api/auth/forgot-password', async (req, res) => {
-  const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-  if (!rateLimitForgotPassword(ip)) {
-    return res.status(429).json({ message: 'For mange forespørsler. Prøv igjen om 15 minutter.' });
-  }
-  const { username } = req.body || {};
-  if (!username || typeof username !== 'string') {
-    return res.status(400).json({ message: 'E-post kreves' });
-  }
-  const user = await store.getUserByUsername(username.trim());
-  if (!user || user.role !== 'employee') {
-    return res.json({ ok: true, message: 'Hvis e-posten finnes, vil du motta en lenke for å tilbakestille passordet.' });
-  }
-  if (!emailLib.canSendEmail()) {
-    return res.status(503).json({ message: 'E-post er ikke konfigurert. Kontakt administrator.' });
-  }
-  const token = randomBytes(32).toString('base64url');
-  resetTokens.saveResetToken(token, user.id, user.username);
-  const baseUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
-  const resetUrl = `${baseUrl.replace(/\/$/, '')}/login/reset-password?token=${token}`;
-  try {
-    await emailLib.sendEmail({
-      to: user.username,
-      subject: 'Tilbakestill passord – Asoldi',
-      text: `Hei,\n\nDu ba om å tilbakestille passordet ditt. Klikk på lenken under for å velge et nytt passord:\n\n${resetUrl}\n\nLenken utløper om 1 time.\n\nHvis du ikke ba om dette, kan du ignorere denne e-posten.\n\nMed vennlig hilsen,\nAsoldi`,
-      html: `<p>Hei,</p><p>Du ba om å tilbakestille passordet ditt. Klikk på lenken under for å velge et nytt passord:</p><p><a href="${resetUrl}">${resetUrl}</a></p><p>Lenken utløper om 1 time.</p><p>Hvis du ikke ba om dette, kan du ignorere denne e-posten.</p><p>Med vennlig hilsen,<br>Asoldi</p>`,
-    });
-  } catch (err) {
-    console.error('Forgot password email error:', err);
-    return res.status(500).json({ message: 'Kunne ikke sende e-post. Prøv igjen senere.' });
-  }
-  res.json({ ok: true, message: 'Hvis e-posten finnes, vil du motta en lenke for å tilbakestille passordet.' });
+  const identity = normalizeEmail(req.body?.email || req.body?.username || '');
+  return handleForgotPasswordRequest(req, res, { identity });
 });
 
 app.post('/api/auth/reset-password', async (req, res) => {
@@ -10257,11 +10405,13 @@ app.post('/api/admin/sales/backfill-calendar', salesAuth, async (req, res) => {
       : 0;
     const productFilter = sanitizeText(req.body?.product).toLowerCase();
     const actorAccountKey = sanitizeText(req.salesUser.accountKey);
+    const notifyAttendees = parseBoolean(req.body?.notifyAttendees, false);
     const result = await backfillMissingSalesCalendarEvents({
       dryRun,
       limit,
       actorAccountKey,
       productFilter: productFilter === 'asoldi' || productFilter === 'ssu' ? productFilter : '',
+      notifyAttendees,
     });
     return res.json({
       ok: true,
@@ -10594,7 +10744,7 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
-      ? await sendSalesThankYou(client, { force: false })
+      ? await sendSalesThankYou(client, { force: false, actorAccountKey: req.salesUser.accountKey })
       : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
 
@@ -10632,7 +10782,10 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
-      ? await sendSalesThankYou(client, { force: meetingChanged })
+      ? await sendSalesThankYou(client, {
+        force: meetingChanged,
+        actorAccountKey: req.salesUser.accountKey,
+      })
       : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
 
@@ -10695,7 +10848,7 @@ app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
   if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'notes')) {
     return res.status(400).json({ message: 'Notes are required.' });
   }
-  const updated = sales.setSalesNotes(req.params.id, req.body?.notes);
+  const updated = sales.setSalesNotes(req.params.id, req.body?.notes, req.body?.meetingQuote);
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
 });
@@ -10735,6 +10888,140 @@ app.post('/api/admin/sales/:id/restore', salesAuth, (req, res) => {
   res.json({ client: updated });
 });
 
+app.get('/api/admin/sales/:id/email-preview', salesAuth, (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const origin = publicRequestOrigin(req);
+  const kind = sanitizeText(req.query?.kind) === 'reminder' ? 'reminder' : 'thank-you';
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.type('html').send(buildSalesEmailPreviewPage(kind, {
+    client,
+    calendar: client.calendar || {},
+    assetBase: `${origin}/email/sales`,
+    siteUrl: origin,
+    reminderKind: sanitizeText(req.query?.reminderKind) === '1h' ? '1h' : '24h',
+    view: sanitizeText(req.query?.view),
+  }));
+});
+
+app.get('/api/admin/email-templates', salesAuth, (_req, res) => {
+  res.json({
+    templates: listEmailTemplates(),
+    mergeFields: mergeFieldsMeta(),
+  });
+});
+
+app.post('/api/admin/email-templates', salesAuth, (req, res) => {
+  const result = saveEmailTemplate(req.body || {});
+  if (!result.ok) return res.status(400).json({ message: result.error });
+  res.status(201).json({ template: result.template });
+});
+
+app.put('/api/admin/email-templates/:id', salesAuth, (req, res) => {
+  const existing = getEmailTemplateById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Template not found' });
+  const result = saveEmailTemplate({ ...existing, ...(req.body || {}), id: existing.id });
+  if (!result.ok) return res.status(400).json({ message: result.error });
+  res.json({ template: result.template });
+});
+
+app.delete('/api/admin/email-templates/:id', salesAuth, (req, res) => {
+  const result = deleteEmailTemplate(req.params.id);
+  if (!result.ok) return res.status(404).json({ message: result.error });
+  res.json({ ok: true });
+});
+
+app.post('/api/admin/email-templates/import', salesAuth, (req, res) => {
+  const result = importEmailTemplate(req.body || {});
+  if (!result.ok) return res.status(400).json({ message: result.error });
+  res.status(201).json({ template: result.template });
+});
+
+app.post('/api/admin/email-drafts', salesAuth, (req, res) => {
+  const draft = saveEmailDraft(req.body || {});
+  const origin = publicRequestOrigin(req);
+  res.json({
+    draft,
+    previewPc: `${origin}/email/preview/draft/${encodeURIComponent(draft.id)}?view=pc`,
+    previewPhone: `${origin}/email/preview/draft/${encodeURIComponent(draft.id)}?view=phone`,
+  });
+});
+
+app.get('/api/admin/sales/:id/compose-email', salesAuth, (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const templateKey = sanitizeText(req.query?.template) || 'thank-you';
+  const composed = composeEmailForClient(client, templateKey);
+  res.json({
+    client: {
+      id: client.id,
+      businessName: client.businessName,
+      contactPerson: client.contactPerson,
+      contactEmail: client.contactEmail,
+      meetingAt: client.meetingAt,
+    },
+    template: composed.template,
+    merged: composed.merged,
+    mergeFields: composed.mergeFields,
+  });
+});
+
+app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res) => {
+  try {
+    let client = sales.getSalesClientById(req.params.id);
+    if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+    if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+    if (!emailLib.canSendEmail()) {
+      return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
+    }
+    const templateKey = sanitizeText(req.body?.templateKey || req.body?.markAs) || 'thank-you';
+    const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+    if (templateKey === 'thank-you' || templateKey === 'welcome') {
+      const syncResult = await maybeSyncCalendar(client, client, {
+        notifyAttendees: true,
+        requireMeetLink: isOnline,
+        actorAccountKey: req.salesUser.accountKey,
+      });
+      client = syncResult.client || client;
+    }
+    const to = sanitizeText(req.body?.to) || client.contactEmail;
+    if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
+    const composed = composeEmailForClient(client, templateKey, {
+      html: req.body?.html,
+      subject: req.body?.subject,
+      preheader: req.body?.preheader,
+    }).message;
+    await emailLib.sendEmail({
+      to,
+      from: composed.from,
+      replyTo: composed.replyTo,
+      bcc: salesEmailCopyBcc(to),
+      subject: composed.subject,
+      text: composed.text || htmlToPlainText(composed.html),
+      html: composed.html,
+      attachments: composed.attachments,
+    });
+    const markAs = sanitizeText(req.body?.markAs) || templateKey;
+    const reminderKey = markAs === 'reminder-1h' || markAs === '1h'
+      ? '1h'
+      : markAs === 'reminder-24h' || markAs === '24h' || markAs === 'reminder'
+        ? '24h'
+        : 'thankYou';
+    const updated = sales.markSalesReminderSent(client.id, reminderKey);
+    return res.json({
+      ok: true,
+      sent: true,
+      meetLink: client?.calendar?.meetLink || '',
+      copyTo: salesEmailCopyBcc(to),
+      client: updated || client,
+    });
+  } catch (error) {
+    return res.status(500).json({ message: formatSmtpSendError(error) });
+  }
+});
+
 app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) => {
   try {
     let client = sales.getSalesClientById(req.params.id);
@@ -10748,7 +11035,10 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
       actorAccountKey: req.salesUser.accountKey,
     });
     client = syncResult.client || client;
-    const sentResult = await sendSalesThankYou(client, { force: true });
+    const sentResult = await sendSalesThankYou(client, {
+      force: true,
+      actorAccountKey: req.salesUser.accountKey,
+    });
     client = sentResult.client || client;
     if (!sentResult.sent) {
       return res.status(400).json({
@@ -10910,7 +11200,7 @@ app.get('/api/admin/sales/:id/maker-export', salesAuth, async (req, res) => {
   }
 });
 
-app.post('/api/admin/sales/:id/link-maker-run', salesAuth, async (req, res) => {
+app.post('/api/admin/sales/:id/link-maker-run', salesOrDevelopmentAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
@@ -11256,7 +11546,7 @@ app.post('/api/admin/sales/:id/publish-maker-run-to-prod', salesAuth, async (req
 
 // Refresh stored Maker dashboard/preview links from live Website Maker state so
 // "Open in maker" resumes draft vs run correctly after the operator closes the tab.
-app.post('/api/admin/sales/:id/refresh-maker-handoff', salesAuth, async (req, res) => {
+app.post('/api/admin/sales/:id/refresh-maker-handoff', salesOrDevelopmentAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
@@ -11304,7 +11594,7 @@ app.post('/api/admin/sales/:id/refresh-maker-handoff', salesAuth, async (req, re
 // Auto-create a run in the Website Maker (server-to-server) pre-filled with the
 // client's business name + industry, then store the runId + maker links so the
 // rep can "Open in maker" and "Preview" without manual export/import.
-app.post('/api/admin/sales/:id/create-maker-run', salesAuth, async (req, res) => {
+app.post('/api/admin/sales/:id/create-maker-run', salesOrDevelopmentAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
@@ -11798,7 +12088,13 @@ app.post('/api/admin/sales/:id/got-client', salesAuth, async (req, res) => {
 });
 
 function listDevelopmentBoard() {
-  return buildDevelopmentItems(sales.getSalesClients(), hub.getAllSites());
+  const salesClients = sales.getSalesClients();
+  const sites = hub.getAllSites();
+  return buildDevelopmentItems(salesClients, sites);
+}
+
+function listPreviewBoard() {
+  return buildPreviewItems(sales.getSalesClients(), hub.getAllSites());
 }
 
 function resolveDevelopmentTarget(itemId) {
@@ -11821,7 +12117,11 @@ function resolveDevelopmentTarget(itemId) {
 
 app.get('/api/admin/development', developmentAuth, (_req, res) => {
   hub.reconcileDeliveryPhases(sales.getSalesClients());
-  res.json({ items: listDevelopmentBoard() });
+  res.json({
+    items: listDevelopmentBoard(),
+    previewItems: listPreviewBoard(),
+    deploymentItems: listDevelopmentBoard(),
+  });
 });
 
 app.patch('/api/admin/development/:id', developmentAuth, (req, res) => {
@@ -11879,6 +12179,8 @@ app.patch('/api/admin/development/:id', developmentAuth, (req, res) => {
       (client && entry.salesClientId === client.id) || (site && entry.siteId === site.id)
     )) || null,
     items: listDevelopmentBoard(),
+    previewItems: listPreviewBoard(),
+    deploymentItems: listDevelopmentBoard(),
     movedToClients: Boolean(nextDevelopment.nettsideFerdig),
   });
 });
@@ -12273,6 +12575,57 @@ app.get('/sales-preview/:id', async (req, res) => {
 app.get('/sales-preview/:id/*', async (req, res) => {
   await sendSalesPreviewFile(req, res, req.params[0] || '');
 });
+
+function publicRequestOrigin(req) {
+  const forwarded = sanitizeText(req.headers['x-forwarded-proto']);
+  const proto = forwarded || req.protocol || 'https';
+  const host = sanitizeText(req.get('host'));
+  if (host) return `${proto}://${host}`;
+  return 'https://asoldi.com';
+}
+
+app.get('/email/avmeld', (req, res) => {
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.type('html').send(renderSalesUnsubscribePage({ clientId: req.query?.c }));
+});
+
+app.get('/email/preview/sales-thank-you', (req, res) => {
+  const origin = publicRequestOrigin(req);
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.type('html').send(buildSalesEmailPreviewPage('thank-you', {
+    assetBase: `${origin}/email/sales`,
+    siteUrl: origin,
+    view: sanitizeText(req.query?.view),
+    previewBasePath: '/email/preview/sales-thank-you',
+  }));
+});
+
+app.get('/email/preview/sales-reminder', (req, res) => {
+  const origin = publicRequestOrigin(req);
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.type('html').send(buildSalesEmailPreviewPage('reminder', {
+    assetBase: `${origin}/email/sales`,
+    siteUrl: origin,
+    view: sanitizeText(req.query?.view),
+    previewBasePath: '/email/preview/sales-reminder',
+    reminderKind: sanitizeText(req.query?.kind) === '1h' ? '1h' : '24h',
+  }));
+});
+
+app.get('/email/preview/draft/:id', (req, res) => {
+  const draft = getEmailDraft(req.params.id);
+  if (!draft) return res.status(404).send('Forhåndsvisningen er utløpt. Åpne editoren og vis igjen.');
+  const view = sanitizeText(req.query?.view).toLowerCase();
+  const frame = view === 'phone' || view === 'mobile' ? 'mobile' : 'desktop';
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.type('html').send(renderSalesEmailDocument({
+    title: draft.subject || 'Forhåndsvisning',
+    html: draft.html || '',
+    note: `${frame === 'mobile' ? 'Telefon' : 'PC'}-forhåndsvisning · ${draft.to || ''} · ${draft.subject || ''}`,
+    frame,
+  }));
+});
+
 
 // --- Static and SPA
 app.use((req, res, next) => {

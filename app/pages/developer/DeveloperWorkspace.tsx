@@ -76,7 +76,7 @@ export const DeveloperWorkspace = () => {
             <div>
               <h1 className="text-lg font-semibold">Utvikling</h1>
               <p className="text-xs text-gray-400">
-                Signerte nettsider: Hostinger, GitHub, V1 og ferdig nettside.
+                Preview-nettsider for salg, og deployment etter kontrakt er signert.
               </p>
             </div>
             <button

@@ -33,7 +33,7 @@ export function ManageClientsSection({
       <div>
         <h1 className="text-2xl font-bold text-white mb-2">Manage clients</h1>
         <p className="text-gray-400 text-sm">
-          Track live hub clients, websites in development, and sales prospects. Signed contracts move to Development, not Clients.
+          Track live hub clients, websites in development, and sales prospects. New sales clients appear under Development → Preview. Signed contracts move to Deployment.
         </p>
       </div>
 

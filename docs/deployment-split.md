@@ -35,7 +35,7 @@ Maker **Publish to GitHub** writes the repo. It does **not** SFTP and does **not
 
 `package.json` must look like Express (no Vite/React). If Hostinger sees Vite, it never starts `server.js`.
 
-Client website images that are part of the published pages belong in Git `public/`. That is the website. Client **CMS** media (product shots, avatars, files the client uploads in `/admin`) belong on Hostinger disk, not in Git.
+Client website images that the published pages actually use belong in Git `public/`. That is the website. Unused intake/gallery dumps stay out of Git. Client **CMS** media (product shots, avatars, files the client uploads in `/admin`) belong on Hostinger disk, not in Git. The client repo must stay Express-only (no Vite/`lucide-react` install) so Hostinger does not fill inodes the way the hub did.
 
 ## Hub (asoldi.com)
 
@@ -47,6 +47,7 @@ asoldi.com is **not** a Maker client site. It is Vite + Express. Sales CRM and c
 | Superadmin site list, flags, plans, keys | `~/.asoldi-website-data` | Yes — never in Git |
 | Sales clients, notes, connections | `~/.asoldi-website-data` | Yes |
 | Call recordings (wav) and hub marketing media | Hostinger `nodejs/public/myphoner-audio` and `nodejs/public/media` | Only if they are **not** deleted by a checkout. Keep a copy under `~/.asoldi-website-data/` before any overwrite deploy |
+| Hostinger Environment variables (Myphoner, SMTP, Stripe, Google, …) | hPanel env tab, plus `~/.asoldi-website-data/production.env` after first boot | Panel can be wiped by a Git deploy. Disconnect Git on asoldi.com. Disk backup survives archive deploys. |
 
 **Do not Git-deploy asoldi.com while `public/myphoner-audio` and large `public/media` are in the repo.** Hostinger clones a second copy next to the live files and fills the disk (0-line failed builds, Sep 2026). Hub deploys must be a **small archive** (source + `dist`, no wav/mp4) via the Hostinger API, then copy recordings back if the archive overwrite cleared `public/`.
 
