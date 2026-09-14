@@ -11,6 +11,7 @@ import {
   Loader2,
   MailPlus,
   MonitorSmartphone,
+  Send,
   Pencil,
   Phone,
   Plus,
@@ -72,6 +73,11 @@ type CalendarStatus = {
   redirectUri: string;
   tokenUpdatedAt: string;
   accountKey?: string;
+  googleEmail?: string;
+  googleName?: string;
+  loginRole?: string;
+  loginUsername?: string;
+  loginAccountKey?: string;
 };
 
 type MeetingMapPin = {
@@ -355,6 +361,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const [meetingNotesClient, setMeetingNotesClient] = useState<SalesClient | null>(null);
   const [previewMissingToastId, setPreviewMissingToastId] = useState<string | null>(null);
+  const [sendingEmailKey, setSendingEmailKey] = useState<string | null>(null);
+  const [emailToggleBusyId, setEmailToggleBusyId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
@@ -806,6 +814,102 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  function clientEditsEmailBeforeSend(client: SalesClient) {
+    return Boolean(client.details?.editEmailBeforeSend);
+  }
+
+  function openEmailComposer(client: SalesClient, template: string) {
+    navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=${encodeURIComponent(template)}`);
+  }
+
+  async function toggleEditEmailBeforeSend(client: SalesClient) {
+    if (emailToggleBusyId === client.id) return;
+    const nextValue = !clientEditsEmailBeforeSend(client);
+    setEmailToggleBusyId(client.id);
+    setError('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/details`, {
+        method: 'PATCH',
+        body: JSON.stringify({ editEmailBeforeSend: nextValue }),
+      });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed updating email send mode');
+    } finally {
+      setEmailToggleBusyId((current) => (current === client.id ? null : current));
+    }
+  }
+
+  async function sendWelcomeEmail(client: SalesClient) {
+    if (clientEditsEmailBeforeSend(client)) {
+      openEmailComposer(client, 'thank-you');
+      return;
+    }
+    if (sendingEmailKey) return;
+    if (client.reminders?.thankYouSentAt) {
+      const confirmed = window.confirm(
+        'Welcome email was already sent. Send the branded Asoldi email again? Google will not send a second calendar invite if the meeting already exists.'
+      );
+      if (!confirmed) return;
+    }
+    setSendingEmailKey(`welcome:${client.id}`);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      const meet = String(data?.meetLink || saved?.calendar?.meetLink || '').trim();
+      const from = String(data?.from || '').trim();
+      setNotice(
+        `Welcome email sent to ${client.contactEmail}`
+        + (from ? ` from ${from}.` : '.')
+        + (meet
+          ? ' Google Calendar sends the invite separately — open the Asoldi mail for the branded message, and Google’s invitation for Add to calendar.'
+          : ' A calendar file is attached because Google Calendar is not connected on this login.')
+      );
+      if (warnings.length) setError(warnings.join(' | '));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed sending welcome email';
+      setError(message);
+      window.alert(message);
+    } finally {
+      setSendingEmailKey((current) => (current === `welcome:${client.id}` ? null : current));
+    }
+  }
+
+  async function sendReminderEmail(client: SalesClient) {
+    if (clientEditsEmailBeforeSend(client)) {
+      openEmailComposer(client, 'reminder-24h');
+      return;
+    }
+    if (sendingEmailKey) return;
+    if (client.reminders?.reminder24hSentAt) {
+      const confirmed = window.confirm('Reminder was already sent. Send again?');
+      if (!confirmed) return;
+    }
+    setSendingEmailKey(`reminder:${client.id}`);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/send-reminder`, {
+        method: 'POST',
+        body: JSON.stringify({ kind: '24h' }),
+      });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      setNotice(`Reminder sent to ${client.contactEmail}.`);
+      if (warnings.length) setError(warnings.join(' | '));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed sending reminder');
+    } finally {
+      setSendingEmailKey((current) => (current === `reminder:${client.id}` ? null : current));
+    }
+  }
+
   async function saveMeetingNotes(client: SalesClient, payload: { notes: string; meetingQuote?: MeetingQuoteState }) {
     setSavingNoteId(client.id);
     setError('');
@@ -858,6 +962,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     setSaving(true);
     setError('');
     try {
+      const existingClient = editingId ? clients.find((entry) => entry.id === editingId) : null;
       const payload = {
         product: form.product,
         businessName: form.businessName,
@@ -877,6 +982,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
           proffUrl: form.proffUrl,
           otherLinks: form.otherLinks,
           googleBusinessProfile: form.googleBusinessProfile,
+          editEmailBeforeSend: Boolean(existingClient?.details?.editEmailBeforeSend),
         },
       };
       const endpoint = editingId ? `/admin/sales/${editingId}` : '/admin/sales';
@@ -885,9 +991,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         method,
         body: JSON.stringify(payload),
       });
-      if (Array.isArray(data.warnings) && data.warnings.length) {
-        setError(data.warnings.join(' | '));
-      }
+      const warnings = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [];
+      const meetingUpdated = Boolean(editingId && data.meetingChanged && data.calendarInviteSent);
       const savedId = editingId;
       setShowForm(false);
       setEditingId(null);
@@ -899,7 +1004,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
           return next;
         });
       }
-      await loadSales();
+      await loadSales({ clearMessages: false });
+      setError(warnings.length ? warnings.join(' | ') : '');
+      setNotice(
+        meetingUpdated
+          ? 'Meeting updated. Google Calendar sends the updated invitation in the same calendar thread. No extra Asoldi welcome email was sent.'
+          : ''
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed saving sales client');
     } finally {
@@ -1194,15 +1305,38 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
           </div>
         </div>
 
-        <div className="mt-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
-          <span className={`text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
-            Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured ? 'Not connected' : 'Not configured'}
-          </span>
-          {calendarStatus?.configured && (
-            <button type="button" onClick={connectGoogleCalendar} className="px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
-              {calendarStatus.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
-            </button>
-          )}
+        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+            <div className="min-w-0">
+              <span className={`inline-flex text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
+                Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured ? 'Not connected' : 'Not configured'}
+              </span>
+              {calendarStatus?.connected && calendarStatus.googleEmail && (
+                <p className="mt-2 text-[11px] text-gray-300">
+                  Connected as <span className="text-white">{calendarStatus.googleEmail}</span>
+                  {calendarStatus.googleName ? ` (${calendarStatus.googleName})` : ''}. Meetings are created on that Google account.
+                </p>
+              )}
+              {calendarStatus?.connected && !calendarStatus.googleEmail && (
+                <p className="mt-2 text-[11px] text-amber-200">
+                  Calendar is connected, but we do not yet know which Google account. Click Reconnect and pick the salesperson’s Gmail in the Google window.
+                </p>
+              )}
+              <p className="mt-2 text-[11px] text-gray-400">
+                Connect uses the person who is logged in now
+                {calendarStatus?.loginUsername ? ` (${calendarStatus.loginUsername})` : ''}
+                , then whichever Google account they pick in the popup. Adding a Gmail as a Sales user or client does not connect that inbox by itself.
+                {calendarStatus?.loginRole === 'admin'
+                  ? ' You are logged in as admin — this connects your calendar, not Alexander’s. Alexander must log in at /sales as himself, then click Connect and choose his Gmail.'
+                  : ' Alexander should log in as the sales user, click Connect, and choose his Gmail in Google’s account picker.'}
+              </p>
+            </div>
+            {calendarStatus?.configured && (
+              <button type="button" onClick={connectGoogleCalendar} className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
+                {calendarStatus.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
@@ -1288,6 +1422,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const publicPreviewUrl = getPublicClientPreviewUrl(client);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const expanded = expandedId === client.id;
+            const editBeforeSend = clientEditsEmailBeforeSend(client);
+            const sendingWelcome = sendingEmailKey === `welcome:${client.id}`;
+            const sendingReminder = sendingEmailKey === `reminder:${client.id}`;
             const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
             const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
             const showNoMeetingDateHeading = Boolean(firstNoMeetingDateClientId) && client.id === firstNoMeetingDateClientId;
@@ -1442,22 +1579,34 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   )}
                   <button
                     type="button"
-                    onClick={() => navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=thank-you`)}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt}
+                    onClick={() => void sendWelcomeEmail(client)}
+                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingWelcome}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={!client.agreedTime || !client.meetingAt ? 'Set agreed meeting time first' : 'Edit the welcome email for this client, then send'}
+                    title={
+                      !client.agreedTime || !client.meetingAt
+                        ? 'Set agreed meeting time first'
+                        : editBeforeSend
+                          ? 'Open the welcome email editor for this client, then send'
+                          : 'Send the branded welcome email and Google Calendar invite now'
+                    }
                   >
-                    <MailPlus size={13} />
+                    {sendingWelcome ? <Loader2 size={13} className="animate-spin" /> : editBeforeSend ? <MailPlus size={13} /> : <Send size={13} />}
                     Send welcome email
                   </button>
                   <button
                     type="button"
-                    onClick={() => navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=reminder-24h`)}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt}
+                    onClick={() => void sendReminderEmail(client)}
+                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={!client.agreedTime || !client.meetingAt ? 'Set agreed meeting time first' : 'Edit the reminder email for this client, then send'}
+                    title={
+                      !client.agreedTime || !client.meetingAt
+                        ? 'Set agreed meeting time first'
+                        : editBeforeSend
+                          ? 'Open the reminder email editor for this client, then send'
+                          : 'Send the branded reminder email now'
+                    }
                   >
-                    <BellRing size={13} />
+                    {sendingReminder ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
                     Send reminder
                   </button>
                   {client.meetingMode === 'online' && client.calendar?.meetLink && (
@@ -1558,6 +1707,33 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
                 {expanded && (
                   <div className="space-y-4 border-t border-white/10 pt-3">
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm text-white font-medium">Edit email before send</div>
+                          <p className="text-[11px] text-gray-400 mt-1">
+                            Off by default. Send welcome email sends the branded template and the Google Calendar invite immediately.
+                            Turn this on only if you need to edit the template for this client first.
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={editBeforeSend}
+                          disabled={emailToggleBusyId === client.id}
+                          onClick={() => void toggleEditEmailBeforeSend(client)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
+                            editBeforeSend ? 'bg-[#FF5B00]' : 'bg-white/20'
+                          }`}
+                        >
+                          <span
+                            className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
+                              editBeforeSend ? 'translate-x-6' : 'translate-x-1'
+                            }`}
+                          />
+                        </button>
+                      </div>
+                    </div>
                     <div className="grid sm:grid-cols-2 gap-4 rounded-xl bg-black/20 border border-white/10 p-4">
                       <details open className="text-sm text-gray-200">
                         <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>

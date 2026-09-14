@@ -42,7 +42,7 @@ export const Admin = () => {
   const [siteName, setSiteName] = useState('');
   const [users, setUsers] = useState<AdminUser[]>([]);
   const [loading, setLoading] = useState(false);
-  const [userForm, setUserForm] = useState({ username: '', password: '' });
+  const [userForm, setUserForm] = useState({ username: '', password: '', name: '' });
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editPassword, setEditPassword] = useState('');
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
@@ -186,7 +186,7 @@ export const Admin = () => {
         alert(data.message || 'Failed to create user');
         return;
       }
-      setUserForm({ username: '', password: '' });
+      setUserForm({ username: '', password: '', name: '' });
       await fetchUsers();
     } finally {
       setLoading(false);
@@ -240,12 +240,13 @@ export const Admin = () => {
     }
   }
 
-  async function handleUpdateUser(id: string, newUsername?: string, newPassword?: string) {
+  async function handleUpdateUser(id: string, patch: { username?: string; password?: string; name?: string } = {}) {
     setLoading(true);
     try {
-      const body: { username?: string; password?: string } = {};
-      if (newUsername !== undefined) body.username = newUsername;
-      if (newPassword !== undefined && newPassword !== '') body.password = newPassword;
+      const body: { username?: string; password?: string; name?: string } = {};
+      if (patch.username !== undefined) body.username = patch.username;
+      if (patch.password !== undefined && patch.password !== '') body.password = patch.password;
+      if (patch.name !== undefined) body.name = patch.name;
       const res = await fetch(`${API}/admin/users/${id}`, {
         method: 'PUT',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },

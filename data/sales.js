@@ -239,6 +239,14 @@ function normalizeMeetingQuote(value = {}) {
   };
 }
 
+function parseSalesBoolean(value) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  const raw = sanitizeText(value).toLowerCase();
+  if (raw === 'true' || raw === '1' || raw === 'yes' || raw === 'on') return true;
+  return false;
+}
+
 function normalizeSalesDetails(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
   return {
@@ -249,6 +257,7 @@ function normalizeSalesDetails(value = {}) {
     googleBusinessProfile: sanitizeText(input.googleBusinessProfile),
     emailCustomNeed: sanitizeText(input.emailCustomNeed),
     meetingQuote: normalizeMeetingQuote(input.meetingQuote),
+    editEmailBeforeSend: parseSalesBoolean(input.editEmailBeforeSend),
   };
 }
 

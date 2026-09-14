@@ -7,15 +7,15 @@ type Props = {
   paymentRequests: ClientPaymentRequest[];
   handlingPaymentRequestId: string | null;
   loading: boolean;
-  userForm: { username: string; password: string };
+  userForm: { username: string; password: string; name: string };
   editingId: string | null;
   editPassword: string;
   userRoleSaving: string | null;
-  onUserFormChange: (next: { username: string; password: string }) => void;
+  onUserFormChange: (next: { username: string; password: string; name: string }) => void;
   onAddUser: (e: React.FormEvent) => void;
   onStartEdit: (id: string | null) => void;
   onEditPasswordChange: (value: string) => void;
-  onUpdateUser: (id: string, newUsername?: string, newPassword?: string) => void;
+  onUpdateUser: (id: string, patch: { username?: string; password?: string; name?: string }) => void;
   onDeleteUser: (id: string) => void;
   onRoleChange: (id: string, option: EmployeeRoleOption) => void;
   onMarkPaymentRequestHandled: (userId: string) => void;
@@ -109,6 +109,16 @@ export function UsersSection(props: Props) {
               className="px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white w-48"
             />
           </div>
+          <div>
+            <label className="block text-xs text-gray-400 mb-1">Name</label>
+            <input
+              type="text"
+              placeholder="Alexander"
+              value={userForm.name}
+              onChange={(e) => onUserFormChange({ ...userForm, name: e.target.value })}
+              className="px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white w-40"
+            />
+          </div>
           <button
             type="submit"
             disabled={loading || !userForm.username.trim() || !userForm.password}
@@ -124,6 +134,7 @@ export function UsersSection(props: Props) {
           <thead>
             <tr className="border-b border-white/10">
               <th className="px-4 py-3 text-gray-400 font-medium">Username</th>
+              <th className="px-4 py-3 text-gray-400 font-medium">Name</th>
               <th className="px-4 py-3 text-gray-400 font-medium">Role</th>
               <th className="px-4 py-3 text-gray-400 font-medium">Created</th>
               <th className="px-4 py-3 text-gray-400 font-medium w-48">Actions</th>
@@ -159,7 +170,7 @@ const EditableUserRow: React.FC<{
   userRoleSaving: boolean;
   onStartEdit: (id: string | null) => void;
   onEditPasswordChange: (value: string) => void;
-  onUpdateUser: (id: string, newUsername?: string, newPassword?: string) => void;
+  onUpdateUser: (id: string, patch: { username?: string; password?: string; name?: string }) => void;
   onDeleteUser: (id: string) => void;
   onRoleChange: (id: string, option: EmployeeRoleOption) => void;
 }> = function EditableUserRow({
@@ -174,6 +185,7 @@ const EditableUserRow: React.FC<{
   onRoleChange,
 }) {
   const [draftUsername, setDraftUsername] = useState(user.username);
+  const [draftName, setDraftName] = useState(user.name || '');
 
   return (
     <tr className="border-b border-white/5">
@@ -187,6 +199,19 @@ const EditableUserRow: React.FC<{
           />
         ) : (
           <span onClick={() => onStartEdit(user.id)} className="cursor-pointer hover:underline">{user.username}</span>
+        )}
+      </td>
+      <td className="px-4 py-3 text-white">
+        {editing ? (
+          <input
+            type="text"
+            value={draftName}
+            onChange={(e) => setDraftName(e.target.value)}
+            placeholder="Alexander"
+            className="px-2 py-1 rounded bg-[#1a1a1a] border border-white/20 text-white w-36"
+          />
+        ) : (
+          <span className="text-sm text-gray-200">{user.name || '—'}</span>
         )}
       </td>
       <td className="px-4 py-3">
@@ -216,10 +241,10 @@ const EditableUserRow: React.FC<{
                 onChange={(e) => onEditPasswordChange(e.target.value)}
                 className="px-2 py-1 rounded bg-[#1a1a1a] border border-white/20 text-white w-32 text-sm"
               />
-              <button type="button" onClick={() => onUpdateUser(user.id, draftUsername)} className="text-xs px-2 py-1 rounded bg-white/10 text-white">
-                Save name
+              <button type="button" onClick={() => onUpdateUser(user.id, { username: draftUsername, name: draftName })} className="text-xs px-2 py-1 rounded bg-white/10 text-white">
+                Save
               </button>
-              <button type="button" onClick={() => editPassword && onUpdateUser(user.id, undefined, editPassword)} className="text-xs px-2 py-1 rounded bg-[#FF5B00] text-white">
+              <button type="button" onClick={() => editPassword && onUpdateUser(user.id, { password: editPassword })} className="text-xs px-2 py-1 rounded bg-[#FF5B00] text-white">
                 Set password
               </button>
               <button type="button" onClick={() => onStartEdit(null)} className="text-gray-400 hover:text-white text-xs">Cancel</button>

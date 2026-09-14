@@ -1,5 +1,5 @@
 import express from 'express';
-import { createHmac, randomBytes } from 'crypto';
+import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -56,6 +56,12 @@ import {
   saveEmailDraft,
   saveEmailTemplate,
 } from './lib/email-templates-store.js';
+import { buildSalesSender, normalizeAsoldiFromEmail } from './lib/sales-sender.js';
+import {
+  authorizeFathomWebhook,
+  isFathomWebhookConfigured,
+  notifyFathomRecording,
+} from './lib/fathom-webhook.js';
 import { renderSalesEmailDocument } from './lib/sales-email-layout.js';
 import {
   DEVELOPMENT_KEYS,
@@ -110,6 +116,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 applyPersistentProductionEnv();
+console.log(`[mail] transport=${emailLib.resolveMailTransport()}`);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -150,6 +157,15 @@ async function ensureAdminExists() {
 // Stripe webhook needs the raw, unparsed body to verify the signature, so it is
 // registered before the global JSON body parser below.
 app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), handleStripeWebhook);
+app.post(
+  '/api/webhooks/fathom',
+  express.raw({ type: 'application/json', limit: '8mb' }),
+  handleFathomWebhook
+);
+app.get('/api/webhooks/fathom', (_req, res) => {
+  const configured = isFathomWebhookConfigured();
+  res.status(configured ? 200 : 503).json({ ok: configured, service: 'fathom' });
+});
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -7324,9 +7340,20 @@ function salesAuth(req, res, next) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
   if (payload.role === 'admin') {
-    req.salesUser = { accountKey: `admin:${payload.username || 'admin'}`, isAdmin: true, role: 'admin' };
+    req.salesUser = {
+      accountKey: `admin:${payload.username || 'admin'}`,
+      isAdmin: true,
+      role: 'admin',
+      username: payload.username || 'admin',
+    };
   } else {
-    req.salesUser = { accountKey: `sales:${payload.userId}`, isAdmin: false, role: 'sales', userId: payload.userId };
+    req.salesUser = {
+      accountKey: `sales:${payload.userId}`,
+      isAdmin: false,
+      role: 'sales',
+      userId: payload.userId,
+      username: payload.username || '',
+    };
   }
   next();
 }
@@ -7346,13 +7373,30 @@ function salesOrDevelopmentAuth(req, res, next) {
     return res.status(401).json({ message: 'Unauthorized' });
   }
   if (payload.role === 'admin') {
-    req.salesUser = { accountKey: `admin:${payload.username || 'admin'}`, isAdmin: true, role: 'admin' };
+    req.salesUser = {
+      accountKey: `admin:${payload.username || 'admin'}`,
+      isAdmin: true,
+      role: 'admin',
+      username: payload.username || 'admin',
+    };
     req.developmentUser = { role: 'admin', isAdmin: true, userId: payload.userId };
   } else if (payload.role === 'sales') {
-    req.salesUser = { accountKey: `sales:${payload.userId}`, isAdmin: false, role: 'sales', userId: payload.userId };
+    req.salesUser = {
+      accountKey: `sales:${payload.userId}`,
+      isAdmin: false,
+      role: 'sales',
+      userId: payload.userId,
+      username: payload.username || '',
+    };
   } else {
     req.developmentUser = { role: 'developer', isAdmin: false, userId: payload.userId };
-    req.salesUser = { accountKey: `developer:${payload.userId}`, isAdmin: false, role: 'developer', userId: payload.userId };
+    req.salesUser = {
+      accountKey: `developer:${payload.userId}`,
+      isAdmin: false,
+      role: 'developer',
+      userId: payload.userId,
+      username: payload.username || '',
+    };
   }
   next();
 }
@@ -7414,6 +7458,66 @@ async function ensureSharedCalendarTokens(accountKey = '') {
   const siblings = await resolveSiblingCalendarAccountKeys(key);
   if (siblings.length) shareGoogleCalendarToken(key, siblings);
   return getGoogleCalendarStatus(key);
+}
+
+function presentCalendarStatus(status = {}, salesUser = {}) {
+  return {
+    ...status,
+    loginRole: sanitizeText(salesUser.role),
+    loginUsername: sanitizeText(salesUser.username),
+    loginAccountKey: sanitizeText(salesUser.accountKey),
+  };
+}
+
+function salesUserFromAccountKey(accountKey = '') {
+  const key = sanitizeText(accountKey);
+  if (key.startsWith('admin:')) {
+    return {
+      accountKey: key,
+      role: 'admin',
+      isAdmin: true,
+      username: key.slice('admin:'.length),
+    };
+  }
+  if (key.startsWith('sales:')) {
+    return {
+      accountKey: key,
+      role: 'sales',
+      isAdmin: false,
+      userId: key.slice('sales:'.length),
+    };
+  }
+  return { accountKey: key, role: 'sales', isAdmin: false };
+}
+
+async function resolveSalesSenderForAccount(salesUser = {}) {
+  const accountKey = sanitizeText(salesUser.accountKey);
+  let profile = {};
+  if (salesUser.role === 'admin' || String(accountKey).startsWith('admin:')) {
+    const admin = await store.getAdmin();
+    profile = {
+      name: admin?.name || '',
+      fromEmail: admin?.fromEmail || '',
+      username: admin?.username || String(accountKey).slice('admin:'.length),
+    };
+  } else if (salesUser.userId) {
+    try {
+      const user = await store.getUserById(salesUser.userId);
+      profile = {
+        name: user?.name || '',
+        fromEmail: user?.fromEmail || '',
+        username: user?.username || '',
+      };
+    } catch {
+      profile = {};
+    }
+  }
+  const calendarStatus = getGoogleCalendarStatus(accountKey);
+  return buildSalesSender({
+    ...profile,
+    googleName: calendarStatus.googleName,
+    googleEmail: calendarStatus.googleEmail,
+  });
 }
 
 async function resolveCalendarFallbackAccountKeys(ownerId = '', actorAccountKey = '') {
@@ -7548,11 +7652,14 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
       const currentEventId = sanitizeText(previousClient?.calendar?.eventId || nextClient?.calendar?.eventId);
       let eventIdForUpsert = currentEventId;
       const hasRealMeet = isRealGoogleMeetLink(nextClient?.calendar?.meetLink);
-      // Fresh event when we must guarantee a real Meet link and the current one is missing/fake.
+      // Recreate only when an online event exists but has no real Meet link.
+      // Never delete just to notify — that cancels the invite and Gmail never
+      // shows a calendar card on the branded Resend mail.
       if (
         isOnline
         && currentEventId
-        && (notifyAttendees || (requireMeetLink && !hasRealMeet))
+        && requireMeetLink
+        && !hasRealMeet
       ) {
         try {
           await deleteMeetingEvent(currentEventId, deleteAccountKey);
@@ -7587,6 +7694,9 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
       calendarInviteSent = notifyAttendees;
+      console.log(
+        `[calendar] upsert id=${sanitizeText(nextClient?.id)} event=${sanitizeText(nextClient?.calendar?.eventId)} meet=${sanitizeText(nextClient?.calendar?.meetLink)} sendUpdates=${notifyAttendees ? 'all' : 'none'} notify=${notifyAttendees}`
+      );
       if (
         sanitizeText(nextClient?.ownerId) &&
         accountKey !== sanitizeText(nextClient.ownerId)
@@ -7694,15 +7804,17 @@ async function backfillMissingSalesCalendarEvents({
   };
 }
 
-async function sendSalesThankYou(client, { force = false, actorAccountKey = '' } = {}) {
+async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
 
+  const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
+  const calendarAlreadyExists = Boolean(sanitizeText(client?.calendar?.eventId));
   const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
   const syncResult = await maybeSyncCalendar(client, client, {
-    notifyAttendees: true,
+    notifyAttendees: !alreadySent || !calendarAlreadyExists,
     requireMeetLink: isOnline,
     actorAccountKey,
   });
@@ -7711,8 +7823,20 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '' }
     return { sent: false, reason: 'missing-meet-link', client, warnings: syncResult.warnings || [] };
   }
 
-  const composed = composeEmailForClient(client, 'thank-you').message;
+  const sender = await resolveSalesSenderForAccount(
+    salesUser || salesUserFromAccountKey(actorAccountKey || client?.ownerId || client?.calendar?.accountKey)
+  );
+  const calendarConnected = getGoogleCalendarStatus(actorAccountKey || client?.calendar?.accountKey).connected
+    && Boolean(sanitizeText(client?.calendar?.eventId));
+  const composed = composeEmailForClient(client, 'thank-you', null, {
+    sender,
+    attachInvite: !calendarConnected,
+  }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
+  const hostedCount = (String(composed.html || '').match(/\/email\/sales\//g) || []).length;
+  console.log(
+    `[mail] thank-you to=${client.contactEmail} from=${composed.from} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} notify=${!alreadySent || !calendarAlreadyExists}`
+  );
   await emailLib.sendEmail({
     to: client.contactEmail,
     from: composed.from,
@@ -7722,6 +7846,7 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '' }
     text: composed.text,
     html: composed.html,
     attachments: composed.attachments,
+    icalEvent: composed.icalEvent,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
   return {
@@ -7729,17 +7854,26 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '' }
     client: updated || client,
     channel: 'email',
     meetLink,
+    from: composed.from,
     copyTo: salesEmailCopyBcc(client.contactEmail),
     warnings: syncResult.warnings || [],
   };
 }
 
-async function sendSalesReminderNow(client, kind = '24h') {
+async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, actorAccountKey = '' } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   const reminderKind = kind === '1h' ? '1h' : '24h';
-  const composed = composeEmailForClient(client, reminderKind === '1h' ? 'reminder-1h' : 'reminder-24h').message;
+  const sender = await resolveSalesSenderForAccount(
+    salesUser || salesUserFromAccountKey(actorAccountKey || client?.ownerId || client?.calendar?.accountKey)
+  );
+  const calendarConnected = getGoogleCalendarStatus(actorAccountKey || client?.calendar?.accountKey).connected
+    && Boolean(sanitizeText(client?.calendar?.eventId));
+  const composed = composeEmailForClient(client, reminderKind === '1h' ? 'reminder-1h' : 'reminder-24h', null, {
+    sender,
+    attachInvite: !calendarConnected,
+  }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
     to: client.contactEmail,
@@ -7750,6 +7884,7 @@ async function sendSalesReminderNow(client, kind = '24h') {
     text: composed.text,
     html: composed.html,
     attachments: composed.attachments,
+    icalEvent: composed.icalEvent,
   });
   const updated = sales.markSalesReminderSent(client.id, reminderKind);
   return {
@@ -7782,7 +7917,7 @@ function salesEmailFailureMessage(reason = '') {
   if (reason === 'meeting-not-scheduled') return 'Meeting date/time must be set before sending this email.';
   if (reason === 'missing-email') return 'Client contact email is missing.';
   if (reason === 'smtp-not-configured') {
-    return 'SMTP is not configured on the server (set SMTP_HOST, SMTP_USER, SMTP_PASS).';
+    return 'Email sending is not configured. Set RESEND_API_KEY on the server.';
   }
   if (reason === 'already-sent') return 'Email was already sent.';
   if (reason === 'missing-meet-link') {
@@ -7802,7 +7937,15 @@ function formatSmtpSendError(error) {
     ).trim();
   }
   if (lower.includes('disabled by user from hpanel')) {
-    return 'SMTP sending is disabled in Hostinger hPanel for this mailbox. Enable outgoing email, then retry.';
+    return (
+      'Hostinger disabled mailbox SMTP again. That mailbox is only for human mail in Roundcube/Outlook. '
+      + 'App mail (welcome, reminders, password reset) must go through Resend, not smtp.hostinger.com. '
+      + 'Add RESEND_API_KEY after verifying asoldi.com in Resend. '
+      + (raw ? `Details: ${raw}` : '')
+    ).trim();
+  }
+  if (lower.includes('resend')) {
+    return raw || 'Resend could not send this email.';
   }
   return raw || 'Failed sending welcome email.';
 }
@@ -7824,11 +7967,11 @@ async function sendDueSalesReminders() {
       const reminder1hAt = client.reminders?.reminder1hAt ? new Date(client.reminders.reminder1hAt).getTime() : 0;
 
       if (reminder24hAt && nowMs >= reminder24hAt && !client.reminders?.reminder24hSentAt) {
-        await sendSalesReminderNow(client, '24h');
+        await sendSalesReminderNow(client, '24h', { actorAccountKey: client.ownerId });
       }
 
       if (reminder1hAt && nowMs >= reminder1hAt && !client.reminders?.reminder1hSentAt) {
-        await sendSalesReminderNow(client, '1h');
+        await sendSalesReminderNow(client, '1h', { actorAccountKey: client.ownerId });
       }
     }
   } catch (error) {
@@ -7911,11 +8054,17 @@ app.post('/api/admin/client-payment-requests/:userId/mark-handled', adminAuth, a
 });
 
 app.post('/api/admin/users', adminAuth, async (req, res) => {
-  const { username, password, role } = req.body || {};
+  const { username, password, role, name, fromEmail } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password required' });
   }
-  const result = await store.createUser(username, password, role || 'none');
+  if (fromEmail && !normalizeAsoldiFromEmail(fromEmail)) {
+    return res.status(400).json({ message: 'Send-from must be an @asoldi.com address, for example alexander@asoldi.com.' });
+  }
+  const result = await store.createUser(username, password, role || 'none', {
+    name,
+    fromEmail: normalizeAsoldiFromEmail(fromEmail),
+  });
   if (!result.ok) {
     return res.status(400).json({ message: result.error });
   }
@@ -7924,9 +8073,19 @@ app.post('/api/admin/users', adminAuth, async (req, res) => {
 
 app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params;
-  const { username, password, role, employeeProduct } = req.body || {};
+  const { username, password, role, employeeProduct, name, fromEmail } = req.body || {};
   if (username !== undefined) {
     const result = await store.updateUserUsername(id, username);
+    if (!result.ok) return res.status(400).json({ message: result.error });
+  }
+  if (name !== undefined || fromEmail !== undefined) {
+    if (fromEmail && !normalizeAsoldiFromEmail(fromEmail)) {
+      return res.status(400).json({ message: 'Send-from must be an @asoldi.com address, for example alexander@asoldi.com.' });
+    }
+    const result = await store.updateUserProfile(id, {
+      name,
+      fromEmail: fromEmail === undefined ? undefined : normalizeAsoldiFromEmail(fromEmail),
+    });
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
   if (password !== undefined && password !== '') {
@@ -9486,6 +9645,39 @@ app.post('/api/client/checkout/request-faktura', clientAuth, async (req, res) =>
   return res.json({ ok: true });
 });
 
+async function handleFathomWebhook(req, res) {
+  const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '');
+  const auth = authorizeFathomWebhook({
+    headers: req.headers,
+    query: req.query,
+    rawBody,
+  });
+  if (!auth.ok) {
+    const message = auth.reason === 'not-configured'
+      ? 'Fathom webhook is not configured.'
+      : 'Unauthorized';
+    return res.status(auth.status).json({ ok: false, message });
+  }
+
+  let payload = {};
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return res.status(400).json({ ok: false, message: 'Invalid JSON' });
+  }
+
+  try {
+    const result = await notifyFathomRecording(payload);
+    console.log(
+      `[fathom] webhook via=${auth.via} sent=${result.sent} reason=${result.reason || ''} id=${result.recordingId || ''} to=${result.to || ''}`
+    );
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[fathom] webhook failed', sanitizeText(error?.message) || error);
+    return res.status(500).json({ ok: false, message: 'Failed to email Fathom recording.' });
+  }
+}
+
 // Verifies the Stripe webhook signature and reconciles subscription state onto
 // the client's profile. Registered with a raw body parser before express.json().
 async function handleStripeWebhook(req, res) {
@@ -9990,7 +10182,7 @@ async function resolveImportedSiteRoot(importDir, preferredSiteFolder) {
 app.get('/api/admin/sales/google/status', salesAuth, async (req, res) => {
   try {
     const status = await ensureSharedCalendarTokens(req.salesUser.accountKey);
-    res.json(status);
+    res.json(presentCalendarStatus(status, req.salesUser));
   } catch (error) {
     res.status(500).json({ message: error.message || 'Failed to read Google Calendar status.' });
   }
@@ -10015,8 +10207,14 @@ app.get('/api/admin/sales/google/oauth/callback', async (req, res) => {
   }
   try {
     const siblings = await resolveSiblingCalendarAccountKeys(accountKey);
-    await exchangeGoogleCalendarCode(code, accountKey, siblings);
-    return res.send('<html><body><h3>Google Calendar connected.</h3><script>window.close()</script></body></html>');
+    const status = await exchangeGoogleCalendarCode(code, accountKey, siblings);
+    const connectedAs = sanitizeText(status?.googleEmail);
+    const heading = connectedAs
+      ? `Google Calendar connected as ${connectedAs}.`
+      : 'Google Calendar connected.';
+    return res.send(
+      `<html><body><h3>${heading.replace(/[<>&]/g, '')}</h3><p>You can close this window.</p><script>window.close()</script></body></html>`
+    );
   } catch (error) {
     return res.status(500).send(`<h2>Google Calendar connection failed:</h2><pre>${String(error.message || error)}</pre>`);
   }
@@ -10308,10 +10506,15 @@ app.get('/api/admin/sales', salesAuth, async (req, res) => {
     productFilter === 'asoldi' || productFilter === 'ssu'
       ? owned.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
       : owned;
-  const calendar = await ensureSharedCalendarTokens(req.salesUser.accountKey);
+  const calendar = presentCalendarStatus(
+    await ensureSharedCalendarTokens(req.salesUser.accountKey),
+    req.salesUser
+  );
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
   res.json({
     clients,
     calendar,
+    sender,
     products: {
       asoldi: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'asoldi').length,
       ssu: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'ssu').length,
@@ -10744,7 +10947,11 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
-      ? await sendSalesThankYou(client, { force: false, actorAccountKey: req.salesUser.accountKey })
+      ? await sendSalesThankYou(client, {
+        force: false,
+        actorAccountKey: req.salesUser.accountKey,
+        salesUser: req.salesUser,
+      })
       : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
 
@@ -10776,15 +10983,16 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
       existing.contactEmail !== client.contactEmail;
 
     const syncResult = await maybeSyncCalendar(client, existing, {
-      notifyAttendees: false,
+      notifyAttendees: meetingChanged,
       actorAccountKey: req.salesUser.accountKey,
     });
     client = syncResult.client || client;
 
     const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
       ? await sendSalesThankYou(client, {
-        force: meetingChanged,
+        force: false,
         actorAccountKey: req.salesUser.accountKey,
+        salesUser: req.salesUser,
       })
       : { sent: false, reason: 'manual-only', client };
     if (thankYou?.client) client = thankYou.client;
@@ -10793,6 +11001,8 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
       client,
       warnings: syncResult.warnings || [],
       thankYouSent: Boolean(thankYou?.sent),
+      calendarInviteSent: Boolean(syncResult.calendarInviteSent),
+      meetingChanged,
       autoEmailEnabled: SALES_EMAIL_AUTOSEND_ENABLED,
     });
   } catch (error) {
@@ -10849,6 +11059,22 @@ app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
     return res.status(400).json({ message: 'Notes are required.' });
   }
   const updated = sales.setSalesNotes(req.params.id, req.body?.notes, req.body?.meetingQuote);
+  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client: updated });
+});
+
+app.patch('/api/admin/sales/:id/details', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'editEmailBeforeSend')) {
+    return res.status(400).json({ message: 'editEmailBeforeSend is required.' });
+  }
+  const updated = sales.updateSalesClient(req.params.id, {
+    details: {
+      editEmailBeforeSend: parseBoolean(req.body?.editEmailBeforeSend, false),
+    },
+  });
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
 });
@@ -10948,12 +11174,13 @@ app.post('/api/admin/email-drafts', salesAuth, (req, res) => {
   });
 });
 
-app.get('/api/admin/sales/:id/compose-email', salesAuth, (req, res) => {
+app.get('/api/admin/sales/:id/compose-email', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   const templateKey = sanitizeText(req.query?.template) || 'thank-you';
-  const composed = composeEmailForClient(client, templateKey);
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const composed = composeEmailForClient(client, templateKey, null, { sender });
   res.json({
     client: {
       id: client.id,
@@ -10965,6 +11192,7 @@ app.get('/api/admin/sales/:id/compose-email', salesAuth, (req, res) => {
     template: composed.template,
     merged: composed.merged,
     mergeFields: composed.mergeFields,
+    sender,
   });
 });
 
@@ -10978,20 +11206,28 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
     }
     const templateKey = sanitizeText(req.body?.templateKey || req.body?.markAs) || 'thank-you';
     const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+    let calendarWarnings = [];
     if (templateKey === 'thank-you' || templateKey === 'welcome') {
       const syncResult = await maybeSyncCalendar(client, client, {
-        notifyAttendees: true,
+        notifyAttendees: !client?.reminders?.thankYouSentAt,
         requireMeetLink: isOnline,
         actorAccountKey: req.salesUser.accountKey,
       });
       client = syncResult.client || client;
+      calendarWarnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
     }
     const to = sanitizeText(req.body?.to) || client.contactEmail;
     if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
+    const sender = await resolveSalesSenderForAccount(req.salesUser);
+    const calendarConnected = getGoogleCalendarStatus(req.salesUser.accountKey).connected
+      && Boolean(sanitizeText(client?.calendar?.eventId));
     const composed = composeEmailForClient(client, templateKey, {
       html: req.body?.html,
       subject: req.body?.subject,
       preheader: req.body?.preheader,
+    }, {
+      sender,
+      attachInvite: !calendarConnected,
     }).message;
     await emailLib.sendEmail({
       to,
@@ -11002,6 +11238,7 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
       text: composed.text || htmlToPlainText(composed.html),
       html: composed.html,
       attachments: composed.attachments,
+      icalEvent: composed.icalEvent,
     });
     const markAs = sanitizeText(req.body?.markAs) || templateKey;
     const reminderKey = markAs === 'reminder-1h' || markAs === '1h'
@@ -11016,6 +11253,8 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
       meetLink: client?.calendar?.meetLink || '',
       copyTo: salesEmailCopyBcc(to),
       client: updated || client,
+      warnings: calendarWarnings,
+      calendarInvite: Boolean(client?.calendar?.eventId),
     });
   } catch (error) {
     return res.status(500).json({ message: formatSmtpSendError(error) });
@@ -11027,25 +11266,21 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     let client = sales.getSalesClientById(req.params.id);
     if (!client) return res.status(404).json({ message: 'Sales client not found.' });
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+    console.log(`[mail] welcome request id=${client.id} to=${client.contactEmail || ''} transport=${emailLib.resolveMailTransport()}`);
 
-    // Create/sync a real Google Meet link before sending online welcome mail.
-    const syncResult = await maybeSyncCalendar(client, client, {
-      notifyAttendees: false,
-      requireMeetLink: normalizeMeetingMode(client?.meetingMode) === 'online',
-      actorAccountKey: req.salesUser.accountKey,
-    });
-    client = syncResult.client || client;
     const sentResult = await sendSalesThankYou(client, {
       force: true,
       actorAccountKey: req.salesUser.accountKey,
+      salesUser: req.salesUser,
     });
     client = sentResult.client || client;
     if (!sentResult.sent) {
+      console.warn(`[mail] welcome not sent reason=${sentResult.reason || ''} id=${client.id}`);
       return res.status(400).json({
         message: salesEmailFailureMessage(sentResult.reason),
         reason: sentResult.reason || '',
         client,
-        warnings: syncResult.warnings || [],
+        warnings: sentResult.warnings || [],
       });
     }
     return res.json({
@@ -11054,10 +11289,13 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
       channel: sentResult.channel || 'email',
       meetLink: sentResult.meetLink || client?.calendar?.meetLink || '',
       copyTo: sentResult.copyTo || '',
+      from: sentResult.from || '',
       client,
-      warnings: syncResult.warnings || [],
+      warnings: sentResult.warnings || [],
+      calendarInvite: Boolean(client?.calendar?.eventId),
     });
   } catch (error) {
+    console.error('[mail] welcome failed', sanitizeText(error?.message) || error);
     return res.status(500).json({ message: formatSmtpSendError(error) });
   }
 });
@@ -11071,7 +11309,10 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
     const requestedKind = sanitizeText(req.body?.kind || '24h');
     const reminderKind = requestedKind === '1h' ? '1h' : '24h';
     const syncWarnings = [];
-    const sentResult = await sendSalesReminderNow(client, reminderKind);
+    const sentResult = await sendSalesReminderNow(client, reminderKind, {
+      salesUser: req.salesUser,
+      actorAccountKey: req.salesUser.accountKey,
+    });
     client = sentResult.client || client;
     if (!sentResult.sent) {
       return res.status(400).json({

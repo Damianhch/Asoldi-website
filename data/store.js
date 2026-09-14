@@ -111,6 +111,8 @@ export function toPublicUser(u) {
     username: u.username,
     createdAt: u.createdAt,
     role,
+    name: String(u.name || '').trim(),
+    fromEmail: String(u.fromEmail || '').trim().toLowerCase(),
   };
   if (role === 'employee') {
     publicUser.employeeProduct = normalizeEmployeeProduct(u);
@@ -118,16 +120,48 @@ export function toPublicUser(u) {
   return publicUser;
 }
 
-export async function createUser(username, password, role = DEFAULT_ROLE) {
+export async function createUser(username, password, role = DEFAULT_ROLE, extra = {}) {
   const users = readUsers();
   const existing = await getUserByUsername(username);
   if (existing) return { ok: false, error: 'Username already exists' };
   const id = String(Date.now());
   const passwordHash = await hashPassword(password);
   const userRole = normalizeRole(role);
-  users.push({ id, username, passwordHash, createdAt: new Date().toISOString(), role: userRole });
+  const name = String(extra.name || '').trim();
+  const fromEmail = String(extra.fromEmail || '').trim().toLowerCase();
+  users.push({
+    id,
+    username,
+    passwordHash,
+    createdAt: new Date().toISOString(),
+    role: userRole,
+    ...(name ? { name } : {}),
+    ...(fromEmail ? { fromEmail } : {}),
+  });
   writeUsers(users);
-  return { ok: true, user: { id, username, createdAt: users[users.length - 1].createdAt, role: userRole } };
+  return { ok: true, user: toPublicUser(users[users.length - 1]) };
+}
+
+export async function updateUserProfile(id, patch = {}) {
+  const users = readUsers();
+  const i = users.findIndex((u) => u.id === id);
+  if (i === -1) return { ok: false, error: 'User not found' };
+  if (patch.name !== undefined) users[i].name = String(patch.name || '').trim();
+  if (patch.fromEmail !== undefined) users[i].fromEmail = String(patch.fromEmail || '').trim().toLowerCase();
+  writeUsers(users);
+  return { ok: true, user: toPublicUser(users[i]) };
+}
+
+export async function updateAdminSender(patch = {}) {
+  const admin = readAdmin() || {};
+  if (patch.name !== undefined) admin.name = String(patch.name || '').trim();
+  if (patch.fromEmail !== undefined) admin.fromEmail = String(patch.fromEmail || '').trim().toLowerCase();
+  writeAdmin(admin);
+  return {
+    name: String(admin.name || '').trim(),
+    fromEmail: String(admin.fromEmail || '').trim().toLowerCase(),
+    username: String(admin.username || '').trim(),
+  };
 }
 
 export async function updateUserPassword(id, newPassword) {

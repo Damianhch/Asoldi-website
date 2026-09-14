@@ -68,6 +68,8 @@ export type AdminUser = {
   createdAt: string;
   role: UserRole;
   employeeProduct?: EmployeeProduct;
+  name?: string;
+  fromEmail?: string;
 };
 
 export type ClientPaymentRequest = {
@@ -185,6 +187,14 @@ export type SalesReminders = {
   skipDueToShortNotice: boolean;
 };
 
+export type SalesSender = {
+  name: string;
+  fullName: string;
+  fromEmail: string;
+  from: string;
+  replyTo: string;
+};
+
 export type SalesCalendarMeta = {
   eventId: string;
   htmlLink: string;
@@ -234,6 +244,7 @@ export type SalesClientDetails = {
   otherLinks: string;
   googleBusinessProfile: string;
   emailCustomNeed: string;
+  editEmailBeforeSend?: boolean;
   meetingQuote?: {
     tierId: string;
     customMode: boolean;
