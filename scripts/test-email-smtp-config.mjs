@@ -123,4 +123,5 @@ test('Resend payload attaches only the calendar invite when no extra files are p
   assert.equal(attachments.length, 1);
   assert.equal(attachments[0].filename, 'asoldi-online-mote.ics');
   assert.match(attachments[0].content_type, /text\/calendar/);
+  assert.equal(attachments[0].content_disposition, 'attachment');
 });

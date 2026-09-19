@@ -159,13 +159,14 @@ export type ManageClientsView = 'clients' | 'development' | 'sales';
 
 export type SalesGoalKey = 'meetingHeld' | 'offerSent' | 'contractSigned' | 'paymentReceived';
 
-export type SalesNextActionPreset = 'meeting' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
+export type SalesNextActionPreset = 'meeting' | 'findMeetingTime' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
 
 export type SalesNextAction = {
   id: string;
   goalKey: SalesGoalKey;
   presetKey: SalesNextActionPreset;
   name: string;
+  note: string;
   dueAt: string;
   doneAt: string;
   createdAt: string;
@@ -328,6 +329,7 @@ export type SalesClient = {
   details: SalesClientDetails;
   myphoner: SalesMyphonerMeta;
   progression: SalesProgression;
+  salesMigrations?: { meetingHeldOrphansV1?: boolean };
   nextActions: SalesNextAction[];
   development?: SalesDevelopment;
   reminders: SalesReminders;

@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, CheckCircle2, FastForward, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { CalendarDays, CheckCircle2, ChevronsDown, ChevronsUp, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { SalesClient, SalesGoalKey, SalesNextAction, SalesNextActionPreset } from '../shared';
 import {
   formatGoalLabel,
   formatPresetLabel,
   getCurrentGoalKey,
+  getFutureGoalKeys,
   getGoalActions,
   getRemainingGoalCount,
+  getSalesGoalKeys,
   getVisibleGoalKeys,
   GOAL_PRESETS,
   defaultAddToCalendar,
@@ -17,6 +19,7 @@ import {
 type DraftState = {
   presetKey: SalesNextActionPreset;
   name: string;
+  note: string;
   dueAt: string;
   addToCalendar: boolean;
 };
@@ -24,6 +27,7 @@ type DraftState = {
 type EditState = {
   actionId: string;
   name: string;
+  note: string;
   dueAt: string;
   addToCalendar: boolean;
 };
@@ -71,16 +75,20 @@ export function SalesGoalTimeline({
 }: Props) {
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
+  const [showFutureGoals, setShowFutureGoals] = useState(false);
   const currentGoal = getCurrentGoalKey(client) as SalesGoalKey | '';
-  const visibleGoals = getVisibleGoalKeys(client) as SalesGoalKey[];
   const remainingCount = getRemainingGoalCount(client);
+  const visibleGoals = (showFutureGoals
+    ? getSalesGoalKeys(client.product)
+    : getVisibleGoalKeys(client)) as SalesGoalKey[];
+  const futureGoalSet = new Set(getFutureGoalKeys(client) as SalesGoalKey[]);
   const currentActions = useMemo(
     () => (currentGoal ? getGoalActions(client, currentGoal) : []),
     [client, currentGoal]
   );
+  const currentAction = currentActions[0] as SalesNextAction | undefined;
   const presets = currentGoal ? (GOAL_PRESETS[currentGoal] || []) : [];
   const hasMeeting = Boolean(client.agreedTime && client.meetingAt);
-  const canFastTrack = Boolean(currentGoal && currentGoal !== 'contractSigned' && currentGoal !== 'paymentReceived');
 
   function startPreset(presetKey: SalesNextActionPreset) {
     if (presetNeedsMeeting(presetKey) && !hasMeeting) return;
@@ -89,6 +97,7 @@ export function SalesGoalTimeline({
     setDraft({
       presetKey,
       name: formatPresetLabel(presetKey) === 'Custom' ? '' : formatPresetLabel(presetKey),
+      note: '',
       dueAt: toDateTimeLocal(suggested),
       addToCalendar: defaultAddToCalendar(presetKey, client),
     });
@@ -101,6 +110,7 @@ export function SalesGoalTimeline({
       goalKey: currentGoal,
       presetKey: draft.presetKey,
       name: draft.name,
+      note: draft.note,
       dueAt: toIsoDateTime(draft.dueAt),
       addToCalendar: draft.addToCalendar,
     });
@@ -113,6 +123,7 @@ export function SalesGoalTimeline({
       op: 'update',
       id: edit.actionId,
       name: edit.name,
+      note: edit.note,
       dueAt: toIsoDateTime(edit.dueAt),
       addToCalendar: edit.addToCalendar,
     });
@@ -125,17 +136,24 @@ export function SalesGoalTimeline({
         {visibleGoals.map((key) => {
           const done = Boolean(client.progression?.[key]);
           const busy = progressBusyKey === `${client.id}:${key}`;
+          const isFuture = futureGoalSet.has(key);
           return (
             <button
               key={key}
               type="button"
-              disabled={busy}
+              disabled={busy || isFuture}
               onClick={() => onToggleGoal(key)}
-              title={done ? 'Klikk for å angre dette målet' : 'Marker dette målet som ferdig og vis neste'}
-              className={`px-2 py-1 rounded-md text-[11px] border transition-colors hover:border-[#FF5B00]/40 disabled:opacity-60 ${
+              title={
+                isFuture
+                  ? 'Fullfør nåværende mål først'
+                  : done
+                    ? 'Klikk for å angre dette målet'
+                    : 'Marker dette målet som ferdig. Neste mål vises automatisk.'
+              }
+              className={`px-2 py-1 rounded-md text-[11px] border transition-colors disabled:opacity-60 ${
                 done
-                  ? 'bg-green-900/40 border-green-600/40 text-green-300'
-                  : 'bg-black/20 border-[#FF5B00]/40 text-[#ffb087]'
+                  ? 'bg-green-900/40 border-green-600/40 text-green-300 hover:border-green-500/50'
+                  : 'bg-black/20 border-white/10 text-gray-300 hover:border-white/20'
               }`}
             >
               {busy ? <Loader2 size={11} className="inline mr-1 animate-spin" /> : done ? <CheckCircle2 size={11} className="inline mr-1" /> : null}
@@ -144,20 +162,14 @@ export function SalesGoalTimeline({
           );
         })}
         {remainingCount > 0 && (
-          <span className="px-2 py-1 rounded-md text-[11px] border border-white/10 bg-black/20 text-gray-500">
-            +{remainingCount} igjen
-          </span>
-        )}
-        {canFastTrack && (
           <button
             type="button"
-            disabled={Boolean(progressBusyKey)}
-            onClick={() => onToggleGoal('contractSigned', { fastTrack: true })}
-            title="Kunden går rett til kontrakt. Hopper over gjenstående mål."
-            className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-black/20 text-gray-300 hover:border-[#FF5B00]/40 disabled:opacity-60"
+            onClick={() => setShowFutureGoals((prev) => !prev)}
+            className="inline-flex items-center justify-center p-1 text-gray-400 hover:text-gray-200"
+            title={showFutureGoals ? 'Skjul senere mål' : `Vis ${remainingCount} senere mål`}
+            aria-label={showFutureGoals ? 'Skjul senere mål' : `Vis ${remainingCount} senere mål`}
           >
-            <FastForward size={11} />
-            Hopp til kontrakt
+            {showFutureGoals ? <ChevronsUp size={16} /> : <ChevronsDown size={16} />}
           </button>
         )}
       </div>
@@ -166,135 +178,125 @@ export function SalesGoalTimeline({
         <div className="rounded-xl border border-white/10 bg-black/20 p-2.5 space-y-2">
           <div className="text-[11px] text-gray-400">
             Neste handling i <span className="text-gray-200">{formatGoalLabel(currentGoal)}</span>
+            {currentAction ? <span className="text-gray-500"> · ny handling erstatter den forrige</span> : null}
           </div>
 
-          {currentActions.length > 0 && (
-            <div className="space-y-1.5">
-              {currentActions.map((action: SalesNextAction) => {
-                const editing = edit?.actionId === action.id;
-                return (
-                  <div
-                    key={action.id}
-                    className={`rounded-lg border px-2 py-1.5 ${
-                      action.doneAt ? 'border-white/5 bg-black/10 opacity-60' : 'border-white/10 bg-black/30'
-                    }`}
-                  >
-                    {editing ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                        <label className="text-[10px] text-gray-400 uppercase tracking-wide">
-                          Navn
-                          <input
-                            value={edit.name}
-                            onChange={(event) => setEdit((prev) => prev ? { ...prev, name: event.target.value } : prev)}
-                            className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
-                          />
-                        </label>
-                        <label className="text-[10px] text-gray-400 uppercase tracking-wide">
-                          Tid for neste handling
-                          <input
-                            type="datetime-local"
-                            value={edit.dueAt}
-                            onChange={(event) => setEdit((prev) => prev ? { ...prev, dueAt: event.target.value } : prev)}
-                            className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
-                          />
-                        </label>
-                        <label className="sm:col-span-2 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
-                          <span className="text-[11px] text-gray-200">Legg til i Google Kalender</span>
-                          <button
-                            type="button"
-                            role="switch"
-                            aria-checked={edit.addToCalendar}
-                            disabled={currentActions.find((entry) => entry.id === action.id)?.presetKey === 'meeting'}
-                            onClick={() => setEdit((prev) => prev ? { ...prev, addToCalendar: !prev.addToCalendar } : prev)}
-                            className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-70 ${
-                              edit.addToCalendar ? 'bg-[#FF5B00]' : 'bg-white/20'
-                            }`}
-                          >
-                            <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${edit.addToCalendar ? 'translate-x-4.5 ml-4' : 'ml-1'}`} />
-                          </button>
-                        </label>
-                        <div className="sm:col-span-2 flex gap-2">
-                          <button
-                            type="button"
-                            disabled={actionBusy || !edit.name.trim() || !edit.dueAt}
-                            onClick={() => void saveEdit()}
-                            className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-[11px] disabled:opacity-50"
-                          >
-                            Lagre
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEdit(null)}
-                            className="px-2 py-1 rounded-md bg-white/10 text-gray-200 text-[11px]"
-                          >
-                            Avbryt
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2 min-w-0">
-                        <button
-                          type="button"
-                          disabled={actionBusy}
-                          onClick={() => void onMutateAction({
-                            op: 'complete',
-                            id: action.id,
-                            done: !action.doneAt,
-                          })}
-                          title={action.doneAt ? 'Merk som ikke gjort' : 'Merk handlingen som gjort'}
-                          className="shrink-0 text-gray-400 hover:text-green-300"
-                        >
-                          <CheckCircle2 size={14} className={action.doneAt ? 'text-green-400' : ''} />
-                        </button>
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs text-white truncate">{action.name}</div>
-                          <div className="text-[11px] text-gray-400 truncate">{formatWhen(action.dueAt)}</div>
-                        </div>
-                        {action.addToCalendar ? (
-                          <span title="I Google Kalender" className="shrink-0 text-[#FF5B00]">
-                            <CalendarDays size={12} />
-                          </span>
-                        ) : null}
-                        <button
-                          type="button"
-                          onClick={() => setEdit({
-                            actionId: action.id,
-                            name: action.name,
-                            dueAt: toDateTimeLocal(action.dueAt),
-                            addToCalendar: Boolean(action.addToCalendar) || action.presetKey === 'meeting',
-                          })}
-                          className="shrink-0 p-1 rounded text-gray-400 hover:text-white"
-                          title="Endre navn eller tid"
-                        >
-                          <Pencil size={12} />
-                        </button>
-                        {action.presetKey !== 'meeting' && (
-                          <button
-                            type="button"
-                            disabled={actionBusy}
-                            onClick={() => void onMutateAction({ op: 'delete', id: action.id })}
-                            className="shrink-0 p-1 rounded text-gray-500 hover:text-red-300"
-                            title="Fjern handling"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        )}
-                      </div>
-                    )}
+          {currentAction ? (
+            <div className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5">
+              {edit?.actionId === currentAction.id ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <label className="text-[10px] text-gray-400 uppercase tracking-wide">
+                    Navn
+                    <input
+                      value={edit.name}
+                      onChange={(event) => setEdit((prev) => prev ? { ...prev, name: event.target.value } : prev)}
+                      className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
+                    />
+                  </label>
+                  <label className="text-[10px] text-gray-400 uppercase tracking-wide">
+                    Tid for neste handling
+                    <input
+                      type="datetime-local"
+                      value={edit.dueAt}
+                      onChange={(event) => setEdit((prev) => prev ? { ...prev, dueAt: event.target.value } : prev)}
+                      className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
+                    />
+                  </label>
+                  <label className="sm:col-span-2 text-[10px] text-gray-400 uppercase tracking-wide">
+                    Notat til handlingen
+                    <textarea
+                      value={edit.note}
+                      onChange={(event) => setEdit((prev) => prev ? { ...prev, note: event.target.value } : prev)}
+                      rows={2}
+                      placeholder="F.eks. ringer etter lunsj, vil ha pris på 5 sider"
+                      className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5 resize-y"
+                    />
+                  </label>
+                  <label className="sm:col-span-2 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
+                    <span className="text-[11px] text-gray-200">Legg til i Google Kalender</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={edit.addToCalendar}
+                      disabled={currentAction.presetKey === 'meeting'}
+                      onClick={() => setEdit((prev) => prev ? { ...prev, addToCalendar: !prev.addToCalendar } : prev)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-70 ${
+                        edit.addToCalendar ? 'bg-[#FF5B00]' : 'bg-white/20'
+                      }`}
+                    >
+                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${edit.addToCalendar ? 'translate-x-4.5 ml-4' : 'ml-1'}`} />
+                    </button>
+                  </label>
+                  <div className="sm:col-span-2 flex gap-2">
+                    <button
+                      type="button"
+                      disabled={actionBusy || !edit.name.trim() || !edit.dueAt}
+                      onClick={() => void saveEdit()}
+                      className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-[11px] disabled:opacity-50"
+                    >
+                      Lagre
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEdit(null)}
+                      className="px-2 py-1 rounded-md bg-white/10 text-gray-200 text-[11px]"
+                    >
+                      Avbryt
+                    </button>
                   </div>
-                );
-              })}
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 min-w-0">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs text-white truncate">{currentAction.name}</div>
+                    <div className="text-[11px] text-gray-400 truncate">{formatWhen(currentAction.dueAt)}</div>
+                    {currentAction.note ? (
+                      <div className="mt-0.5 text-[11px] text-gray-300 whitespace-pre-wrap break-words">{currentAction.note}</div>
+                    ) : null}
+                  </div>
+                  {currentAction.addToCalendar ? (
+                    <span title="I Google Kalender" className="shrink-0 text-[#FF5B00]">
+                      <CalendarDays size={12} />
+                    </span>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => setEdit({
+                      actionId: currentAction.id,
+                      name: currentAction.name,
+                      note: currentAction.note || '',
+                      dueAt: toDateTimeLocal(currentAction.dueAt),
+                      addToCalendar: Boolean(currentAction.addToCalendar) || currentAction.presetKey === 'meeting',
+                    })}
+                    className="shrink-0 p-1 rounded text-gray-400 hover:text-white"
+                    title="Endre navn eller tid"
+                  >
+                    <Pencil size={12} />
+                  </button>
+                  {currentAction.presetKey !== 'meeting' && (
+                    <button
+                      type="button"
+                      disabled={actionBusy}
+                      onClick={() => void onMutateAction({ op: 'delete', id: currentAction.id })}
+                      className="shrink-0 p-1 rounded text-gray-500 hover:text-red-300"
+                      title="Fjern handling"
+                    >
+                      <Trash2 size={12} />
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          )}
+          ) : null}
 
           {draft ? (
-            <div className="rounded-lg border border-[#FF5B00]/30 bg-[#FF5B00]/5 p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <div className="rounded-lg border border-white/10 bg-black/10 p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
               <label className="text-[10px] text-gray-400 uppercase tracking-wide">
                 Navn
                 <input
                   value={draft.name}
                   onChange={(event) => setDraft((prev) => prev ? { ...prev, name: event.target.value } : prev)}
-                  placeholder="F.eks. Oppsjekk 1"
+                  placeholder="F.eks. Ring"
                   className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
                 />
               </label>
@@ -305,6 +307,16 @@ export function SalesGoalTimeline({
                   value={draft.dueAt}
                   onChange={(event) => setDraft((prev) => prev ? { ...prev, dueAt: event.target.value } : prev)}
                   className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
+                />
+              </label>
+              <label className="sm:col-span-2 text-[10px] text-gray-400 uppercase tracking-wide">
+                Notat til handlingen
+                <textarea
+                  value={draft.note}
+                  onChange={(event) => setDraft((prev) => prev ? { ...prev, note: event.target.value } : prev)}
+                  rows={2}
+                  placeholder="Valgfritt. Spesifikk kontekst for denne handlingen."
+                  className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5 resize-y"
                 />
               </label>
               <label className="sm:col-span-2 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
@@ -355,8 +367,8 @@ export function SalesGoalTimeline({
                     type="button"
                     disabled={needsMeeting || actionBusy}
                     onClick={() => startPreset(presetKey)}
-                    title={needsMeeting ? 'Sett avtalt møtetid først' : 'Åpner navn og tid. Ingenting lagres før du bekrefter.'}
-                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-white/5 text-gray-200 hover:border-[#FF5B00]/40 disabled:opacity-40"
+                    title={needsMeeting ? 'Sett avtalt møtetid først' : 'Setter denne som neste handling og erstatter den forrige.'}
+                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-white/5 text-gray-200 hover:border-white/20 disabled:opacity-40"
                   >
                     <Plus size={11} />
                     {formatPresetLabel(presetKey)}

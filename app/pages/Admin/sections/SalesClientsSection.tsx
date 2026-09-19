@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  Filter,
   Gift,
   Loader2,
   MailPlus,
@@ -29,8 +30,11 @@ import { API, salesAuthHeaders, type SalesClient, type SalesGoalKey, type SalesP
 import { MeetingNotesModal } from '../../sales/MeetingNotesModal';
 import { SalesGoalTimeline } from './SalesGoalTimeline';
 import {
+  clientIsSalesWin,
+  formatGoalLabel,
   getActiveNextAction,
-  getClientNextActionMs,
+  getCurrentGoalKey,
+  getSalesGoalKeys,
   groupSalesClientsByNextAction,
 } from '../../../../lib/sales-next-actions.js';
 import {
@@ -326,7 +330,7 @@ function salesStepBlockedReason(client: SalesClient, key: SalesGoalKey, fastTrac
   if (key === 'contractSigned') {
     if (fastTrack) return '';
     if (!client.progression?.meetingHeld) return 'Marker møtet hatt først';
-    if (!client.progression?.offerSent) return 'Marker sett tilbud først, eller hopp til kontrakt';
+    if (!client.progression?.offerSent) return 'Marker sett tilbud først';
   }
   if (key === 'paymentReceived' && !client.progression?.contractSigned) return 'Marker kontrakt signert først';
   return '';
@@ -350,6 +354,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [notice, setNotice] = useState('');
   const [clientSearchInput, setClientSearchInput] = useState('');
   const [clientSearchQuery, setClientSearchQuery] = useState('');
+  const [ownerFilter, setOwnerFilter] = useState('');
+  const [goalFilter, setGoalFilter] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
@@ -360,9 +366,10 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [collapsedBuckets, setCollapsedBuckets] = useState<Record<string, boolean>>(() => {
     try {
       const raw = window.localStorage.getItem('asoldi-sales-timeline-collapsed');
-      return raw ? JSON.parse(raw) as Record<string, boolean> : {};
+      const parsed = raw ? JSON.parse(raw) as Record<string, boolean> : {};
+      return { archived: true, ...parsed };
     } catch {
-      return {};
+      return { archived: true };
     }
   });
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
@@ -428,9 +435,43 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       .join(' ');
     return matchesClientSearchQuery(haystack, normalizedClientSearchQuery);
   };
+  const ownerFilterOptions = useMemo(() => {
+    const byKey = new Map<string, SalesOwnerOption>();
+    for (const owner of salesOwners) {
+      if (owner.accountKey) byKey.set(owner.accountKey, owner);
+    }
+    for (const client of productClients) {
+      const key = String(client.ownerId || '').trim();
+      if (!key || byKey.has(key)) continue;
+      byKey.set(key, { accountKey: key, username: key, name: key });
+    }
+    return [...byKey.values()].sort((a, b) =>
+      (a.name || a.username || a.accountKey).localeCompare(b.name || b.username || b.accountKey, 'nb-NO', { sensitivity: 'base' })
+    );
+  }, [salesOwners, productClients]);
+  const goalFilterOptions = useMemo(() => {
+    const keys = getSalesGoalKeys(productBracket) as SalesGoalKey[];
+    return [
+      ...keys.map((key) => ({ id: key, label: formatGoalLabel(key) })),
+      { id: 'sold', label: 'Solgt' },
+    ];
+  }, [productBracket]);
+  const clientMatchesFilters = (client: SalesClient) => {
+    if (!clientMatchesNameSearch(client)) return false;
+    if (ownerFilter === 'unassigned' && String(client.ownerId || '').trim()) return false;
+    if (ownerFilter && ownerFilter !== 'unassigned' && String(client.ownerId || '') !== ownerFilter) return false;
+    if (goalFilter === 'sold') return clientIsSalesWin(client);
+    if (goalFilter && getCurrentGoalKey(client) !== goalFilter) return false;
+    return true;
+  };
+  const hasActiveFilters = Boolean(normalizedClientSearchQuery || ownerFilter || goalFilter);
   const timelineClients = useMemo(
-    () => productClients.filter((client) => client.status !== 'not-sold' && clientMatchesNameSearch(client)),
-    [productClients, normalizedClientSearchQuery]
+    () => productClients.filter((client) => (
+      client.status !== 'not-sold'
+      && !clientIsSalesWin(client)
+      && clientMatchesFilters(client)
+    )),
+    [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
   );
   const emailAudit = useMemo(() => {
     const rows = productClients.map((client) => {
@@ -451,8 +492,14 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     };
   }, [productClients]);
   const archivedClients = useMemo(
-    () => productClients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
-    [productClients, normalizedClientSearchQuery]
+    () => productClients.filter((client) => client.status === 'not-sold' && clientMatchesFilters(client)),
+    [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
+  );
+  const winClients = useMemo(
+    () => productClients
+      .filter((client) => clientIsSalesWin(client) && client.status !== 'not-sold' && clientMatchesFilters(client))
+      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()),
+    [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
   );
   const activeMeetingGroups = useMemo(
     () => groupSalesClientsByNextAction(timelineClients, meetingNowMs),
@@ -518,8 +565,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     return rows;
   }, [activeMeetingGroups, collapsedBuckets]);
   const visibleSelectableClients = useMemo(
-    () => [...orderedTimelineClients, ...archivedClients],
-    [orderedTimelineClients, archivedClients]
+    () => [...orderedTimelineClients, ...winClients, ...archivedClients],
+    [orderedTimelineClients, winClients, archivedClients]
   );
   const visibleSelectableIds = useMemo(
     () => visibleSelectableClients.map((client) => client.id),
@@ -938,8 +985,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       const invitePending = !String(client.calendar?.guestInvitedAt || '').trim();
       const confirmed = window.confirm(
         invitePending
-          ? 'Welcome email was already sent, but the Google invite may not have gone out. Send again? This sends the calendar invite first, then the branded Asoldi mail.'
-          : 'Welcome email was already sent. Send the branded Asoldi email again? Google will not send a second calendar invite.'
+          ? 'Welcome email was already sent, but the Google invite may not have gone out. Send again? This sends the branded confirmation with a calendar invite the client can accept, plus the meeting button.'
+          : 'Welcome email was already sent. Send the confirmation again? The calendar invite is attached to the same email.'
       );
       if (!confirmed) return;
     }
@@ -957,8 +1004,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         `Welcome email sent to ${client.contactEmail}`
         + (from ? ` from ${from}.` : '.')
         + (meet
-          ? ' Google Calendar sends the invite first. The branded Asoldi mail follows as a reply in that conversation.'
-          : ' A calendar file is attached because Google Calendar is not connected on this login.')
+          ? ' The email includes a calendar invite to accept, the confirmation message, and a button to open the meeting.'
+          : ' A calendar file is attached so the client can accept the meeting.')
       );
       if (warnings.length) setError(warnings.join(' | '));
     } catch (err) {
@@ -1447,6 +1494,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   function clearClientNameSearch() {
     setClientSearchInput('');
     setClientSearchQuery('');
+    setOwnerFilter('');
+    setGoalFilter('');
   }
 
   const showCalendarConnect = calendarStatus?.configured !== false;
@@ -1553,38 +1602,82 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         </div>
 
         <form onSubmit={applyClientNameSearch} className="mt-4 rounded-xl border border-white/10 bg-black/20 p-3">
-          <label className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Search clients by name or area</label>
-          <div className="mt-2 flex flex-col sm:flex-row gap-2">
-            <div className="relative flex-1">
-              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                value={clientSearchInput}
-                onChange={(e) => setClientSearchInput(e.target.value)}
-                placeholder="Business, contact, or area (e.g. oslo area)"
-                className="w-full pl-9 pr-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm"
-              />
-            </div>
-            <button
-              type="submit"
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200]"
-            >
-              <Search size={14} />
-              Search
-            </button>
-            {clientSearchQuery && (
+          <label className="text-xs font-semibold text-gray-200 uppercase tracking-wide">Search and filter</label>
+          <div className="mt-2 flex flex-col gap-2">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <div className="relative flex-1">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  value={clientSearchInput}
+                  onChange={(e) => setClientSearchInput(e.target.value)}
+                  placeholder="Business, contact, or area (e.g. oslo area)"
+                  className="w-full pl-9 pr-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm"
+                />
+              </div>
               <button
-                type="button"
-                onClick={clearClientNameSearch}
-                className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                type="submit"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200]"
               >
-                <X size={14} />
-                Clear
+                <Search size={14} />
+                Search
               </button>
-            )}
+              {hasActiveFilters && (
+                <button
+                  type="button"
+                  onClick={clearClientNameSearch}
+                  className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                >
+                  <X size={14} />
+                  Clear
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className="text-[11px] text-gray-400">
+                <span className="inline-flex items-center gap-1 mb-1">
+                  <Filter size={12} />
+                  Sales rep
+                </span>
+                <select
+                  value={ownerFilter}
+                  onChange={(event) => setOwnerFilter(event.target.value)}
+                  className="mt-1 w-full rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm px-3 py-2"
+                >
+                  <option value="">All owners</option>
+                  <option value="unassigned">Unassigned</option>
+                  {ownerFilterOptions.map((owner) => (
+                    <option key={owner.accountKey} value={owner.accountKey}>
+                      {ownerLabel(owner)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="text-[11px] text-gray-400">
+                <span className="inline-flex items-center gap-1 mb-1">
+                  <Filter size={12} />
+                  Goal step
+                </span>
+                <select
+                  value={goalFilter}
+                  onChange={(event) => setGoalFilter(event.target.value)}
+                  className="mt-1 w-full rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm px-3 py-2"
+                >
+                  <option value="">All steps</option>
+                  {goalFilterOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
           </div>
-          {clientSearchQuery && (
+          {hasActiveFilters && (
             <p className="mt-2 text-[11px] text-gray-400">
-              Showing matches for: <span className="text-white">{clientSearchQuery}</span>
+              Showing
+              {clientSearchQuery ? <> matches for <span className="text-white">{clientSearchQuery}</span></> : ' filtered clients'}
+              {ownerFilter ? <> · owner: <span className="text-white">{ownerFilter === 'unassigned' ? 'Unassigned' : ownerLabel(ownerFilterOptions.find((owner) => owner.accountKey === ownerFilter) || { accountKey: ownerFilter, username: ownerFilter, name: ownerFilter })}</span></> : null}
+              {goalFilter ? <> · step: <span className="text-white">{goalFilterOptions.find((option) => option.id === goalFilter)?.label || goalFilter}</span></> : null}
             </p>
           )}
         </form>
@@ -1849,9 +1942,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const sendingReminder24h = sendingEmailKey === `reminder-24h:${client.id}`;
             const sendingReminder1h = sendingEmailKey === `reminder-1h:${client.id}`;
             const nextAction = getActiveNextAction(client);
-            const nextActionMs = getClientNextActionMs(client);
-            const isPastDueAction = nextActionMs !== null && nextActionMs < meetingNowMs;
-            const missingNextAction = nextActionMs === null;
             const websiteSold = Boolean(client.progression?.contractSigned);
             const canMarkSold = Boolean(client.progression?.contractSigned);
             const clientSelected = selectedClientIds.includes(client.id);
@@ -1874,35 +1964,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         aria-label={`Select ${client.businessName || 'client'}`}
                         className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
                       />
-                      <h3 className="text-white font-semibold truncate">{client.businessName || 'Unnamed business'}</h3>
-                      <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-[#FF5B00]/30 text-[#ffb087]">
-                        {nextAction?.name || 'Ingen handling'}
-                      </span>
-                      {clientIsSsu && (
-                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-sky-900/30 border border-sky-700/30 text-sky-300">
-                          SSU
+                      <h3 className="text-white font-semibold truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</h3>
+                      {nextAction?.name ? (
+                        <span className="shrink-0 max-w-[40%] px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-200 truncate">
+                          {nextAction.name}
                         </span>
-                      )}
-                      {client.status === 'secondary' && (
-                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300">
-                          Secondary
-                        </span>
-                      )}
-                      {!clientIsSsu && client.progression?.contractSigned && !client.development?.nettsideFerdig && (
-                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-sky-900/30 border border-sky-700/30 text-sky-300">
-                          In development
-                        </span>
-                      )}
-                      {isPastDueAction && (
-                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-red-900/30 border border-red-700/30 text-red-300">
-                          Past due
-                        </span>
-                      )}
-                      {missingNextAction && (
-                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300">
-                          Sett handling
-                        </span>
-                      )}
+                      ) : null}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                       <CalendarClock size={12} className="shrink-0" />
@@ -2517,10 +2584,11 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
           {timelineClients.length === 0 && (
             <div className="lg:col-span-2 2xl:col-span-3 rounded-2xl bg-[#2a2a2a] border border-white/10 p-8 text-center text-gray-400">
-              {clientSearchQuery
+              {hasActiveFilters
                 ? (
                   <>
-                    No clients matched <strong className="text-white">"{clientSearchQuery}"</strong>.
+                    No clients matched these filters
+                    {clientSearchQuery ? <> for <strong className="text-white">"{clientSearchQuery}"</strong></> : null}.
                   </>
                 )
                 : (
@@ -2534,14 +2602,110 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         </div>
       )}
 
-      {archivedClients.length > 0 && (
+      {winClients.length > 0 && (
         <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-white font-semibold">Archived (Not sold)</h3>
-            <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
-              {archivedClients.length} archived
+            <div>
+              <h3 className="text-white font-semibold">Wins</h3>
+              <p className="text-[11px] text-gray-400 mt-0.5">Solgte kunder ligger her, ikke i handlinglisten. Preview beholdes som den er.</p>
+            </div>
+            <span className="text-xs px-2 py-1 rounded bg-emerald-900/30 border border-emerald-700/30 text-emerald-200">
+              {winClients.length} solgt
             </span>
           </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
+            {winClients.map((client) => {
+              const clientSelected = selectedClientIds.includes(client.id);
+              const publicPreviewUrl = getPublicClientPreviewUrl(client);
+              return (
+                <div
+                  key={client.id}
+                  onClick={(event) => handleClientCardClick(event, client.id)}
+                  className={`rounded-xl bg-black/20 border p-3 space-y-2 cursor-pointer ${
+                    clientSelected ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40' : 'border-white/10'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={clientSelected}
+                          onChange={() => toggleClientSelected(client.id)}
+                          onClick={(event) => event.stopPropagation()}
+                          aria-label={`Select ${client.businessName || 'sold client'}`}
+                          className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
+                        />
+                        <div className="text-sm font-medium text-white truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</div>
+                      </div>
+                      <div className="text-xs text-gray-400 truncate mt-1">
+                        {[client.contactPerson || 'No contact person', client.contactPhone, client.meetingPlace]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </div>
+                    </div>
+                    <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 border border-emerald-700/40">
+                      Solgt
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {!isSsuClient(client) && (
+                      <button
+                        type="button"
+                        onClick={() => openPublicPreview(client)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={publicPreviewUrl || 'Preview'}
+                      >
+                        <ExternalLink size={13} />
+                        Open preview
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onMovedToDevelopment?.();
+                        setNotice(`${client.businessName || 'Kunden'} ligger under Utvikling → Deployment.`);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/40 border border-emerald-700/40 text-emerald-200 text-xs"
+                    >
+                      Solgt nettside
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void toggleProgress(client, 'contractSigned')}
+                      disabled={progressBusyKey === `${client.id}:contractSigned`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                      title="Angre kontrakt signert og send kunden tilbake i handlinglisten"
+                    >
+                      Tilbake til salg
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {archivedClients.length > 0 && (
+        <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 space-y-3 opacity-80">
+          <button
+            type="button"
+            onClick={() => toggleTimelineBucket('archived')}
+            className="w-full flex items-center justify-between gap-3 text-left"
+          >
+            <div>
+              <h3 className="text-white font-semibold">Archived (Not sold)</h3>
+              <p className="text-[11px] text-gray-500 mt-0.5">Minimert som standard. Klikk for å vise.</p>
+            </div>
+            <span className="inline-flex items-center gap-2 shrink-0">
+              <span className="text-xs px-2 py-1 rounded bg-black/20 border border-white/10 text-gray-300">
+                {archivedClients.length} archived
+              </span>
+              <ChevronDown size={16} className={`text-gray-400 transition-transform ${collapsedBuckets.archived ? '-rotate-90' : ''}`} />
+            </span>
+          </button>
+          {!collapsedBuckets.archived && (
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
             {archivedClients.map((client) => {
               const clientSelected = selectedClientIds.includes(client.id);
@@ -2618,6 +2782,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
               );
             })}
           </div>
+          )}
         </div>
       )}
 

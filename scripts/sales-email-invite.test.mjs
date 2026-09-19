@@ -9,6 +9,7 @@ import {
   getSalesEmailPreviewClient,
   rewriteSalesEmailAssetsToHosted,
 } from '../lib/sales-email.js';
+import { renderResponsiveSalesEmailHtml } from '../lib/sales-email-layout.js';
 
 test('calendar invite organizer matches the branded From address', () => {
   const previous = process.env.RESEND_FROM;
@@ -25,6 +26,16 @@ test('calendar invite organizer matches the branded From address', () => {
   assert.match(invite.content, /ORGANIZER;CN=Asoldi:mailto:contact@asoldi.com/);
   assert.match(invite.content, /ATTENDEE;.*mailto:daracha777@gmail.com/);
   assert.match(invite.content, /LOCATION:https:\/\/meet\.google\.com\/aaa-bbbb-ccc/);
+  assert.match(invite.content, /PARTSTAT=NEEDS-ACTION/);
+});
+
+test('online ICS is still built when the Meet link is missing', () => {
+  const client = getSalesEmailPreviewClient({
+    calendar: { meetLink: '', htmlLink: 'https://calendar.google.com/event?eid=x', eventId: 'evt-2' },
+  });
+  const invite = buildSalesCalendarInvite(client, client.calendar);
+  assert.ok(invite);
+  assert.match(invite.content, /METHOD:REQUEST/);
 });
 
 test('sales images stay in the HTML and are not file attachments', () => {
@@ -48,6 +59,7 @@ test('in-person confirmation uses the maps CTA, not Google Meet', () => {
   assert.match(message.html, /Åpne i Kart/);
   assert.match(message.html, /Østre berg 10/);
   assert.equal(message.html.includes('Åpne Google Meet'), false);
+  assert.equal(message.icalEvent?.filename, 'asoldi-fysisk-mote.ics');
 });
 
 test('online confirmation keeps the Google Meet CTA', () => {
@@ -63,14 +75,15 @@ test('3-day reminder copy follows the meeting type', () => {
   assert.match(online.html, /online-møtet/);
   assert.match(irl.subject, /Fysisk møte/);
   assert.match(irl.html, /Åpne i Kart/);
+  assert.equal(online.icalEvent, undefined);
 });
 
-test('composed welcome mail has hosted images and no extra file attachments', () => {
+test('composed welcome mail has hosted images and an ICS invite', () => {
   const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you').message;
   assert.match(message.html, /https:\/\/asoldi\.com\/email\/sales\/hero-desktop\.jpg/);
   assert.equal(message.html.includes('cid:'), false);
   assert.deepEqual(message.attachments, []);
-  assert.equal(message.icalEvent, undefined);
+  assert.equal(message.icalEvent?.filename, 'asoldi-online-mote.ics');
 });
 
 test('3-day reminder is only scheduled when the meeting is more than 3 days away', () => {
@@ -85,11 +98,44 @@ test('3-day reminder is only scheduled when the meeting is more than 3 days away
   assert.ok(soon.reminder1hAt);
 });
 
-test('ICS is attached only when calendar invite fallback is requested', () => {
-  const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you', null, {
-    attachInvite: true,
-  }).message;
+test('thank-you attaches an ICS invite by default', () => {
+  const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you').message;
   assert.equal(message.icalEvent?.filename, 'asoldi-online-mote.ics');
+});
+
+test('reminders do not attach an ICS invite', () => {
+  const message = composeEmailForClient(getSalesEmailPreviewClient(), 'reminder-24h').message;
+  assert.equal(message.icalEvent, undefined);
+});
+
+test('ICS organizer matches the salesperson From address', () => {
+  const sender = buildSalesSender({
+    name: 'Damian',
+    fromEmail: 'damian@asoldi.com',
+  });
+  const invite = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you', null, { sender }).message.icalEvent;
+  assert.match(invite.content, /ORGANIZER;.*mailto:damian@asoldi.com/);
+});
+
+test('sent email is one 600px hybrid layout, not two swapped templates', () => {
+  const html = renderResponsiveSalesEmailHtml({
+    title: 'Møtet bekreftet',
+    bodyHtml: '<p>Hei</p>',
+    ctaUrl: 'https://meet.google.com/aaa-bbbb-ccc',
+    ctaLabel: 'Åpne Google Meet',
+    assets: {
+      heroDesktop: 'd.jpg',
+      heroMobile: 'm.jpg',
+      envelope: 'e.png',
+      logoMark: 'l.png',
+      customersBadge: 'b.png',
+    },
+  });
+  assert.equal(html.includes('email-only-mobile'), false);
+  assert.equal(html.includes('email-only-desktop'), false);
+  assert.match(html, /max-width:600px/);
+  assert.match(html, /Åpne Google Meet/);
+  assert.match(html, /Møtet bekreftet/);
 });
 
 test('sales sender identity is Name fra Asoldi with an asoldi.com address', () => {
@@ -141,5 +187,5 @@ test('welcome merge fills the salesperson name in the body and From line', () =>
   assert.equal(composed.message.from, 'Alexander fra Asoldi <alexander@asoldi.com>');
   assert.equal(composed.message.subject, 'Hei Alexander');
   assert.match(composed.message.html, /Mvh Alexander fra Asoldi.com/);
-  assert.equal(composed.message.icalEvent, undefined);
+  assert.equal(composed.message.icalEvent?.filename, 'asoldi-online-mote.ics');
 });

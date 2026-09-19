@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import {
   applyNextActionMutation,
   applyProgressionChange,
+  applyMeetingHeldOrphanReset,
   classifyNextActionBucket,
   decorateNextActions,
   defaultAddToCalendar,
   getActiveNextAction,
   getClientNextActionMs,
   getCurrentGoalKey,
+  getFutureGoalKeys,
   getRemainingGoalCount,
   getVisibleGoalKeys,
   groupSalesClientsByNextAction,
@@ -223,10 +225,84 @@ test('creating a next action requires name, time, and confirm payload', () => {
   assert.match(missingTime.error, /Tid/);
 });
 
+test('creating a next action replaces the previous one and ranks by the new time', () => {
+  const now = Date.parse('2026-09-19T10:00:00.000Z');
+  const pastMeeting = client({
+    meetingAt: '2026-09-10T10:00:00.000Z',
+  });
+  const decorated = decorateNextActions(pastMeeting);
+  assert.equal(classifyNextActionBucket({ ...pastMeeting, nextActions: decorated }, now), 'pastDue');
+  const replaced = applyNextActionMutation(
+    { ...pastMeeting, nextActions: decorated },
+    {
+      op: 'create',
+      goalKey: 'meetingHeld',
+      presetKey: 'custom',
+      name: 'Ring',
+      dueAt: '2026-09-21T09:00:00.000Z',
+    },
+    now
+  );
+  assert.equal(replaced.error, undefined);
+  assert.equal(replaced.nextActions.length, 1);
+  assert.equal(replaced.nextActions[0].name, 'Ring');
+  assert.equal(replaced.nextActions.some((action) => action.presetKey === 'meeting'), false);
+  const ranked = { ...pastMeeting, nextActions: replaced.nextActions };
+  assert.equal(getActiveNextAction(ranked).name, 'Ring');
+  assert.equal(classifyNextActionBucket(ranked, now), 'upcoming');
+});
+
+test('sold website clients are wins, not action-list rows', () => {
+  const sold = client({
+    id: 'win',
+    progression: { meetingHeld: true, offerSent: true, contractSigned: true },
+  });
+  const grouped = groupSalesClientsByNextAction([sold]);
+  assert.equal(grouped.upcoming.length + grouped.recentPastDue.length + grouped.pastDue.length + grouped.noNextAction.length, 0);
+});
+
+test('orphan møtet hatt is cleared unless a later goal is already done', () => {
+  const orphan = applyMeetingHeldOrphanReset(client({
+    progression: { meetingHeld: true, offerSent: false, contractSigned: false },
+  }));
+  assert.equal(orphan.progression.meetingHeld, false);
+  assert.equal(orphan.changed, true);
+  const kept = applyMeetingHeldOrphanReset(client({
+    progression: { meetingHeld: true, offerSent: true },
+    salesMigrations: { meetingHeldOrphansV1: true },
+  }));
+  assert.equal(kept.progression.meetingHeld, true);
+  const later = applyMeetingHeldOrphanReset(client({
+    progression: { meetingHeld: true, offerSent: true, contractSigned: false },
+  }));
+  assert.equal(later.progression.meetingHeld, true);
+});
+
+test('future goals can be listed without becoming the current checkpoint', () => {
+  const row = client();
+  assert.deepEqual(getFutureGoalKeys(row), ['offerSent', 'contractSigned']);
+  assert.equal(getCurrentGoalKey(row), 'meetingHeld');
+});
+
 test('oppsjekk 1/2 are not current sales goals', () => {
   const row = client({
     progression: { meetingHeld: true, offerSent: false },
   });
   assert.ok(!getVisibleGoalKeys(row).includes('checkIn1'));
   assert.equal(getCurrentGoalKey(row), 'offerSent');
+});
+
+test('finn møte tidspunkt is a meetingHeld action with optional note', () => {
+  const created = applyNextActionMutation(client(), {
+    op: 'create',
+    goalKey: 'meetingHeld',
+    presetKey: 'findMeetingTime',
+    name: 'Finn møte tidspunkt',
+    note: 'Vil helst mandag ettermiddag',
+    dueAt: '2026-09-22T09:00:00.000Z',
+  });
+  assert.equal(created.error, undefined);
+  assert.equal(created.nextActions.length, 1);
+  assert.equal(created.nextActions[0].presetKey, 'findMeetingTime');
+  assert.equal(created.nextActions[0].note, 'Vil helst mandag ettermiddag');
 });

@@ -4,6 +4,7 @@ import { DEVELOPMENT_KEYS, normalizeDevelopment } from '../lib/development-phase
 import {
   applyNextActionMutation,
   applyProgressionChange,
+  applyMeetingHeldOrphanReset,
   decorateNextActions,
   getSalesGoalKeys,
   inferMeetingHeld,
@@ -331,9 +332,15 @@ function normalizeSalesClient(raw = {}) {
     listName: myphoner.listName,
   });
   const progression = normalizeProgression(raw.progression);
+  const reset = applyMeetingHeldOrphanReset({
+    progression,
+    nextActions: Array.isArray(raw.nextActions) ? raw.nextActions : [],
+    salesMigrations: raw.salesMigrations,
+  });
+  const nextProgression = { ...reset.progression };
   if (product === 'ssu') {
-    progression.domainConnected = false;
-    progression.live = false;
+    nextProgression.domainConnected = false;
+    nextProgression.live = false;
   }
 
   const client = {
@@ -354,8 +361,9 @@ function normalizeSalesClient(raw = {}) {
     notes: sanitizeSalesNotes(raw.notes),
     details: normalizeSalesDetails(raw.details),
     myphoner,
-    progression,
-    nextActions: Array.isArray(raw.nextActions) ? raw.nextActions : [],
+    progression: nextProgression,
+    salesMigrations: reset.salesMigrations,
+    nextActions: reset.nextActions,
     development: product === 'ssu' ? normalizeDevelopment() : normalizeDevelopment(raw.development),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
@@ -372,7 +380,12 @@ function normalizeSalesClient(raw = {}) {
 }
 
 function readState() {
-  return readSalesFile().map(normalizeSalesClient);
+  const previous = readSalesFile();
+  const list = previous.map(normalizeSalesClient);
+  if (previous.length && previous.some((raw) => !raw?.salesMigrations?.meetingHeldOrphansV1)) {
+    writeSalesFile(list);
+  }
+  return list;
 }
 
 function writeState(items) {
@@ -456,6 +469,9 @@ export function updateSalesClient(id, updates = {}) {
     nextActions: Object.prototype.hasOwnProperty.call(updates, 'nextActions')
       ? updates.nextActions
       : current.nextActions,
+    salesMigrations: Object.prototype.hasOwnProperty.call(updates, 'salesMigrations')
+      ? { ...(current.salesMigrations || {}), ...(updates.salesMigrations || {}) }
+      : current.salesMigrations,
     development: updates.development
       ? { ...current.development, ...updates.development }
       : current.development,

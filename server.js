@@ -52,6 +52,7 @@ import {
   getEmailDraft,
   getEmailTemplateById,
   importEmailTemplate,
+  isReminderEmailTemplate,
   listEmailTemplates,
   mergeFieldsMeta,
   saveEmailDraft,
@@ -63,6 +64,12 @@ import {
   isFathomWebhookConfigured,
   notifyFathomRecording,
 } from './lib/fathom-webhook.js';
+import {
+  authorizeFirefliesWebhook,
+  isFirefliesWebhookConfigured,
+  notifyFirefliesRecording,
+  readFirefliesWebhookConfig,
+} from './lib/fireflies-webhook.js';
 import { renderSalesEmailDocument } from './lib/sales-email-layout.js';
 import {
   DEVELOPMENT_KEYS,
@@ -96,8 +103,6 @@ import {
   isRealGoogleMeetLink,
   findConnectedCalendarAccountKeysByGoogleEmail,
   calendarIdForAccount,
-  calendarInviteLeadMs,
-  buildGoogleCalendarInvitationSubject,
   resolveCalendarSyncAccountKey,
   shareGoogleCalendarToken,
   upsertMeetingEvent,
@@ -171,6 +176,16 @@ app.post(
 app.get('/api/webhooks/fathom', (_req, res) => {
   const configured = isFathomWebhookConfigured();
   res.status(configured ? 200 : 503).json({ ok: configured, service: 'fathom' });
+});
+app.post(
+  '/api/webhooks/fireflies',
+  express.raw({ type: 'application/json', limit: '8mb' }),
+  handleFirefliesWebhook
+);
+app.get('/api/webhooks/fireflies', (_req, res) => {
+  const configured = isFirefliesWebhookConfigured();
+  const apiKey = Boolean(readFirefliesWebhookConfig().apiKey);
+  res.status(configured ? 200 : 503).json({ ok: configured, service: 'fireflies', apiKey });
 });
 
 app.use(express.json({ limit: '2mb' }));
@@ -7990,14 +8005,6 @@ async function backfillMissingSalesCalendarEvents({
   };
 }
 
-async function waitForGoogleInviteDelivery(shouldWait) {
-  if (!shouldWait) return;
-  const ms = calendarInviteLeadMs();
-  if (ms <= 0) return;
-  console.log(`[calendar] waiting ${ms}ms so Google's invite arrives before the branded mail`);
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', requireMeetLink = false } = {}) {
   const alreadyInvited = Boolean(sanitizeText(client?.calendar?.guestInvitedAt));
   const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
@@ -8018,10 +8025,9 @@ async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', req
   const selfInvite = Boolean(organizer && guest && organizer === guest);
   if (selfInvite && notifyAttendees) {
     warnings.push(
-      'Google does not email a calendar invitation to the same Gmail that owns the calendar. Connect Calendar as an Asoldi mailbox, or send the test to a different inbox, to see the invite above the branded mail.'
+      'Google does not email a separate calendar invitation to the same Gmail that owns the calendar. The confirmation mail still includes a calendar invite the client can accept.'
     );
   }
-  await waitForGoogleInviteDelivery(Boolean(syncResult.calendarInviteSent) && !selfInvite);
   return {
     client: nextClient,
     warnings,
@@ -8050,26 +8056,21 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
   const sender = await resolveSalesSenderForAccount(
     salesUser || salesUserFromAccountKey(actorAccountKey || client?.ownerId || client?.calendar?.accountKey)
   );
-  const calendarConnected = Boolean(syncResult.calendarConnected);
   const composed = composeEmailForClient(client, 'thank-you', null, {
     sender,
-    attachInvite: !calendarConnected,
+    attachInvite: true,
   }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
-  const invitationSubject = buildGoogleCalendarInvitationSubject(client);
-  const brandedSubject = calendarConnected
-    ? `Re: ${invitationSubject}`
-    : composed.subject;
   const hostedCount = (String(composed.html || '').match(/\/email\/sales\//g) || []).length;
   console.log(
-    `[mail] thank-you to=${client.contactEmail} from=${composed.from} subject=${brandedSubject} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} invite=${syncResult.calendarInviteSent ? 'yes' : 'no'}`
+    `[mail] thank-you to=${client.contactEmail} from=${composed.from} subject=${composed.subject} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} invite=${syncResult.calendarInviteSent ? 'yes' : 'no'}`
   );
   await emailLib.sendEmail({
     to: client.contactEmail,
     from: composed.from,
     replyTo: composed.replyTo,
     bcc: salesEmailCopyBcc(client.contactEmail),
-    subject: brandedSubject,
+    subject: composed.subject,
     text: composed.text,
     html: composed.html,
     attachments: composed.attachments,
@@ -9880,6 +9881,39 @@ app.post('/api/client/checkout/request-faktura', clientAuth, async (req, res) =>
   return res.json({ ok: true });
 });
 
+async function handleFirefliesWebhook(req, res) {
+  const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '');
+  const auth = authorizeFirefliesWebhook({
+    headers: req.headers,
+    query: req.query,
+    rawBody,
+  });
+  if (!auth.ok) {
+    const message = auth.reason === 'not-configured'
+      ? 'Fireflies webhook is not configured.'
+      : 'Unauthorized';
+    return res.status(auth.status).json({ ok: false, message });
+  }
+
+  let payload = {};
+  try {
+    payload = rawBody ? JSON.parse(rawBody) : {};
+  } catch {
+    return res.status(400).json({ ok: false, message: 'Invalid JSON' });
+  }
+
+  try {
+    const result = await notifyFirefliesRecording(payload);
+    console.log(
+      `[fireflies] webhook via=${auth.via} sent=${result.sent} reason=${result.reason || ''} id=${result.meetingId || ''} to=${result.to || ''}`
+    );
+    return res.json({ ok: true, ...result });
+  } catch (error) {
+    console.error('[fireflies] webhook failed', sanitizeText(error?.message) || error);
+    return res.status(500).json({ ok: false, message: 'Failed to process Fireflies recording.' });
+  }
+}
+
 async function handleFathomWebhook(req, res) {
   const rawBody = Buffer.isBuffer(req.body) ? req.body.toString('utf8') : String(req.body || '');
   const auth = authorizeFathomWebhook({
@@ -11660,9 +11694,8 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
     }
     const templateKey = sanitizeText(req.body?.templateKey || req.body?.markAs) || 'thank-you';
     const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
-    const isThankYou = templateKey === 'thank-you' || templateKey === 'welcome';
+    const isThankYou = !isReminderEmailTemplate(templateKey);
     let calendarWarnings = [];
-    let calendarConnected = false;
     if (isThankYou) {
       const syncResult = await syncCalendarInviteForThankYou(client, {
         actorAccountKey: req.salesUser.accountKey,
@@ -11670,11 +11703,6 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
       });
       client = syncResult.client || client;
       calendarWarnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
-      calendarConnected = Boolean(syncResult.calendarConnected);
-    } else {
-      calendarConnected = getGoogleCalendarStatus(
-        client?.calendar?.accountKey || req.salesUser.accountKey
-      ).connected && Boolean(sanitizeText(client?.calendar?.eventId));
     }
     const to = sanitizeText(req.body?.to) || client.contactEmail;
     if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
@@ -11685,11 +11713,9 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
       preheader: req.body?.preheader,
     }, {
       sender,
-      attachInvite: isThankYou && !calendarConnected,
+      attachInvite: isThankYou,
     }).message;
-    const subject = isThankYou && calendarConnected && !sanitizeText(req.body?.subject)
-      ? `Re: ${buildGoogleCalendarInvitationSubject(client)}`
-      : composed.subject;
+    const subject = composed.subject;
     await emailLib.sendEmail({
       to,
       from: composed.from,
