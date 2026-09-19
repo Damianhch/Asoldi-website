@@ -1,12 +1,28 @@
 import { readFileSync, existsSync } from 'fs';
 import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 import { DEVELOPMENT_KEYS, normalizeDevelopment } from '../lib/development-phase.js';
+import {
+  applyNextActionMutation,
+  applyProgressionChange,
+  decorateNextActions,
+  getSalesGoalKeys,
+  inferMeetingHeld,
+  salesProgressBlockedReason as nextActionProgressBlockedReason,
+} from '../lib/sales-next-actions.js';
 
 const SALES_PATH = getDataFilePath('sales-clients.json');
 
-const PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived', 'domainConnected', 'live'];
-const ASOLDI_SALES_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned'];
-const SSU_PROGRESSION_KEYS = ['step0AgreeMeetingTime', 'contractSigned', 'paymentReceived'];
+const PROGRESSION_KEYS = [
+  'meetingHeld',
+  'step0AgreeMeetingTime',
+  'offerSent',
+  'checkIn1',
+  'checkIn2',
+  'contractSigned',
+  'paymentReceived',
+  'domainConnected',
+  'live',
+];
 const SALES_STATUSES = ['active', 'not-sold', 'secondary'];
 const SALES_PRODUCTS = ['asoldi', 'ssu'];
 const MAX_SALES_NOTES_LENGTH = 8000;
@@ -84,7 +100,7 @@ export function isSsuSalesProduct(product = '') {
 }
 
 export function getProgressionKeysForProduct(product = '') {
-  return isSsuSalesProduct(product) ? [...SSU_PROGRESSION_KEYS] : [...ASOLDI_SALES_PROGRESSION_KEYS];
+  return getSalesGoalKeys(product);
 }
 
 function normalizeMeetingMode(value) {
@@ -118,6 +134,8 @@ function writeSalesFile(list) {
 function emptyReminders() {
   return {
     thankYouSentAt: '',
+    reminder3dAt: '',
+    reminder3dSentAt: '',
     reminder24hAt: '',
     reminder24hSentAt: '',
     reminder1hAt: '',
@@ -126,12 +144,16 @@ function emptyReminders() {
   };
 }
 
-function normalizeProgression(value = {}, agreedTime = false) {
+function normalizeProgression(value = {}) {
   const input = value && typeof value === 'object' ? value : {};
+  const meetingHeld = inferMeetingHeld(input);
   return {
-    // Step 0 mirrors real scheduling data from Sales/Myphoner: green only when
-    // an agreed meeting exists.
-    step0AgreeMeetingTime: Boolean(agreedTime),
+    meetingHeld,
+    // Alias kept so older clients/tools reading step 0 still see the result-based goal.
+    step0AgreeMeetingTime: meetingHeld,
+    offerSent: Boolean(input.offerSent),
+    checkIn1: Boolean(input.checkIn1),
+    checkIn2: Boolean(input.checkIn2),
     contractSigned: Boolean(input.contractSigned),
     paymentReceived: Boolean(input.paymentReceived),
     domainConnected: Boolean(input.domainConnected),
@@ -201,6 +223,7 @@ function normalizeCalendar(value = {}) {
     calendarId: sanitizeText(input.calendarId),
     accountKey: sanitizeText(input.accountKey),
     syncedAt: sanitizeText(input.syncedAt),
+    guestInvitedAt: sanitizeText(input.guestInvitedAt),
   };
 }
 
@@ -210,6 +233,8 @@ function normalizeReminders(value = {}) {
     thankYouSentAt: sanitizeText(input.thankYouSentAt),
     reminder24hAt: sanitizeText(input.reminder24hAt),
     reminder24hSentAt: sanitizeText(input.reminder24hSentAt),
+    reminder3dAt: sanitizeText(input.reminder3dAt),
+    reminder3dSentAt: sanitizeText(input.reminder3dSentAt),
     reminder1hAt: sanitizeText(input.reminder1hAt),
     reminder1hSentAt: sanitizeText(input.reminder1hSentAt),
     skipDueToShortNotice: Boolean(input.skipDueToShortNotice),
@@ -305,13 +330,13 @@ function normalizeSalesClient(raw = {}) {
     listId: myphoner.listId,
     listName: myphoner.listName,
   });
-  const progression = normalizeProgression(raw.progression, agreedTime);
+  const progression = normalizeProgression(raw.progression);
   if (product === 'ssu') {
     progression.domainConnected = false;
     progression.live = false;
   }
 
-  return {
+  const client = {
     id: sanitizeText(raw.id) || makeId(),
     ownerId: sanitizeText(raw.ownerId),
     product,
@@ -330,6 +355,7 @@ function normalizeSalesClient(raw = {}) {
     details: normalizeSalesDetails(raw.details),
     myphoner,
     progression,
+    nextActions: Array.isArray(raw.nextActions) ? raw.nextActions : [],
     development: product === 'ssu' ? normalizeDevelopment() : normalizeDevelopment(raw.development),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
@@ -341,6 +367,8 @@ function normalizeSalesClient(raw = {}) {
     createdAt,
     updatedAt,
   };
+  client.nextActions = decorateNextActions(client);
+  return client;
 }
 
 function readState() {
@@ -352,33 +380,26 @@ function writeState(items) {
 }
 
 export function deriveReminderSchedule({ agreedTime, meetingAt }, nowMs = Date.now()) {
-  if (!agreedTime || !meetingAt) {
-    return {
-      reminder24hAt: '',
-      reminder1hAt: '',
-      skipDueToShortNotice: false,
-    };
-  }
+  const empty = {
+    reminder3dAt: '',
+    reminder24hAt: '',
+    reminder1hAt: '',
+    skipDueToShortNotice: false,
+  };
+  if (!agreedTime || !meetingAt) return empty;
   const meetingMs = new Date(meetingAt).getTime();
   if (!Number.isFinite(meetingMs)) {
-    return {
-      reminder24hAt: '',
-      reminder1hAt: '',
-      skipDueToShortNotice: true,
-    };
+    return { ...empty, skipDueToShortNotice: true };
   }
   const diffMs = meetingMs - nowMs;
-  if (diffMs < 24 * 60 * 60 * 1000) {
-    return {
-      reminder24hAt: '',
-      reminder1hAt: '',
-      skipDueToShortNotice: true,
-    };
-  }
+  const hourMs = 60 * 60 * 1000;
+  const dayMs = 24 * hourMs;
+  const threeDayMs = 3 * dayMs;
   return {
-    reminder24hAt: new Date(meetingMs - 24 * 60 * 60 * 1000).toISOString(),
-    reminder1hAt: new Date(meetingMs - 60 * 60 * 1000).toISOString(),
-    skipDueToShortNotice: false,
+    reminder3dAt: diffMs > threeDayMs ? new Date(meetingMs - threeDayMs).toISOString() : '',
+    reminder24hAt: diffMs > dayMs ? new Date(meetingMs - dayMs).toISOString() : '',
+    reminder1hAt: diffMs > hourMs ? new Date(meetingMs - hourMs).toISOString() : '',
+    skipDueToShortNotice: diffMs <= hourMs,
   };
 }
 
@@ -432,6 +453,9 @@ export function updateSalesClient(id, updates = {}) {
     progression: updates.progression
       ? { ...current.progression, ...updates.progression }
       : current.progression,
+    nextActions: Object.prototype.hasOwnProperty.call(updates, 'nextActions')
+      ? updates.nextActions
+      : current.nextActions,
     development: updates.development
       ? { ...current.development, ...updates.development }
       : current.development,
@@ -481,18 +505,50 @@ export function setSalesNotes(id, notes, meetingQuote) {
   return updateSalesClient(id, updates);
 }
 
-export function setSalesProgress(id, key, value) {
-  if (!PROGRESSION_KEYS.includes(key)) return null;
+export function salesProgressBlockedReason(client, key, options = {}) {
+  return nextActionProgressBlockedReason(client, key, options);
+}
+
+export function setSalesProgress(id, key, value, { fastTrack = false } = {}) {
+  const mapped = key === 'step0AgreeMeetingTime' ? 'meetingHeld' : key;
+  if (!PROGRESSION_KEYS.includes(key) && mapped !== 'meetingHeld') return null;
   const current = getSalesClientById(id);
   if (!current) return null;
-  if (isSsuSalesProduct(current.product) && !SSU_PROGRESSION_KEYS.includes(key)) {
+  const productGoals = getSalesGoalKeys(current.product);
+  const leftoverKeys = ['checkIn1', 'checkIn2', 'domainConnected', 'live', 'step0AgreeMeetingTime'];
+  if (!productGoals.includes(mapped) && !leftoverKeys.includes(mapped)) {
     return current;
   }
+  if (isSsuSalesProduct(current.product) && (mapped === 'domainConnected' || mapped === 'live')) {
+    return current;
+  }
+  const applied = applyProgressionChange(current, mapped, value, { fastTrack });
+  if (applied.error) {
+    const error = new Error(applied.error);
+    error.code = 'PROGRESSION_BLOCKED';
+    throw error;
+  }
   return updateSalesClient(id, {
-    progression: {
-      [key]: Boolean(value),
-    },
+    progression: applied.progression,
+    nextActions: applied.nextActions,
   });
+}
+
+export function setSalesNextAction(id, patch = {}) {
+  const current = getSalesClientById(id);
+  if (!current) return null;
+  const applied = applyNextActionMutation(current, patch);
+  if (applied.error) {
+    const error = new Error(applied.error);
+    error.code = 'NEXT_ACTION_INVALID';
+    throw error;
+  }
+  const updates = { nextActions: applied.nextActions };
+  if (Object.prototype.hasOwnProperty.call(applied, 'meetingAt')) {
+    updates.meetingAt = applied.meetingAt;
+    updates.agreedTime = Boolean(applied.agreedTime);
+  }
+  return updateSalesClient(id, updates);
 }
 
 export function setSalesDevelopment(id, key, value) {
@@ -574,8 +630,10 @@ export function rescheduleSalesReminders(id, nowMs = Date.now()) {
   const schedule = deriveReminderSchedule(current, nowMs);
   return updateSalesClient(id, {
     reminders: {
+      reminder3dAt: schedule.reminder3dAt,
       reminder24hAt: schedule.reminder24hAt,
       reminder1hAt: schedule.reminder1hAt,
+      reminder3dSentAt: '',
       reminder24hSentAt: '',
       reminder1hSentAt: '',
       skipDueToShortNotice: schedule.skipDueToShortNotice,
@@ -586,6 +644,7 @@ export function rescheduleSalesReminders(id, nowMs = Date.now()) {
 export function markSalesReminderSent(id, key, at = nowIso()) {
   const patch = {};
   if (key === 'thankYou') patch.thankYouSentAt = at;
+  if (key === '3d') patch.reminder3dSentAt = at;
   if (key === '24h') patch.reminder24hSentAt = at;
   if (key === '1h') patch.reminder1hSentAt = at;
   if (!Object.keys(patch).length) return null;
@@ -595,8 +654,10 @@ export function markSalesReminderSent(id, key, at = nowIso()) {
 export function clearSalesMeetingScheduling(id) {
   return updateSalesClient(id, {
     reminders: {
+      reminder3dAt: '',
       reminder24hAt: '',
       reminder1hAt: '',
+      reminder3dSentAt: '',
       reminder24hSentAt: '',
       reminder1hSentAt: '',
       skipDueToShortNotice: false,
@@ -608,6 +669,7 @@ export function clearSalesMeetingScheduling(id) {
       calendarId: '',
       accountKey: '',
       syncedAt: '',
+      guestInvitedAt: '',
     },
   });
 }

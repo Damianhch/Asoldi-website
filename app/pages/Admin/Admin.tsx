@@ -419,14 +419,14 @@ export const Admin = () => {
   }
 
   if (loggedIn === null) {
-    return <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-gray-400">Loading…</div>;
+    return <div className="staff-light min-h-screen bg-[#1e1e1e] flex items-center justify-center text-gray-400">Loading…</div>;
   }
 
   if (!loggedIn) {
     return (
       <>
         <Helmet><title>Admin Login – Asoldi</title><meta name="robots" content="noindex,nofollow" /></Helmet>
-        <div className="min-h-screen bg-[#050505] flex items-center justify-center p-6">
+        <div className="staff-light min-h-screen bg-[#050505] flex items-center justify-center p-6">
           <div className="w-full max-w-sm rounded-2xl bg-[#1a1a1a] border border-white/10 p-8">
             <h1 className="text-xl font-bold text-white mb-6">Admin</h1>
             <form onSubmit={handleLogin} className="space-y-4">
@@ -447,7 +447,7 @@ export const Admin = () => {
   return (
     <>
       <Helmet><title>Admin – Asoldi</title><meta name="robots" content="noindex,nofollow" /></Helmet>
-      <div className="min-h-screen bg-[#1e1e1e] flex">
+      <div className="staff-light min-h-screen bg-[#1e1e1e] flex">
         <aside className="w-60 bg-[#23282d] text-white flex flex-col fixed inset-y-0 left-0">
           <div className="p-4 border-b border-white/10">
             <Link to="/" className="text-lg font-semibold text-white">{siteName || 'Admin'}</Link>

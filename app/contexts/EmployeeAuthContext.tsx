@@ -48,7 +48,9 @@ export function EmployeeAuthProvider({ children }: { children: React.ReactNode }
             if (!cancelled) setIsEmployee(false);
           });
         } else {
-          if (res.status === 401 || res.status === 403) clearToken();
+          // Sales/developer tokens are valid staff logins. Never delete them just because
+          // this endpoint used to only accept role=employee.
+          if (res.status === 401) clearToken();
           if (!cancelled) setIsEmployee(false);
         }
       })

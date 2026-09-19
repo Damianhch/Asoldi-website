@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomUUID } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
+import { homedir } from 'os';
 import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
@@ -39,9 +40,9 @@ import * as myphonerApi from './lib/myphoner-api.js';
 import * as myphonerIntegration from './data/myphoner-integration.js';
 import * as myphonerSsuWins from './lib/myphoner-ssu-wins.js';
 import {
-  buildSalesReminderEmail,
-  buildSalesThankYouEmail,
   buildSalesEmailPreviewPage,
+  getSalesEmailPreviewClient,
+  normalizeSalesReminderKind,
   renderSalesUnsubscribePage,
   htmlToPlainText,
 } from './lib/sales-email.js';
@@ -93,9 +94,14 @@ import {
   exchangeGoogleCalendarCode,
   getGoogleCalendarStatus,
   isRealGoogleMeetLink,
+  findConnectedCalendarAccountKeysByGoogleEmail,
+  calendarIdForAccount,
+  calendarInviteLeadMs,
+  buildGoogleCalendarInvitationSubject,
   resolveCalendarSyncAccountKey,
   shareGoogleCalendarToken,
   upsertMeetingEvent,
+  upsertSalesReminderEvent,
 } from './lib/google-calendar.js';
 import {
   createClientGoogleAuthUrl,
@@ -281,10 +287,40 @@ const SALES_LINK_BACKFILL_VERSION = sanitizeText(process.env.SALES_LINK_BACKFILL
 const SALES_LINK_BACKFILL_LIMIT = Number(process.env.SALES_LINK_BACKFILL_LIMIT || 0);
 const SALES_MEETING_TIMEZONE = sanitizeText(process.env.GOOGLE_CALENDAR_TIMEZONE || 'Europe/Oslo') || 'Europe/Oslo';
 const MYPHONER_RECORDINGS_DIR = path.join(getPersistentDataDir(), 'myphoner-recordings');
+const MYPHONER_AUDIO_DIR = path.join(getPersistentDataDir(), 'myphoner-audio');
 try {
   mkdirSync(MYPHONER_RECORDINGS_DIR, { recursive: true });
+  mkdirSync(MYPHONER_AUDIO_DIR, { recursive: true });
 } catch {
   // Directory is created again during startup / download paths.
+}
+
+function extraMyphonerAudioDirs() {
+  const dirs = [];
+  const seen = new Set([path.resolve(MYPHONER_AUDIO_DIR)]);
+  const add = (dirPath) => {
+    const resolved = path.resolve(dirPath);
+    if (seen.has(resolved)) return;
+    seen.add(resolved);
+    dirs.push(resolved);
+  };
+  add(path.join(homedir(), '.asoldi-website-data', 'myphoner-audio'));
+  add(path.join(process.cwd(), '.asoldi-website-data', 'myphoner-audio'));
+  add(path.join(process.cwd(), 'public', 'myphoner-audio'));
+  const home = String(homedir() || '').replace(/\\/g, '/');
+  const match = home.match(/^(\/home\/[^/]+)\/domains\//);
+  if (match) add(path.join(match[1], '.asoldi-website-data', 'myphoner-audio'));
+  return dirs;
+}
+
+function localRecordingSearchDirs() {
+  return [
+    MYPHONER_AUDIO_DIR,
+    path.join(distPath, 'myphoner-audio'),
+    path.join(__dirname, 'public', 'myphoner-audio'),
+    path.join(__dirname, 'data', 'myphoner-audio'),
+    ...extraMyphonerAudioDirs(),
+  ];
 }
 let myphonerWebhookReconcileInterval = null;
 let myphonerWebhookReconcileRunning = false;
@@ -1598,11 +1634,7 @@ function extractRecordingDestinationPhoneFromBuffer(buffer) {
 }
 
 async function listLocalRecordingFiles() {
-  const recordingDirs = [
-    path.join(distPath, 'myphoner-audio'),
-    path.join(__dirname, 'public', 'myphoner-audio'),
-    path.join(__dirname, 'data', 'myphoner-audio'),
-  ];
+  const recordingDirs = localRecordingSearchDirs();
   const filesByName = new Map();
   for (const dirPath of recordingDirs) {
     let entries = [];
@@ -7332,83 +7364,139 @@ function developmentAuth(req, res, next) {
   next();
 }
 
-function salesAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const payload = token ? verifyToken(token) : null;
-  if (!payload || (payload.role !== 'admin' && payload.role !== 'sales')) {
-    return res.status(401).json({ message: 'Unauthorized' });
-  }
-  if (payload.role === 'admin') {
-    req.salesUser = {
+async function resolveStaffPrincipalFromToken(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  const tokenRole = sanitizeText(payload.role).toLowerCase();
+  if (tokenRole === 'admin') {
+    return {
       accountKey: `admin:${payload.username || 'admin'}`,
       isAdmin: true,
       role: 'admin',
       username: payload.username || 'admin',
     };
-  } else {
-    req.salesUser = {
-      accountKey: `sales:${payload.userId}`,
-      isAdmin: false,
-      role: 'sales',
-      userId: payload.userId,
-      username: payload.username || '',
-    };
   }
-  next();
+
+  const tokenUserId = sanitizeText(payload.userId);
+  const tokenUsername = sanitizeText(payload.username);
+  let user = tokenUserId ? await store.getUserById(tokenUserId) : null;
+  if (!user && tokenUsername) user = await store.getUserByUsername(tokenUsername);
+  const liveRole = sanitizeText(user?.role || payload.role).toLowerCase();
+  const userId = sanitizeText(user?.id) || tokenUserId;
+  const username = sanitizeText(user?.username) || tokenUsername;
+  if (!userId || (liveRole !== 'sales' && liveRole !== 'developer')) return null;
+  return {
+    accountKey: `${liveRole}:${userId}`,
+    isAdmin: false,
+    role: liveRole,
+    userId,
+    username,
+  };
+}
+
+function salesUserOwnerKeys(salesUser = {}) {
+  const keys = new Set();
+  const accountKey = sanitizeText(salesUser.accountKey);
+  const userId = sanitizeText(salesUser.userId);
+  const username = sanitizeText(salesUser.username);
+  if (accountKey) keys.add(accountKey);
+  if (userId) keys.add(`sales:${userId}`);
+  if (username) keys.add(`sales:${username}`);
+  return keys;
+}
+
+async function salesAuth(req, res, next) {
+  try {
+    const auth = req.headers.authorization;
+    const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    const payload = token ? verifyToken(token) : null;
+    const salesUser = await resolveStaffPrincipalFromToken(payload);
+    if (!salesUser || (salesUser.role !== 'admin' && salesUser.role !== 'sales')) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    req.salesUser = salesUser;
+    next();
+  } catch {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
 }
 
 function canAccessSalesClient(req, client) {
   if (!client) return false;
   if (req.salesUser?.isAdmin) return true;
   if (req.developmentUser) return true;
-  return Boolean(client.ownerId) && client.ownerId === req.salesUser?.accountKey;
+  const ownerId = sanitizeText(client.ownerId);
+  if (!ownerId) return false;
+  return salesUserOwnerKeys(req.salesUser).has(ownerId);
 }
 
-function salesOrDevelopmentAuth(req, res, next) {
-  const auth = req.headers.authorization;
-  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const payload = token ? verifyToken(token) : null;
-  if (!payload || (payload.role !== 'admin' && payload.role !== 'sales' && payload.role !== 'developer')) {
+async function listSalesOwnerOptions(salesUser = {}) {
+  const options = [];
+  const seen = new Set();
+  const add = (accountKey = '', username = '', name = '') => {
+    const key = sanitizeText(accountKey);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    options.push({
+      accountKey: key,
+      username: sanitizeText(username),
+      name: sanitizeText(name),
+    });
+  };
+
+  if (salesUser?.isAdmin && salesUser.accountKey) {
+    add(salesUser.accountKey, salesUser.username, 'Admin');
+  }
+
+  try {
+    const users = await store.getAllUsers();
+    for (const user of Array.isArray(users) ? users : []) {
+      if (sanitizeText(user?.role).toLowerCase() !== 'sales') continue;
+      const userId = sanitizeText(user?.id);
+      if (!userId) continue;
+      add(`sales:${userId}`, user?.username, user?.name);
+    }
+  } catch {
+    // Keep the admin option even if the user list cannot be read.
+  }
+  return options;
+}
+
+async function resolveAssignableSalesOwnerId(ownerId = '', salesUser = {}) {
+  const key = sanitizeText(ownerId);
+  if (!key) return '';
+  const options = await listSalesOwnerOptions(salesUser);
+  return options.some((entry) => entry.accountKey === key) ? key : '';
+}
+
+async function salesOrDevelopmentAuth(req, res, next) {
+  try {
+    const auth = req.headers.authorization;
+    const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+    const payload = token ? verifyToken(token) : null;
+    const principal = await resolveStaffPrincipalFromToken(payload);
+    if (!principal || (principal.role !== 'admin' && principal.role !== 'sales' && principal.role !== 'developer')) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
+    req.salesUser = principal;
+    if (principal.role === 'admin') {
+      req.developmentUser = { role: 'admin', isAdmin: true, userId: principal.userId };
+    } else if (principal.role === 'developer') {
+      req.developmentUser = { role: 'developer', isAdmin: false, userId: principal.userId };
+    }
+    next();
+  } catch {
     return res.status(401).json({ message: 'Unauthorized' });
   }
-  if (payload.role === 'admin') {
-    req.salesUser = {
-      accountKey: `admin:${payload.username || 'admin'}`,
-      isAdmin: true,
-      role: 'admin',
-      username: payload.username || 'admin',
-    };
-    req.developmentUser = { role: 'admin', isAdmin: true, userId: payload.userId };
-  } else if (payload.role === 'sales') {
-    req.salesUser = {
-      accountKey: `sales:${payload.userId}`,
-      isAdmin: false,
-      role: 'sales',
-      userId: payload.userId,
-      username: payload.username || '',
-    };
-  } else {
-    req.developmentUser = { role: 'developer', isAdmin: false, userId: payload.userId };
-    req.salesUser = {
-      accountKey: `developer:${payload.userId}`,
-      isAdmin: false,
-      role: 'developer',
-      userId: payload.userId,
-      username: payload.username || '',
-    };
-  }
-  next();
 }
 
 async function accountKeyToEmail(accountKey = '') {
   const key = sanitizeText(accountKey);
   if (!key) return '';
   if (key.startsWith('admin:')) return normalizeEmail(key.slice('admin:'.length));
-  if (key.startsWith('sales:')) {
-    const userId = key.slice('sales:'.length);
+  if (key.startsWith('sales:') || key.startsWith('developer:')) {
+    const userId = key.includes(':') ? key.slice(key.indexOf(':') + 1) : '';
     try {
-      const user = await store.getUserById(userId);
+      const user = (await store.getUserById(userId)) || (await store.getUserByUsername(userId));
       return normalizeEmail(user?.username);
     } catch {
       return '';
@@ -7440,7 +7528,12 @@ async function resolveSiblingCalendarAccountKeys(accountKey = '') {
     for (const user of Array.isArray(users) ? users : []) {
       if (normalizeEmail(user?.username) !== email) continue;
       const userId = sanitizeText(user?.id);
-      if (userId) keys.add(`sales:${userId}`);
+      const username = sanitizeText(user?.username);
+      if (userId) {
+        keys.add(`sales:${userId}`);
+        keys.add(`developer:${userId}`);
+      }
+      if (username) keys.add(`sales:${username}`);
     }
   } catch {
     // Ignore user lookup failures.
@@ -7453,10 +7546,23 @@ async function resolveSiblingCalendarAccountKeys(accountKey = '') {
 async function ensureSharedCalendarTokens(accountKey = '') {
   const key = sanitizeText(accountKey);
   if (!key) return getGoogleCalendarStatus(key);
-  const status = getGoogleCalendarStatus(key);
-  if (!status.connected) return status;
-  const siblings = await resolveSiblingCalendarAccountKeys(key);
-  if (siblings.length) shareGoogleCalendarToken(key, siblings);
+  let status = getGoogleCalendarStatus(key);
+  if (!status.connected) {
+    const donors = new Set(await resolveSiblingCalendarAccountKeys(key));
+    const email = await accountKeyToEmail(key);
+    for (const donor of findConnectedCalendarAccountKeysByGoogleEmail(email)) donors.add(donor);
+    for (const donor of donors) {
+      if (donor === key) continue;
+      if (!getGoogleCalendarStatus(donor).connected) continue;
+      shareGoogleCalendarToken(donor, [key]);
+      status = getGoogleCalendarStatus(key);
+      if (status.connected) break;
+    }
+  }
+  if (status.connected) {
+    const siblings = await resolveSiblingCalendarAccountKeys(key);
+    if (siblings.length) shareGoogleCalendarToken(key, siblings);
+  }
   return getGoogleCalendarStatus(key);
 }
 
@@ -7601,6 +7707,7 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   const notifyAttendees = Boolean(options?.notifyAttendees);
   const requireMeetLink = Boolean(options?.requireMeetLink);
   const actorAccountKey = sanitizeText(options?.actorAccountKey);
+  const forceGuestInvite = Boolean(options?.forceGuestInvite);
   const warnings = [];
   let nextClient = client;
   let calendarInviteSent = false;
@@ -7612,14 +7719,12 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
     ? options.fallbackAccountKeys
     : await resolveCalendarFallbackAccountKeys(nextClient?.ownerId || '', actorAccountKey);
 
-  // Heal admin/sales token split for the same email before resolving.
-  for (const key of [previousAccountKey, nextClient?.ownerId, actorAccountKey, ...fallbackAccountKeys]) {
+  // Copy tokens onto the current owner/actor even if that key is not connected yet
+  // (OAuth may live under a sibling sales:/admin: key for the same Google inbox).
+  for (const key of [actorAccountKey, nextClient?.ownerId, previousAccountKey, ...fallbackAccountKeys]) {
     const candidate = sanitizeText(key);
     if (!candidate) continue;
-    if (getGoogleCalendarStatus(candidate).connected) {
-      await ensureSharedCalendarTokens(candidate);
-      break;
-    }
+    await ensureSharedCalendarTokens(candidate);
   }
 
   const accountKey = resolveCalendarSyncAccountKey({
@@ -7629,12 +7734,18 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
     previousAccountKey,
   });
   const deleteAccountKey = previousAccountKey || accountKey;
+  const storedCalendarId = sanitizeText(
+    previousClient?.calendar?.calendarId || nextClient?.calendar?.calendarId
+  );
+  const targetCalendarId = calendarIdForAccount(accountKey);
   const isOnline = normalizeMeetingMode(nextClient?.meetingMode) === 'online';
+  const deleteEvent = (eventId, key = deleteAccountKey) =>
+    deleteMeetingEvent(eventId, key, storedCalendarId ? { calendarId: storedCalendarId } : {});
 
   if (!nextClient.agreedTime || !nextClient.meetingAt) {
     if (nextClient.calendar?.eventId) {
       try {
-        await deleteMeetingEvent(nextClient.calendar.eventId, deleteAccountKey);
+        await deleteEvent(nextClient.calendar.eventId);
       } catch (error) {
         warnings.push(`Calendar cleanup failed: ${error.message}`);
       }
@@ -7650,6 +7761,7 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   if (calendarStatus.configured && calendarStatus.connected) {
     try {
       const currentEventId = sanitizeText(previousClient?.calendar?.eventId || nextClient?.calendar?.eventId);
+      const guestAlreadyInvited = Boolean(sanitizeText(nextClient?.calendar?.guestInvitedAt));
       let eventIdForUpsert = currentEventId;
       const hasRealMeet = isRealGoogleMeetLink(nextClient?.calendar?.meetLink);
       // Recreate only when an online event exists but has no real Meet link.
@@ -7662,21 +7774,24 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
         && !hasRealMeet
       ) {
         try {
-          await deleteMeetingEvent(currentEventId, deleteAccountKey);
+          await deleteEvent(currentEventId);
           eventIdForUpsert = '';
         } catch (deleteError) {
           warnings.push(`Calendar pre-invite cleanup failed: ${deleteError.message}`);
         }
       }
-      // If the event lived on a different connected account, recreate instead of
-      // updating with a token that cannot see the old event id.
+      // If the event lived on a different connected account or calendar id
+      // (e.g. shared admin calendar vs sales primary), recreate instead of
+      // updating an event the current token cannot see.
       if (
         eventIdForUpsert &&
-        previousAccountKey &&
-        previousAccountKey !== accountKey
+        (
+          (previousAccountKey && previousAccountKey !== accountKey)
+          || (storedCalendarId && storedCalendarId !== targetCalendarId)
+        )
       ) {
         try {
-          await deleteMeetingEvent(eventIdForUpsert, previousAccountKey);
+          await deleteEvent(eventIdForUpsert, previousAccountKey || accountKey);
         } catch {
           // Best-effort cleanup; insert will still create a fresh event.
         }
@@ -7688,9 +7803,16 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
         accountKey,
         {
           sendUpdates: notifyAttendees ? 'all' : 'none',
+          includeAttendees: notifyAttendees || (guestAlreadyInvited && Boolean(eventIdForUpsert)),
+          forceGuestInvite: notifyAttendees && (forceGuestInvite || !guestAlreadyInvited || !eventIdForUpsert),
           forceConference: isOnline && (requireMeetLink || !hasRealMeet),
         }
       );
+      if (notifyAttendees) {
+        calendarMeta.guestInvitedAt = new Date().toISOString();
+      } else if (sanitizeText(calendarMeta.eventId) !== currentEventId) {
+        calendarMeta.guestInvitedAt = '';
+      }
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
       calendarInviteSent = notifyAttendees;
@@ -7718,6 +7840,70 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
   }
 
   return { client: nextClient, warnings, calendarInviteSent };
+}
+
+async function maybeSyncNextActionCalendars(previousClient, nextClient, { actorAccountKey = '' } = {}) {
+  const warnings = [];
+  let client = nextClient;
+  const previousAccountKey = sanitizeText(previousClient?.calendar?.accountKey || nextClient?.calendar?.accountKey);
+  const fallbackAccountKeys = await resolveCalendarFallbackAccountKeys(nextClient?.ownerId || '', actorAccountKey);
+  const accountKey = resolveCalendarSyncAccountKey({
+    ownerId: nextClient?.ownerId || '',
+    actorAccountKey,
+    fallbackAccountKeys,
+    previousAccountKey,
+  });
+  const calendarStatus = getGoogleCalendarStatus(accountKey);
+  if (!calendarStatus.configured || !calendarStatus.connected) {
+    return { client, warnings };
+  }
+
+  const previousActions = Array.isArray(previousClient?.nextActions) ? previousClient.nextActions : [];
+  const nextActions = Array.isArray(nextClient?.nextActions) ? nextClient.nextActions : [];
+  const nextById = new Map(nextActions.map((action) => [sanitizeText(action.id), action]));
+  const patched = nextActions.map((action) => ({ ...action }));
+  const patchedById = new Map(patched.map((action) => [sanitizeText(action.id), action]));
+
+  const shouldSyncAction = (action) => (
+    Boolean(action?.addToCalendar)
+    && !sanitizeText(action?.doneAt)
+    && sanitizeText(action?.presetKey) !== 'meeting'
+    && sanitizeText(action?.dueAt)
+  );
+
+  for (const previous of previousActions) {
+    const id = sanitizeText(previous.id);
+    const current = patchedById.get(id);
+    const eventId = sanitizeText(previous.calendarEventId || current?.calendarEventId);
+    if (!eventId) continue;
+    if (current && shouldSyncAction(current)) continue;
+    try {
+      await deleteMeetingEvent(eventId, accountKey);
+    } catch (error) {
+      warnings.push(`Could not remove calendar reminder: ${error.message}`);
+    }
+    if (current) current.calendarEventId = '';
+  }
+
+  for (const action of patched) {
+    if (!shouldSyncAction(action)) continue;
+    try {
+      const meta = await upsertSalesReminderEvent(client, action, action.calendarEventId, accountKey);
+      action.calendarEventId = sanitizeText(meta.eventId);
+    } catch (error) {
+      warnings.push(`Could not sync calendar reminder (${sanitizeText(action.name) || 'handling'}): ${error.message}`);
+    }
+  }
+
+  const changed = patched.some((action) => {
+    const before = nextById.get(sanitizeText(action.id));
+    return sanitizeText(before?.calendarEventId) !== sanitizeText(action.calendarEventId);
+  });
+  if (changed) {
+    const updated = sales.updateSalesClient(client.id, { nextActions: patched });
+    if (updated) client = updated;
+  }
+  return { client, warnings };
 }
 
 async function backfillMissingSalesCalendarEvents({
@@ -7804,19 +7990,57 @@ async function backfillMissingSalesCalendarEvents({
   };
 }
 
+async function waitForGoogleInviteDelivery(shouldWait) {
+  if (!shouldWait) return;
+  const ms = calendarInviteLeadMs();
+  if (ms <= 0) return;
+  console.log(`[calendar] waiting ${ms}ms so Google's invite arrives before the branded mail`);
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', requireMeetLink = false } = {}) {
+  const alreadyInvited = Boolean(sanitizeText(client?.calendar?.guestInvitedAt));
+  const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
+  const notifyAttendees = !alreadySent || !alreadyInvited;
+  const syncResult = await maybeSyncCalendar(client, client, {
+    notifyAttendees,
+    forceGuestInvite: notifyAttendees && !alreadyInvited,
+    requireMeetLink,
+    actorAccountKey,
+  });
+  const nextClient = syncResult.client || client;
+  const warnings = Array.isArray(syncResult.warnings) ? [...syncResult.warnings] : [];
+  const calendarStatus = getGoogleCalendarStatus(
+    nextClient?.calendar?.accountKey || actorAccountKey
+  );
+  const organizer = sanitizeText(calendarStatus.googleEmail).toLowerCase();
+  const guest = sanitizeText(nextClient?.contactEmail).toLowerCase();
+  const selfInvite = Boolean(organizer && guest && organizer === guest);
+  if (selfInvite && notifyAttendees) {
+    warnings.push(
+      'Google does not email a calendar invitation to the same Gmail that owns the calendar. Connect Calendar as an Asoldi mailbox, or send the test to a different inbox, to see the invite above the branded mail.'
+    );
+  }
+  await waitForGoogleInviteDelivery(Boolean(syncResult.calendarInviteSent) && !selfInvite);
+  return {
+    client: nextClient,
+    warnings,
+    calendarInviteSent: Boolean(syncResult.calendarInviteSent),
+    calendarConnected: Boolean(calendarStatus.connected && sanitizeText(nextClient?.calendar?.eventId)),
+    selfInvite,
+  };
+}
+
 async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
 
-  const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
-  const calendarAlreadyExists = Boolean(sanitizeText(client?.calendar?.eventId));
   const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
-  const syncResult = await maybeSyncCalendar(client, client, {
-    notifyAttendees: !alreadySent || !calendarAlreadyExists,
-    requireMeetLink: isOnline,
+  const syncResult = await syncCalendarInviteForThankYou(client, {
     actorAccountKey,
+    requireMeetLink: isOnline,
   });
   client = syncResult.client || client;
   if (isOnline && !isRealGoogleMeetLink(client?.calendar?.meetLink)) {
@@ -7826,23 +8050,26 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
   const sender = await resolveSalesSenderForAccount(
     salesUser || salesUserFromAccountKey(actorAccountKey || client?.ownerId || client?.calendar?.accountKey)
   );
-  const calendarConnected = getGoogleCalendarStatus(actorAccountKey || client?.calendar?.accountKey).connected
-    && Boolean(sanitizeText(client?.calendar?.eventId));
+  const calendarConnected = Boolean(syncResult.calendarConnected);
   const composed = composeEmailForClient(client, 'thank-you', null, {
     sender,
     attachInvite: !calendarConnected,
   }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
+  const invitationSubject = buildGoogleCalendarInvitationSubject(client);
+  const brandedSubject = calendarConnected
+    ? `Re: ${invitationSubject}`
+    : composed.subject;
   const hostedCount = (String(composed.html || '').match(/\/email\/sales\//g) || []).length;
   console.log(
-    `[mail] thank-you to=${client.contactEmail} from=${composed.from} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} notify=${!alreadySent || !calendarAlreadyExists}`
+    `[mail] thank-you to=${client.contactEmail} from=${composed.from} subject=${brandedSubject} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} invite=${syncResult.calendarInviteSent ? 'yes' : 'no'}`
   );
   await emailLib.sendEmail({
     to: client.contactEmail,
     from: composed.from,
     replyTo: composed.replyTo,
     bcc: salesEmailCopyBcc(client.contactEmail),
-    subject: composed.subject,
+    subject: brandedSubject,
     text: composed.text,
     html: composed.html,
     attachments: composed.attachments,
@@ -7864,15 +8091,18 @@ async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, ac
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
-  const reminderKind = kind === '1h' ? '1h' : '24h';
+  const reminderKind = normalizeSalesReminderKind(kind);
+  const templateKey = reminderKind === '1h'
+    ? 'reminder-1h'
+    : reminderKind === '3d'
+      ? 'reminder-3d'
+      : 'reminder-24h';
   const sender = await resolveSalesSenderForAccount(
     salesUser || salesUserFromAccountKey(actorAccountKey || client?.ownerId || client?.calendar?.accountKey)
   );
-  const calendarConnected = getGoogleCalendarStatus(actorAccountKey || client?.calendar?.accountKey).connected
-    && Boolean(sanitizeText(client?.calendar?.eventId));
-  const composed = composeEmailForClient(client, reminderKind === '1h' ? 'reminder-1h' : 'reminder-24h', null, {
+  const composed = composeEmailForClient(client, templateKey, null, {
     sender,
-    attachInvite: !calendarConnected,
+    attachInvite: false,
   }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
@@ -7959,12 +8189,17 @@ async function sendDueSalesReminders() {
     const nowMs = Date.now();
     const clients = sales.getSalesClients();
     for (const client of clients) {
-      if (!client.agreedTime || !client.meetingAt || client.reminders?.skipDueToShortNotice) continue;
+      if (!client.agreedTime || !client.meetingAt) continue;
       const meetingMs = new Date(client.meetingAt).getTime();
       if (!Number.isFinite(meetingMs) || meetingMs <= nowMs) continue;
 
+      const reminder3dAt = client.reminders?.reminder3dAt ? new Date(client.reminders.reminder3dAt).getTime() : 0;
       const reminder24hAt = client.reminders?.reminder24hAt ? new Date(client.reminders.reminder24hAt).getTime() : 0;
       const reminder1hAt = client.reminders?.reminder1hAt ? new Date(client.reminders.reminder1hAt).getTime() : 0;
+
+      if (reminder3dAt && nowMs >= reminder3dAt && !client.reminders?.reminder3dSentAt) {
+        await sendSalesReminderNow(client, '3d', { actorAccountKey: client.ownerId });
+      }
 
       if (reminder24hAt && nowMs >= reminder24hAt && !client.reminders?.reminder24hSentAt) {
         await sendSalesReminderNow(client, '24h', { actorAccountKey: client.ownerId });
@@ -9997,18 +10232,27 @@ function clientAuthV2(req, res, next) {
   next();
 }
 
-app.get('/api/auth/me', employeeAuth, async (req, res) => {
-  const user = await store.getUserById(req.employee.userId);
+app.get('/api/auth/me', async (req, res) => {
+  const auth = req.headers.authorization;
+  const token = auth && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const payload = token ? verifyToken(token) : null;
+  const tokenRole = sanitizeText(payload?.role).toLowerCase();
+  if (!payload || !['employee', 'sales', 'developer'].includes(tokenRole)) {
+    return res.status(401).json({ message: 'Unauthorized' });
+  }
+  let user = payload.userId ? await store.getUserById(payload.userId) : null;
+  if (!user && payload.username) user = await store.getUserByUsername(payload.username);
   if (!user) return res.status(401).json({ message: 'User not found' });
-  if (user.role !== 'employee') {
-    return res.status(403).json({ message: 'Access denied. Employee role required.' });
+  const liveRole = sanitizeText(user.role).toLowerCase();
+  if (!['employee', 'sales', 'developer'].includes(liveRole)) {
+    return res.status(403).json({ message: 'Access denied. Staff role required.' });
   }
   res.json({
     user: {
       id: user.id,
       username: user.username,
-      role: user.role,
-      employeeProduct: store.toPublicUser(user).employeeProduct,
+      role: liveRole,
+      employeeProduct: liveRole === 'employee' ? store.toPublicUser(user).employeeProduct : undefined,
     },
   });
 });
@@ -10431,7 +10675,7 @@ app.get('/api/admin/sales/laptop-previews', salesAuth, (req, res) => {
   const all = sales.getSalesClients();
   const owned = req.salesUser.isAdmin
     ? all
-    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+    : all.filter((client) => canAccessSalesClient(req, client));
   const items = owned
     .filter((client) => !sales.isSsuSalesProduct(client.product))
     .map((client) => buildLaptopPreviewEntry(client))
@@ -10449,7 +10693,7 @@ app.get('/api/admin/sales/preview-backfill', salesAuth, (req, res) => {
   const all = sales.getSalesClients();
   const owned = req.salesUser.isAdmin
     ? all
-    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+    : all.filter((client) => canAccessSalesClient(req, client));
   const clients = owned
     .filter((client) => clientNeedsPublicPreviewSnapshot(client))
     .map((client) => ({
@@ -10496,12 +10740,68 @@ app.get('/api/admin/sales/:id/preview-files', salesAuth, async (req, res) => {
   });
 });
 
+app.post('/api/admin/sales/preview-send-emails', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can send preview emails.' });
+  }
+  if (!emailLib.canSendEmail()) {
+    return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
+  }
+  const to = sanitizeText(req.body?.to || 'daracha777@gmail.com').toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+    return res.status(400).json({ message: 'A valid preview recipient is required.' });
+  }
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const variants = [
+    { kind: 'thank-you', mode: 'online' },
+    { kind: 'thank-you', mode: 'in-person' },
+    { kind: 'reminder-3d', mode: 'online' },
+    { kind: 'reminder-3d', mode: 'in-person' },
+    { kind: 'reminder-24h', mode: 'online' },
+    { kind: 'reminder-24h', mode: 'in-person' },
+    { kind: 'reminder-1h', mode: 'online' },
+    { kind: 'reminder-1h', mode: 'in-person' },
+  ];
+  const sent = [];
+  try {
+    for (const variant of variants) {
+      const client = getSalesEmailPreviewClient({
+        meetingMode: variant.mode,
+        contactEmail: to,
+        contactPerson: 'Damian',
+        businessName: variant.mode === 'in-person' ? 'Asoldi (fysisk møte)' : 'Asoldi (online møte)',
+      });
+      const composed = composeEmailForClient(client, variant.kind, null, {
+        sender,
+        attachInvite: false,
+      }).message;
+      const subject = `[Forhåndsvisning] ${composed.subject}`;
+      await emailLib.sendEmail({
+        to,
+        from: composed.from,
+        replyTo: composed.replyTo,
+        subject,
+        text: composed.text,
+        html: composed.html,
+        attachments: composed.attachments,
+      });
+      sent.push({ kind: variant.kind, mode: variant.mode, subject });
+    }
+    return res.json({ ok: true, to, sent });
+  } catch (error) {
+    return res.status(500).json({
+      message: formatSmtpSendError(error),
+      sent,
+    });
+  }
+});
+
 app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const productFilter = sanitizeText(req.query?.product).toLowerCase();
   const owned = req.salesUser.isAdmin
     ? all
-    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+    : all.filter((client) => canAccessSalesClient(req, client));
   const clients =
     productFilter === 'asoldi' || productFilter === 'ssu'
       ? owned.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
@@ -10511,15 +10811,20 @@ app.get('/api/admin/sales', salesAuth, async (req, res) => {
     req.salesUser
   );
   const sender = await resolveSalesSenderForAccount(req.salesUser);
-  res.json({
+  const payload = {
     clients,
     calendar,
     sender,
+    isAdmin: Boolean(req.salesUser.isAdmin),
     products: {
       asoldi: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'asoldi').length,
       ssu: owned.filter((client) => sales.normalizeSalesProduct(client.product) === 'ssu').length,
     },
-  });
+  };
+  if (req.salesUser.isAdmin) {
+    payload.owners = await listSalesOwnerOptions(req.salesUser);
+  }
+  res.json(payload);
 });
 
 app.post('/api/admin/sales/backfill-products', salesAuth, (req, res) => {
@@ -10535,7 +10840,7 @@ app.get('/api/admin/sales/email-audit', salesAuth, (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
     ? all
-    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+    : all.filter((client) => canAccessSalesClient(req, client));
   res.json(buildSalesEmailAudit(visible));
 });
 
@@ -10673,7 +10978,7 @@ app.get('/api/admin/sales/meeting-map', salesAuth, async (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
     ? all
-    : all.filter((client) => client.ownerId === req.salesUser.accountKey);
+    : all.filter((client) => canAccessSalesClient(req, client));
 
   const productFilter = sales.normalizeSalesProduct(req.query?.product, { allowEmpty: true });
   const scoped = productFilter
@@ -10802,9 +11107,12 @@ async function resolveLocalRecordingAsset(targetPathname = '') {
   }
 
   const roots = [
+    path.resolve(MYPHONER_AUDIO_DIR),
+    path.resolve(MYPHONER_RECORDINGS_DIR),
     path.resolve(distPath),
     path.resolve(__dirname, 'public'),
     path.resolve(getPersistentDataDir()),
+    ...extraMyphonerAudioDirs(),
   ];
 
   // Allow /myphoner-recordings/<file> to resolve from the persistent recordings dir.
@@ -10823,15 +11131,17 @@ async function resolveLocalRecordingAsset(targetPathname = '') {
     }
   }
 
-  // Direct filename lookup in managed recordings dir.
   const baseName = path.basename(normalized);
-  if (baseName && baseName === normalized.replace(/^[/\\]+/, '')) {
-    const managed = path.resolve(MYPHONER_RECORDINGS_DIR, baseName);
-    try {
-      const stats = await fs.stat(managed);
-      if (stats.isFile()) return managed;
-    } catch {
-      // ignore
+  if (baseName && LOCAL_RECORDING_EXTENSIONS.has(path.extname(baseName).toLowerCase())) {
+    for (const dir of [MYPHONER_AUDIO_DIR, MYPHONER_RECORDINGS_DIR, ...extraMyphonerAudioDirs()]) {
+      const managed = path.resolve(dir, baseName);
+      if (!managed.startsWith(path.resolve(dir))) continue;
+      try {
+        const stats = await fs.stat(managed);
+        if (stats.isFile()) return managed;
+      } catch {
+        // ignore
+      }
     }
   }
   return '';
@@ -10922,6 +11232,12 @@ app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
     const contentLengthRaw = upstream.headers.get('content-length');
     const contentLength = Number(contentLengthRaw);
     const payload = Buffer.from(await upstream.arrayBuffer());
+    const payloadHead = payload.subarray(0, 256).toString('utf8');
+    if (/text\/html/i.test(contentType) || /^\s*<(!DOCTYPE|html|head|body)\b/i.test(payloadHead)) {
+      return res.status(404).json({
+        message: 'Recording file is missing on the server.',
+      });
+    }
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', contentType);
     if (Number.isFinite(contentLength) && contentLength > 0) {
@@ -10933,6 +11249,130 @@ app.get('/api/admin/sales/:id/recording', salesAuth, async (req, res) => {
       message: sanitizeText(error?.message) || 'Failed streaming recording.',
     });
   }
+});
+
+async function deleteSalesClientWithCleanup(existing, actorAccountKey = '') {
+  if (existing?.calendar?.eventId) {
+    try {
+      const deleteKey =
+        sanitizeText(existing.calendar?.accountKey) ||
+        resolveCalendarSyncAccountKey({
+          ownerId: existing.ownerId || '',
+          actorAccountKey,
+          previousAccountKey: existing.calendar?.accountKey || '',
+        });
+      await deleteMeetingEvent(existing.calendar.eventId, deleteKey, existing.calendar?.calendarId
+        ? { calendarId: existing.calendar.calendarId }
+        : {});
+    } catch {
+      // Ignore remote cleanup failures; deletion in local sales store still proceeds.
+    }
+  }
+  if (existing?.websiteImport?.importRoot) {
+    const importBase = join(SALES_IMPORTS_ROOT, existing.id);
+    await fs.rm(importBase, { recursive: true, force: true }).catch(() => {});
+  }
+  return sales.deleteSalesClient(existing.id);
+}
+
+app.post('/api/admin/sales/bulk', salesAuth, async (req, res) => {
+  const action = sanitizeText(req.body?.action).toLowerCase();
+  const allowed = new Set(['assign', 'delete', 'not-sold', 'secondary', 'restore', 'send-welcome', 'send-reminder']);
+  if (!allowed.has(action)) {
+    return res.status(400).json({ message: 'Unknown bulk action.' });
+  }
+  const clientIds = [...new Set(
+    (Array.isArray(req.body?.clientIds) ? req.body.clientIds : [])
+      .map((id) => sanitizeText(id))
+      .filter(Boolean)
+  )];
+  if (!clientIds.length) return res.status(400).json({ message: 'Select at least one client.' });
+  if (clientIds.length > 200) return res.status(400).json({ message: 'Select at most 200 clients at a time.' });
+  if (action === 'assign' && !req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can assign sales clients.' });
+  }
+
+  let ownerId = '';
+  if (action === 'assign') {
+    ownerId = await resolveAssignableSalesOwnerId(req.body?.ownerId, req.salesUser);
+    if (!ownerId) {
+      return res.status(400).json({ message: 'Choose a sales rep to send the clients to.' });
+    }
+  }
+
+  const reason = sanitizeText(req.body?.reason);
+  const reminderKind = normalizeSalesReminderKind(req.body?.kind || req.body?.reminderKind || '24h');
+  const summary = {
+    action,
+    attempted: clientIds.length,
+    updated: 0,
+    deleted: 0,
+    skipped: 0,
+    failed: 0,
+    errors: [],
+  };
+
+  for (const id of clientIds) {
+    const existing = sales.getSalesClientById(id);
+    if (!existing || !canAccessSalesClient(req, existing)) {
+      summary.skipped += 1;
+      continue;
+    }
+    try {
+      if (action === 'assign') {
+        if (!sales.updateSalesClient(id, { ownerId })) throw new Error('Failed assigning owner.');
+        summary.updated += 1;
+      } else if (action === 'delete') {
+        const ok = await deleteSalesClientWithCleanup(existing, req.salesUser.accountKey);
+        if (!ok) throw new Error('Failed deleting client.');
+        summary.deleted += 1;
+      } else if (action === 'not-sold') {
+        if (!sales.setSalesStatus(id, 'not-sold', { reason })) throw new Error('Failed marking not sold.');
+        summary.updated += 1;
+      } else if (action === 'secondary') {
+        if (!sales.setSalesStatus(id, 'secondary', { reason })) throw new Error('Failed moving to secondary.');
+        summary.updated += 1;
+      } else if (action === 'restore') {
+        if (!sales.setSalesStatus(id, 'active', {})) throw new Error('Failed restoring client.');
+        summary.updated += 1;
+      } else if (action === 'send-welcome') {
+        const sentResult = await sendSalesThankYou(existing, {
+          force: true,
+          actorAccountKey: req.salesUser.accountKey,
+          salesUser: req.salesUser,
+        });
+        if (sentResult?.sent) summary.updated += 1;
+        else summary.skipped += 1;
+      } else if (action === 'send-reminder') {
+        const sentResult = await sendSalesReminderNow(existing, reminderKind, {
+          salesUser: req.salesUser,
+          actorAccountKey: req.salesUser.accountKey,
+        });
+        if (sentResult?.sent) summary.updated += 1;
+        else summary.skipped += 1;
+      }
+    } catch (error) {
+      summary.failed += 1;
+      summary.errors.push({ id, message: sanitizeText(error?.message) || 'failed' });
+    }
+  }
+
+  return res.json({ ok: true, ...summary });
+});
+
+app.post('/api/admin/sales/:id/owner', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can assign sales clients.' });
+  }
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  const ownerId = await resolveAssignableSalesOwnerId(req.body?.ownerId, req.salesUser);
+  if (!ownerId) {
+    return res.status(400).json({ message: 'Choose a Sales user or keep the client on admin.' });
+  }
+  const client = sales.updateSalesClient(req.params.id, { ownerId });
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  res.json({ client });
 });
 
 app.post('/api/admin/sales', salesAuth, async (req, res) => {
@@ -10983,7 +11423,7 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
       existing.contactEmail !== client.contactEmail;
 
     const syncResult = await maybeSyncCalendar(client, existing, {
-      notifyAttendees: meetingChanged,
+      notifyAttendees: Boolean(existing?.reminders?.thankYouSentAt) && meetingChanged,
       actorAccountKey: req.salesUser.accountKey,
     });
     client = syncResult.client || client;
@@ -11015,26 +11455,7 @@ app.delete('/api/admin/sales/:id', salesAuth, async (req, res) => {
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
 
-  if (existing.calendar?.eventId) {
-    try {
-      const deleteKey =
-        sanitizeText(existing.calendar?.accountKey) ||
-        resolveCalendarSyncAccountKey({
-          ownerId: existing.ownerId || '',
-          actorAccountKey: req.salesUser.accountKey,
-          previousAccountKey: existing.calendar?.accountKey || '',
-        });
-      await deleteMeetingEvent(existing.calendar.eventId, deleteKey);
-    } catch {
-      // Ignore remote cleanup failures; deletion in local sales store still proceeds.
-    }
-  }
-  if (existing.websiteImport?.importRoot) {
-    const importBase = join(SALES_IMPORTS_ROOT, existing.id);
-    await fs.rm(importBase, { recursive: true, force: true }).catch(() => {});
-  }
-
-  const ok = sales.deleteSalesClient(existing.id);
+  const ok = await deleteSalesClientWithCleanup(existing, req.salesUser.accountKey);
   if (!ok) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ ok: true });
 });
@@ -11042,13 +11463,46 @@ app.delete('/api/admin/sales/:id', salesAuth, async (req, res) => {
 app.patch('/api/admin/sales/:id/progression', salesAuth, (req, res) => {
   const key = sanitizeText(req.body?.key);
   const value = parseBoolean(req.body?.value, false);
+  const fastTrack = parseBoolean(req.body?.fastTrack, false);
   if (!key) return res.status(400).json({ message: 'Progression key is required.' });
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
-  const updated = sales.setSalesProgress(req.params.id, key, value);
-  if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
-  res.json({ client: updated });
+  try {
+    const updated = sales.setSalesProgress(req.params.id, key, value, { fastTrack });
+    if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+    res.json({ client: updated });
+  } catch (error) {
+    const message = sanitizeText(error?.message) || 'Failed updating progression.';
+    res.status(400).json({ message });
+  }
+});
+
+app.patch('/api/admin/sales/:id/next-actions', salesAuth, async (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  try {
+    const updated = sales.setSalesNextAction(req.params.id, req.body || {});
+    if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
+    let client = updated;
+    const meetingChanged = existing.meetingAt !== client.meetingAt || existing.agreedTime !== client.agreedTime;
+    if (meetingChanged) {
+      const syncResult = await maybeSyncCalendar(client, existing, {
+        notifyAttendees: Boolean(existing?.reminders?.thankYouSentAt),
+        actorAccountKey: req.salesUser.accountKey,
+      });
+      client = syncResult.client || client;
+    }
+    const reminderSync = await maybeSyncNextActionCalendars(existing, client, {
+      actorAccountKey: req.salesUser.accountKey,
+    });
+    client = reminderSync.client || client;
+    res.json({ client, warnings: reminderSync.warnings || [] });
+  } catch (error) {
+    const message = sanitizeText(error?.message) || 'Failed updating next action.';
+    res.status(400).json({ message });
+  }
 });
 
 app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
@@ -11206,46 +11660,55 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
     }
     const templateKey = sanitizeText(req.body?.templateKey || req.body?.markAs) || 'thank-you';
     const isOnline = normalizeMeetingMode(client?.meetingMode) === 'online';
+    const isThankYou = templateKey === 'thank-you' || templateKey === 'welcome';
     let calendarWarnings = [];
-    if (templateKey === 'thank-you' || templateKey === 'welcome') {
-      const syncResult = await maybeSyncCalendar(client, client, {
-        notifyAttendees: !client?.reminders?.thankYouSentAt,
-        requireMeetLink: isOnline,
+    let calendarConnected = false;
+    if (isThankYou) {
+      const syncResult = await syncCalendarInviteForThankYou(client, {
         actorAccountKey: req.salesUser.accountKey,
+        requireMeetLink: isOnline,
       });
       client = syncResult.client || client;
       calendarWarnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
+      calendarConnected = Boolean(syncResult.calendarConnected);
+    } else {
+      calendarConnected = getGoogleCalendarStatus(
+        client?.calendar?.accountKey || req.salesUser.accountKey
+      ).connected && Boolean(sanitizeText(client?.calendar?.eventId));
     }
     const to = sanitizeText(req.body?.to) || client.contactEmail;
     if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
     const sender = await resolveSalesSenderForAccount(req.salesUser);
-    const calendarConnected = getGoogleCalendarStatus(req.salesUser.accountKey).connected
-      && Boolean(sanitizeText(client?.calendar?.eventId));
     const composed = composeEmailForClient(client, templateKey, {
       html: req.body?.html,
       subject: req.body?.subject,
       preheader: req.body?.preheader,
     }, {
       sender,
-      attachInvite: !calendarConnected,
+      attachInvite: isThankYou && !calendarConnected,
     }).message;
+    const subject = isThankYou && calendarConnected && !sanitizeText(req.body?.subject)
+      ? `Re: ${buildGoogleCalendarInvitationSubject(client)}`
+      : composed.subject;
     await emailLib.sendEmail({
       to,
       from: composed.from,
       replyTo: composed.replyTo,
       bcc: salesEmailCopyBcc(to),
-      subject: composed.subject,
+      subject,
       text: composed.text || htmlToPlainText(composed.html),
       html: composed.html,
       attachments: composed.attachments,
       icalEvent: composed.icalEvent,
     });
-    const markAs = sanitizeText(req.body?.markAs) || templateKey;
-    const reminderKey = markAs === 'reminder-1h' || markAs === '1h'
+    const markAs = sanitizeText(req.body?.markAs || req.body?.templateKey || templateKey).toLowerCase();
+    const reminderKey = markAs.includes('1h')
       ? '1h'
-      : markAs === 'reminder-24h' || markAs === '24h' || markAs === 'reminder'
-        ? '24h'
-        : 'thankYou';
+      : (markAs.includes('3d') || markAs.includes('72h'))
+        ? '3d'
+        : markAs.includes('reminder') || markAs === '24h'
+          ? '24h'
+          : 'thankYou';
     const updated = sales.markSalesReminderSent(client.id, reminderKey);
     return res.json({
       ok: true,
@@ -11307,7 +11770,7 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
 
     const requestedKind = sanitizeText(req.body?.kind || '24h');
-    const reminderKind = requestedKind === '1h' ? '1h' : '24h';
+    const reminderKind = normalizeSalesReminderKind(requestedKind);
     const syncWarnings = [];
     const sentResult = await sendSalesReminderNow(client, reminderKind, {
       salesUser: req.salesUser,
@@ -12461,7 +12924,7 @@ app.get('/api/admin/sales/offers', salesAuth, (req, res) => {
   const all = offers.listOffers();
   const visible = req.salesUser.isAdmin
     ? all
-    : all.filter((entry) => entry.ownerId === req.salesUser.accountKey);
+    : all.filter((entry) => salesUserOwnerKeys(req.salesUser).has(sanitizeText(entry.ownerId)));
   const list = visible.map((entry) => hydrateOfferPreviewFromSalesImport(entry, { persist: true }));
   res.json({ offers: list });
 });
@@ -12837,6 +13300,7 @@ app.get('/email/preview/sales-thank-you', (req, res) => {
     assetBase: `${origin}/email/sales`,
     siteUrl: origin,
     view: sanitizeText(req.query?.view),
+    meetingMode: sanitizeText(req.query?.mode),
     previewBasePath: '/email/preview/sales-thank-you',
   }));
 });
@@ -12848,8 +13312,9 @@ app.get('/email/preview/sales-reminder', (req, res) => {
     assetBase: `${origin}/email/sales`,
     siteUrl: origin,
     view: sanitizeText(req.query?.view),
+    meetingMode: sanitizeText(req.query?.mode),
     previewBasePath: '/email/preview/sales-reminder',
-    reminderKind: sanitizeText(req.query?.kind) === '1h' ? '1h' : '24h',
+    reminderKind: sanitizeText(req.query?.kind),
   }));
 });
 
@@ -12869,6 +13334,23 @@ app.get('/email/preview/draft/:id', (req, res) => {
 
 
 // --- Static and SPA
+app.get('/myphoner-audio/:file', async (req, res, next) => {
+  const fileName = path.basename(String(req.params.file || ''));
+  if (!fileName || !LOCAL_RECORDING_EXTENSIONS.has(path.extname(fileName).toLowerCase())) {
+    return next();
+  }
+  const localAssetPath =
+    (await resolveLocalRecordingAsset(`myphoner-audio/${fileName}`)) ||
+    (await resolveLocalRecordingAsset(fileName));
+  if (!localAssetPath) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  res.setHeader('Content-Type', recordingContentTypeForPath(localAssetPath));
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  return res.sendFile(localAssetPath);
+});
+
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/')) return next();
   if (req.path.match(/\.(tsx?|jsx)$/)) return res.status(404).send('Not found');
@@ -12887,6 +13369,31 @@ app.use(
   })
 );
 
+app.use(
+  '/myphoner-audio',
+  express.static(MYPHONER_AUDIO_DIR, {
+    fallthrough: true,
+    setHeaders: (res, filePath) => {
+      res.setHeader('Content-Type', recordingContentTypeForPath(filePath));
+      res.setHeader('Cache-Control', 'private, max-age=3600');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+    },
+  })
+);
+for (const extraAudioDir of extraMyphonerAudioDirs()) {
+  app.use(
+    '/myphoner-audio',
+    express.static(extraAudioDir, {
+      fallthrough: true,
+      setHeaders: (res, filePath) => {
+        res.setHeader('Content-Type', recordingContentTypeForPath(filePath));
+        res.setHeader('Cache-Control', 'private, max-age=3600');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+      },
+    })
+  );
+}
+
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -12902,6 +13409,9 @@ app.use(express.static(publicPath, {
 }));
 
 app.get('*', (req, res) => {
+  if (LOCAL_RECORDING_EXTENSIONS.has(path.extname(String(req.path || '')).toLowerCase())) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
   // Preview pages sometimes reference root-absolute URLs that JavaScript
   // builds at runtime (so the HTML rewrite cannot catch them). When such a
   // request comes from a /sales-preview/ page, send it back into that
@@ -13055,7 +13565,6 @@ async function ensureData() {
     );
   }
   await ensureMyphonerRecordingsDir().catch(() => {});
-  await runStartupSalesRecordingBackfill();
 }
 
 ensureData().then(() => {
@@ -13067,6 +13576,10 @@ ensureData().then(() => {
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
+    console.log(`[audio] persistent=${MYPHONER_AUDIO_DIR} extra=${extraMyphonerAudioDirs().join('|') || '(none)'}`);
+    runStartupSalesRecordingBackfill().catch((error) => {
+      console.error('[sales] startup recording backfill crashed:', sanitizeText(error?.message) || error);
+    });
     runStartupSalesLinkBackfill().catch((error) => {
       console.error('[sales] startup links backfill crashed:', sanitizeText(error?.message) || error);
     });

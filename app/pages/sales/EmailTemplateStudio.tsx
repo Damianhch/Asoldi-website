@@ -12,6 +12,7 @@ import {
   type EmailTemplate,
   type MergeField,
 } from './emailApi';
+import { getSalesToken } from '../Admin/shared';
 
 type Props = {
   embedded?: boolean;
@@ -276,7 +277,7 @@ export function EmailTemplateStudio({ embedded = false }: Props) {
         <title>E-postmaler – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <div className="min-h-screen bg-[#1a1a1a] text-white">
+      <div className="staff-light min-h-screen bg-[#1a1a1a] text-white">
         <header className="border-b border-white/10 bg-[#222]">
           <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between">
             <div>
@@ -299,7 +300,7 @@ export function EmailTemplateStudio({ embedded = false }: Props) {
 export function EmailTemplateStudioPage() {
   const navigate = useNavigate();
   useEffect(() => {
-    const token = localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken') || localStorage.getItem('employeeToken');
+    const token = getSalesToken();
     if (!token) navigate('/login/ansatt', { replace: true });
   }, [navigate]);
   return <EmailTemplateStudio />;

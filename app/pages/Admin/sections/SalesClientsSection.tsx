@@ -4,7 +4,7 @@ import {
   BellRing,
   ArchiveX,
   CalendarClock,
-  CheckCircle2,
+  ChevronDown,
   Copy,
   ExternalLink,
   Gift,
@@ -21,11 +21,18 @@ import {
   Trash2,
   Undo2,
   UserRound,
+  Users,
   Volume2,
   X,
 } from 'lucide-react';
-import { API, salesAuthHeaders, type SalesClient, type SalesProduct } from '../shared';
+import { API, salesAuthHeaders, type SalesClient, type SalesGoalKey, type SalesProduct } from '../shared';
 import { MeetingNotesModal } from '../../sales/MeetingNotesModal';
+import { SalesGoalTimeline } from './SalesGoalTimeline';
+import {
+  getActiveNextAction,
+  getClientNextActionMs,
+  groupSalesClientsByNextAction,
+} from '../../../../lib/sales-next-actions.js';
 import {
   clientHasPublicPreviewSnapshot,
   getPublicClientPreviewUrl,
@@ -78,6 +85,12 @@ type CalendarStatus = {
   loginRole?: string;
   loginUsername?: string;
   loginAccountKey?: string;
+};
+
+type SalesOwnerOption = {
+  accountKey: string;
+  username: string;
+  name: string;
 };
 
 type MeetingMapPin = {
@@ -279,14 +292,6 @@ function matchesClientSearchQuery(haystack = '', rawQuery = '') {
   return true;
 }
 
-function parseMeetingTimestamp(value = '') {
-  if (!value) return null;
-  const date = new Date(value);
-  const time = date.getTime();
-  if (Number.isNaN(time)) return null;
-  return time;
-}
-
 function pinStyleFor(pin: MeetingMapPin) {
   if (pin.status === 'not-sold') {
     return { color: '#9ca3af', fillColor: '#6b7280' };
@@ -316,14 +321,15 @@ function escapeHtml(value = '') {
     .replace(/'/g, '&#39;');
 }
 
-type ProgressionKey = 'step0AgreeMeetingTime' | 'contractSigned' | 'paymentReceived' | 'domainConnected' | 'live';
-
-function formatStepLabel(value: string) {
-  if (value === 'step0AgreeMeetingTime') return 'Møte avtalt';
-  if (value === 'contractSigned') return 'Kontrakt signert';
-  if (value === 'paymentReceived') return 'Betaling mottatt';
-  if (value === 'domainConnected') return 'Domene koblet';
-  return 'Live';
+function salesStepBlockedReason(client: SalesClient, key: SalesGoalKey, fastTrack = false) {
+  if (key === 'offerSent' && !client.progression?.meetingHeld) return 'Marker møtet hatt først';
+  if (key === 'contractSigned') {
+    if (fastTrack) return '';
+    if (!client.progression?.meetingHeld) return 'Marker møtet hatt først';
+    if (!client.progression?.offerSent) return 'Marker sett tilbud først, eller hopp til kontrakt';
+  }
+  if (key === 'paymentReceived' && !client.progression?.contractSigned) return 'Marker kontrakt signert først';
+  return '';
 }
 
 export function SalesClientsSection({ onMovedToDevelopment }: Props) {
@@ -332,6 +338,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [productCounts, setProductCounts] = useState<{ asoldi: number; ssu: number }>({ asoldi: 0, ssu: 0 });
   const [productBracket, setProductBracket] = useState<SalesProduct>('asoldi');
   const [calendarStatus, setCalendarStatus] = useState<CalendarStatus | null>(null);
+  const [isSalesAdmin, setIsSalesAdmin] = useState(false);
+  const [salesOwners, setSalesOwners] = useState<SalesOwnerOption[]>([]);
+  const [assigningOwnerId, setAssigningOwnerId] = useState<string | null>(null);
+  const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkAssignOwnerId, setBulkAssignOwnerId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -344,6 +356,15 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
+  const [nextActionBusyId, setNextActionBusyId] = useState<string | null>(null);
+  const [collapsedBuckets, setCollapsedBuckets] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = window.localStorage.getItem('asoldi-sales-timeline-collapsed');
+      return raw ? JSON.parse(raw) as Record<string, boolean> : {};
+    } catch {
+      return {};
+    }
+  });
   const [statusBusyId, setStatusBusyId] = useState<string | null>(null);
   const { websiteMakerBaseUrl } = useWebsiteMakerBaseUrl();
   const [meetingNowMs, setMeetingNowMs] = useState(() => Date.now());
@@ -433,36 +454,80 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     () => productClients.filter((client) => client.status === 'not-sold' && clientMatchesNameSearch(client)),
     [productClients, normalizedClientSearchQuery]
   );
-  const activeMeetingGroups = useMemo(() => {
-    const upcoming: SalesClient[] = [];
-    const pastDue: SalesClient[] = [];
-    const noMeetingDate: SalesClient[] = [];
-
-    for (const client of timelineClients) {
-      const meetingTime = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
-      if (meetingTime === null) {
-        noMeetingDate.push(client);
-      } else if (meetingTime < meetingNowMs) {
-        pastDue.push(client);
-      } else {
-        upcoming.push(client);
-      }
-    }
-
-    upcoming.sort((a, b) => (parseMeetingTimestamp(a.meetingAt) || 0) - (parseMeetingTimestamp(b.meetingAt) || 0));
-    pastDue.sort((a, b) => (parseMeetingTimestamp(b.meetingAt) || 0) - (parseMeetingTimestamp(a.meetingAt) || 0));
-    noMeetingDate.sort((a, b) =>
-      String(a.businessName || '').localeCompare(String(b.businessName || ''), 'nb-NO', { sensitivity: 'base' })
-    );
-
-    return { upcoming, pastDue, noMeetingDate };
-  }, [timelineClients, meetingNowMs]);
+  const activeMeetingGroups = useMemo(
+    () => groupSalesClientsByNextAction(timelineClients, meetingNowMs),
+    [timelineClients, meetingNowMs]
+  );
   const orderedTimelineClients = useMemo(
-    () => [...activeMeetingGroups.upcoming, ...activeMeetingGroups.noMeetingDate, ...activeMeetingGroups.pastDue],
+    () => [
+      ...(activeMeetingGroups.recentPastDue || []),
+      ...activeMeetingGroups.upcoming,
+      ...activeMeetingGroups.pastDue,
+      ...activeMeetingGroups.noNextAction,
+    ],
     [activeMeetingGroups]
   );
-  const firstNoMeetingDateClientId = activeMeetingGroups.noMeetingDate[0]?.id || '';
-  const firstPastDueClientId = activeMeetingGroups.pastDue[0]?.id || '';
+  const timelineRows = useMemo(() => {
+    const rows: Array<
+      | { kind: 'header'; id: string; title: string; hint: string; count: number; tone: 'recent' | 'upcoming' | 'past' | 'none' }
+      | { kind: 'divider'; id: string }
+      | { kind: 'client'; client: SalesClient }
+    > = [];
+    const pushSection = (
+      id: string,
+      title: string,
+      hint: string,
+      clients: SalesClient[],
+      tone: 'recent' | 'upcoming' | 'past' | 'none'
+    ) => {
+      rows.push({ kind: 'header', id, title, hint, count: clients.length, tone });
+      if (!collapsedBuckets[id]) {
+        for (const client of clients) rows.push({ kind: 'client', client });
+      }
+    };
+    pushSection(
+      'recentPastDue',
+      'Forfalt (siste 48 timer)',
+      'Nylig forfalt — vises over listen så du ikke mister dem.',
+      activeMeetingGroups.recentPastDue || [],
+      'recent'
+    );
+    rows.push({ kind: 'divider', id: 'after-recent' });
+    pushSection(
+      'upcoming',
+      'Neste handling',
+      'Kommende handlinger, nærmeste først.',
+      activeMeetingGroups.upcoming,
+      'upcoming'
+    );
+    rows.push({ kind: 'divider', id: 'after-upcoming' });
+    pushSection(
+      'pastDue',
+      'Forfalt',
+      'Mer enn 48 timer etter avtalt handling.',
+      activeMeetingGroups.pastDue,
+      'past'
+    );
+    pushSection(
+      'noNextAction',
+      'No agreed meeting date',
+      'Ingen neste handling eller avtalt møtetid.',
+      activeMeetingGroups.noNextAction,
+      'none'
+    );
+    return rows;
+  }, [activeMeetingGroups, collapsedBuckets]);
+  const visibleSelectableClients = useMemo(
+    () => [...orderedTimelineClients, ...archivedClients],
+    [orderedTimelineClients, archivedClients]
+  );
+  const visibleSelectableIds = useMemo(
+    () => visibleSelectableClients.map((client) => client.id),
+    [visibleSelectableClients]
+  );
+  const selectedCount = selectedClientIds.length;
+  const allVisibleSelected = visibleSelectableIds.length > 0
+    && visibleSelectableIds.every((id) => selectedClientIds.includes(id));
   const visibleMeetingMapPins = useMemo(() => {
     const allowedIds = new Set(productClients.map((client) => client.id));
     return meetingMapPins.filter((pin) => allowedIds.has(pin.clientId));
@@ -528,6 +593,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       const data = await request('/admin/sales');
       const nextClients = Array.isArray(data.clients) ? data.clients : [];
       setClients(nextClients);
+      const nextIds = new Set(nextClients.map((client: SalesClient) => client.id));
+      setSelectedClientIds((prev) => prev.filter((id) => nextIds.has(id)));
       const counts = data.products && typeof data.products === 'object'
         ? data.products
         : {
@@ -538,7 +605,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         asoldi: Number(counts.asoldi) || 0,
         ssu: Number(counts.ssu) || 0,
       });
-      setCalendarStatus((data.calendar || null) as CalendarStatus | null);
+      if (data.calendar) setCalendarStatus(data.calendar as CalendarStatus);
+      setIsSalesAdmin(Boolean(data.isAdmin) || data?.calendar?.loginRole === 'admin');
+      setSalesOwners(Array.isArray(data.owners) ? data.owners : []);
       void loadMeetingMap();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load sales clients');
@@ -556,9 +625,25 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  async function loadCalendarStatus() {
+    try {
+      const data = await request('/admin/sales/google/status');
+      setCalendarStatus(data as CalendarStatus);
+    } catch {
+      setCalendarStatus((prev) => prev || {
+        configured: true,
+        connected: false,
+        calendarId: '',
+        redirectUri: '',
+        tokenUpdatedAt: '',
+      });
+    }
+  }
+
   useEffect(() => {
     void loadSales();
     void loadOffers();
+    void loadCalendarStatus();
   }, []);
 
   useEffect(() => {
@@ -577,6 +662,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
   useEffect(() => {
     void loadMeetingMap({ quiet: true });
+    setSelectedClientIds([]);
+    setBulkAssignOwnerId('');
   }, [productBracket]);
 
   useEffect(() => {
@@ -848,8 +935,11 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
     if (sendingEmailKey) return;
     if (client.reminders?.thankYouSentAt) {
+      const invitePending = !String(client.calendar?.guestInvitedAt || '').trim();
       const confirmed = window.confirm(
-        'Welcome email was already sent. Send the branded Asoldi email again? Google will not send a second calendar invite if the meeting already exists.'
+        invitePending
+          ? 'Welcome email was already sent, but the Google invite may not have gone out. Send again? This sends the calendar invite first, then the branded Asoldi mail.'
+          : 'Welcome email was already sent. Send the branded Asoldi email again? Google will not send a second calendar invite.'
       );
       if (!confirmed) return;
     }
@@ -867,7 +957,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         `Welcome email sent to ${client.contactEmail}`
         + (from ? ` from ${from}.` : '.')
         + (meet
-          ? ' Google Calendar sends the invite separately — open the Asoldi mail for the branded message, and Google’s invitation for Add to calendar.'
+          ? ' Google Calendar sends the invite first. The branded Asoldi mail follows as a reply in that conversation.'
           : ' A calendar file is attached because Google Calendar is not connected on this login.')
       );
       if (warnings.length) setError(warnings.join(' | '));
@@ -880,33 +970,40 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  async function sendReminderEmail(client: SalesClient) {
+  async function sendReminderEmail(client: SalesClient, kind: '3d' | '24h' | '1h' = '24h') {
+    const templateKey = kind === '1h' ? 'reminder-1h' : kind === '3d' ? 'reminder-3d' : 'reminder-24h';
     if (clientEditsEmailBeforeSend(client)) {
-      openEmailComposer(client, 'reminder-24h');
+      openEmailComposer(client, templateKey);
       return;
     }
     if (sendingEmailKey) return;
-    if (client.reminders?.reminder24hSentAt) {
+    const alreadySent = kind === '1h'
+      ? client.reminders?.reminder1hSentAt
+      : kind === '3d'
+        ? client.reminders?.reminder3dSentAt
+        : client.reminders?.reminder24hSentAt;
+    if (alreadySent) {
       const confirmed = window.confirm('Reminder was already sent. Send again?');
       if (!confirmed) return;
     }
-    setSendingEmailKey(`reminder:${client.id}`);
+    setSendingEmailKey(`reminder-${kind}:${client.id}`);
     setError('');
     setNotice('');
     try {
       const data = await request(`/admin/sales/${client.id}/send-reminder`, {
         method: 'POST',
-        body: JSON.stringify({ kind: '24h' }),
+        body: JSON.stringify({ kind }),
       });
       const saved = data?.client as SalesClient | undefined;
       if (saved?.id) applySavedClient(saved);
       const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
-      setNotice(`Reminder sent to ${client.contactEmail}.`);
+      const label = kind === '1h' ? '1-hour' : kind === '3d' ? '3-day' : '24-hour';
+      setNotice(`${label} reminder sent to ${client.contactEmail}.`);
       if (warnings.length) setError(warnings.join(' | '));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed sending reminder');
     } finally {
-      setSendingEmailKey((current) => (current === `reminder:${client.id}` ? null : current));
+      setSendingEmailKey((current) => (current === `reminder-${kind}:${client.id}` ? null : current));
     }
   }
 
@@ -992,8 +1089,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         body: JSON.stringify(payload),
       });
       const warnings = Array.isArray(data.warnings) ? data.warnings.filter(Boolean) : [];
+      const saved = (data.client || {}) as SalesClient;
       const meetingUpdated = Boolean(editingId && data.meetingChanged && data.calendarInviteSent);
-      const savedId = editingId;
+      const savedId = editingId || saved.id || '';
       setShowForm(false);
       setEditingId(null);
       if (savedId) {
@@ -1006,11 +1104,21 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       }
       await loadSales({ clearMessages: false });
       setError(warnings.length ? warnings.join(' | ') : '');
-      setNotice(
-        meetingUpdated
-          ? 'Meeting updated. Google Calendar sends the updated invitation in the same calendar thread. No extra Asoldi welcome email was sent.'
-          : ''
-      );
+      const googleEmail = calendarStatus?.googleEmail || saved.calendar?.accountKey || '';
+      if (saved.calendar?.eventId) {
+        setNotice(
+          meetingUpdated
+            ? `Meeting updated on Google Calendar${googleEmail ? ` (${googleEmail})` : ''}. Open that Google account — not a different Gmail / work inbox.`
+            : `Meeting saved to Google Calendar${googleEmail ? ` (${googleEmail})` : ''}. Open that Google account to see it. The client only gets a Google invite when you send confirmation.`
+        );
+      } else if (payload.agreedTime) {
+        setNotice('');
+        if (!warnings.length) {
+          setError('Saved, but no Google Calendar event was created. Check Connect Google Calendar on this login, then save the client again.');
+        }
+      } else {
+        setNotice('Saved. Turn on Agreed time and set date/time, then save again to create the Google Calendar event.');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed saving sales client');
     } finally {
@@ -1018,18 +1126,22 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  async function toggleProgress(client: SalesClient, key: ProgressionKey) {
-    if (key === 'step0AgreeMeetingTime') {
-      openEdit(client);
-      return;
-    }
-    const nextValue = !client.progression?.[key];
-    if (key === 'contractSigned' && nextValue && !(client.agreedTime && client.meetingAt)) {
-      setError('Sett avtalt møtetid før du markerer kontrakt signert.');
-      return;
+  async function toggleProgress(client: SalesClient, key: SalesGoalKey, extra?: { fastTrack?: boolean }) {
+    const fastTrack = Boolean(extra?.fastTrack);
+    const nextValue = fastTrack ? true : !client.progression?.[key];
+    if (nextValue) {
+      const blocked = salesStepBlockedReason(client, key, fastTrack);
+      if (blocked) {
+        setError(blocked);
+        return;
+      }
     }
     if (key === 'contractSigned' && !nextValue && client.progression?.contractSigned) {
       const confirmed = window.confirm('Angre solgt nettside? Kunden tas ut av deployment-utvikling.');
+      if (!confirmed) return;
+    }
+    if (fastTrack) {
+      const confirmed = window.confirm('Hopp til kontrakt signert? Gjenstående mål mellom hoppes over.');
       if (!confirmed) return;
     }
     setProgressBusyKey(`${client.id}:${key}`);
@@ -1040,6 +1152,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         body: JSON.stringify({
           key,
           value: nextValue,
+          fastTrack,
         }),
       });
       await loadSales();
@@ -1047,6 +1160,22 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       setError(err instanceof Error ? err.message : 'Failed updating progression');
     } finally {
       setProgressBusyKey(null);
+    }
+  }
+
+  async function mutateNextAction(client: SalesClient, body: Record<string, unknown>) {
+    setNextActionBusyId(client.id);
+    setError('');
+    try {
+      await request(`/admin/sales/${client.id}/next-actions`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      await loadSales();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed updating next action');
+    } finally {
+      setNextActionBusyId(null);
     }
   }
 
@@ -1152,6 +1281,135 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  async function assignClientOwner(client: SalesClient, ownerId: string) {
+    if (!isSalesAdmin || ownerId === (client.ownerId || '')) return;
+    setAssigningOwnerId(client.id);
+    setError('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/owner`, {
+        method: 'POST',
+        body: JSON.stringify({ ownerId }),
+      });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved) applySavedClient(saved);
+      else await loadSales({ clearMessages: false, showLoading: false });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed assigning sales owner');
+    } finally {
+      setAssigningOwnerId(null);
+    }
+  }
+
+  function ownerLabel(owner: SalesOwnerOption) {
+    if (owner.name && owner.username) return `${owner.name} · ${owner.username}`;
+    return owner.name || owner.username || owner.accountKey;
+  }
+
+  function toggleClientSelected(clientId: string) {
+    setSelectedClientIds((prev) => (
+      prev.includes(clientId) ? prev.filter((id) => id !== clientId) : [...prev, clientId]
+    ));
+  }
+
+  function toggleSelectAllVisible() {
+    if (allVisibleSelected) {
+      const hide = new Set(visibleSelectableIds);
+      setSelectedClientIds((prev) => prev.filter((id) => !hide.has(id)));
+      return;
+    }
+    setSelectedClientIds((prev) => [...new Set([...prev, ...visibleSelectableIds])]);
+  }
+
+  function handleClientCardClick(event: React.MouseEvent<HTMLElement>, clientId: string) {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    if (target.closest('button, a, input, select, textarea, label, audio, details, summary')) return;
+    if (window.getSelection()?.toString()) return;
+    toggleClientSelected(clientId);
+  }
+
+  function toggleTimelineBucket(id: string) {
+    setCollapsedBuckets((prev) => {
+      const next = { ...prev, [id]: !prev[id] };
+      try {
+        window.localStorage.setItem('asoldi-sales-timeline-collapsed', JSON.stringify(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  }
+
+  function formatBulkResult(data: Record<string, unknown>) {
+    const updated = Number(data.updated) || 0;
+    const deleted = Number(data.deleted) || 0;
+    const skipped = Number(data.skipped) || 0;
+    const failed = Number(data.failed) || 0;
+    const parts = [];
+    if (updated) parts.push(`${updated} updated`);
+    if (deleted) parts.push(`${deleted} deleted`);
+    if (skipped) parts.push(`${skipped} skipped`);
+    if (failed) parts.push(`${failed} failed`);
+    return parts.length ? `Bulk action: ${parts.join(', ')}.` : 'Bulk action finished.';
+  }
+
+  async function runBulkAction(
+    action: 'assign' | 'delete' | 'not-sold' | 'secondary' | 'restore' | 'send-welcome' | 'send-reminder',
+    extra: { ownerId?: string; reason?: string; kind?: '3d' | '24h' | '1h' } = {},
+  ) {
+    if (!selectedClientIds.length || bulkBusy) return;
+    const count = selectedClientIds.length;
+    const payload = { ...extra };
+    if (action === 'assign') {
+      if (!isSalesAdmin) return;
+      const ownerId = payload.ownerId || bulkAssignOwnerId;
+      if (!ownerId) {
+        setError('Choose a sales rep to send the selected clients to.');
+        return;
+      }
+      payload.ownerId = ownerId;
+      if (!window.confirm(`Send ${count} selected client${count === 1 ? '' : 's'} to the chosen sales rep?`)) return;
+    }
+    if (action === 'delete' && !window.confirm(`Permanently delete ${count} selected client${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
+    if (action === 'not-sold') {
+      const reasonInput = window.prompt(`Optional reason for marking ${count} selected client${count === 1 ? '' : 's'} as not sold:`, '');
+      if (reasonInput === null) return;
+      payload.reason = reasonInput;
+    }
+    if (action === 'secondary') {
+      const reasonInput = window.prompt(`Optional note for moving ${count} selected client${count === 1 ? '' : 's'} to secondary:`, '');
+      if (reasonInput === null) return;
+      payload.reason = reasonInput;
+    }
+    if (action === 'send-welcome' && !window.confirm(`Send confirmation email to ${count} selected client${count === 1 ? '' : 's'}? Clients without email or meeting time will be skipped.`)) return;
+    if (action === 'send-reminder' && !window.confirm(`Send the ${payload.kind || '24h'} reminder to ${count} selected client${count === 1 ? '' : 's'}? Clients without email or meeting time will be skipped.`)) return;
+
+    setBulkBusy(true);
+    setError('');
+    setNotice('');
+    try {
+      const data = await request('/admin/sales/bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          action,
+          clientIds: selectedClientIds,
+          ownerId: payload.ownerId || '',
+          reason: payload.reason || '',
+          kind: payload.kind || '24h',
+        }),
+      });
+      setNotice(formatBulkResult(data as Record<string, unknown>));
+      setSelectedClientIds([]);
+      setBulkAssignOwnerId('');
+      await loadSales({ clearMessages: false });
+      if (action === 'delete') await loadOffers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Bulk action failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
   async function connectGoogleCalendar() {
     setError('');
     try {
@@ -1191,8 +1449,45 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     setClientSearchQuery('');
   }
 
+  const showCalendarConnect = calendarStatus?.configured !== false;
+  const loggedInAs = calendarStatus?.loginUsername || 'this Sales login';
+
   return (
     <div className="space-y-6">
+      <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+          <div className="min-w-0">
+            <span className={`inline-flex text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
+              Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured === false ? 'Not configured' : 'Not connected'}
+            </span>
+            {calendarStatus?.connected && calendarStatus.googleEmail && (
+              <p className="mt-2 text-[11px] text-gray-300">
+                Connected as <span className="text-white">{calendarStatus.googleEmail}</span>
+                {calendarStatus.googleName ? ` (${calendarStatus.googleName})` : ''}. Meetings go on that account’s main Google Calendar — open calendar.google.com while signed into that same Google account.
+              </p>
+            )}
+            {calendarStatus?.connected && !calendarStatus.googleEmail && (
+              <p className="mt-2 text-[11px] text-amber-200">
+                Calendar is connected, but we do not yet know which Google account. Click Reconnect and pick the Google account used for work meetings.
+              </p>
+            )}
+            <p className="mt-2 text-[11px] text-gray-400">
+              Logged in as {loggedInAs}. This login is for the Sales page and Asoldi mail.
+              Calendar is a separate Google login for whoever is signed in now — any sales user connects their own calendar.
+              Use a personal Gmail, or a Google account created with their @asoldi.com address (that is not Gmail; it is a Google login on the work email).
+              {calendarStatus?.loginRole === 'admin'
+                ? ' You are logged in as admin, so Connect binds the admin’s Google account. Each salesperson must log in at /sales as themselves and click Connect.'
+                : ''}
+            </p>
+          </div>
+          {showCalendarConnect && (
+            <button type="button" onClick={connectGoogleCalendar} className="shrink-0 px-3 py-2 rounded-lg bg-[#FF5B00] text-white hover:bg-[#e55200]">
+              {calendarStatus?.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
           <div>
@@ -1304,39 +1599,133 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             <span className="px-2 py-1 rounded border border-purple-700/30 bg-purple-900/20 text-purple-300">Test-like: {emailAudit.flaggedTest}</span>
           </div>
         </div>
+      </div>
 
-        <div className="mt-4 flex flex-col gap-3 rounded-xl border border-white/10 bg-black/20 p-3">
-          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-            <div className="min-w-0">
-              <span className={`inline-flex text-xs px-2 py-1 rounded ${calendarStatus?.connected ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/40 text-amber-300'}`}>
-                Google Calendar: {calendarStatus?.connected ? 'Connected' : calendarStatus?.configured ? 'Not connected' : 'Not configured'}
+      <div className="sticky top-2 z-30 rounded-2xl border border-[#FF5B00]/30 bg-[#2a2a2a] p-3 shadow-lg shadow-black/40">
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <label className="inline-flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                disabled={!visibleSelectableIds.length || bulkBusy}
+                onChange={toggleSelectAllVisible}
+                className="h-4 w-4 accent-[#FF5B00]"
+              />
+              Select all visible
+              <span className="text-xs text-gray-400">
+                {selectedCount
+                  ? `${selectedCount} selected`
+                  : `${visibleSelectableIds.length} clients on this list`}
               </span>
-              {calendarStatus?.connected && calendarStatus.googleEmail && (
-                <p className="mt-2 text-[11px] text-gray-300">
-                  Connected as <span className="text-white">{calendarStatus.googleEmail}</span>
-                  {calendarStatus.googleName ? ` (${calendarStatus.googleName})` : ''}. Meetings are created on that Google account.
-                </p>
-              )}
-              {calendarStatus?.connected && !calendarStatus.googleEmail && (
-                <p className="mt-2 text-[11px] text-amber-200">
-                  Calendar is connected, but we do not yet know which Google account. Click Reconnect and pick the salesperson’s Gmail in the Google window.
-                </p>
-              )}
-              <p className="mt-2 text-[11px] text-gray-400">
-                Connect uses the person who is logged in now
-                {calendarStatus?.loginUsername ? ` (${calendarStatus.loginUsername})` : ''}
-                , then whichever Google account they pick in the popup. Adding a Gmail as a Sales user or client does not connect that inbox by itself.
-                {calendarStatus?.loginRole === 'admin'
-                  ? ' You are logged in as admin — this connects your calendar, not Alexander’s. Alexander must log in at /sales as himself, then click Connect and choose his Gmail.'
-                  : ' Alexander should log in as the sales user, click Connect, and choose his Gmail in Google’s account picker.'}
-              </p>
-            </div>
-            {calendarStatus?.configured && (
-              <button type="button" onClick={connectGoogleCalendar} className="shrink-0 px-3 py-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
-                {calendarStatus.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
+            </label>
+            {selectedCount > 0 && (
+              <button
+                type="button"
+                onClick={() => setSelectedClientIds([])}
+                disabled={bulkBusy}
+                className="text-xs text-gray-400 hover:text-white disabled:opacity-50"
+              >
+                Clear selection
               </button>
             )}
           </div>
+          {selectedCount > 0 ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {isSalesAdmin && salesOwners.length > 0 && (
+                <div className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5">
+                  <Users size={14} className="text-[#FF5B00]" />
+                  <select
+                    value={bulkAssignOwnerId}
+                    disabled={bulkBusy}
+                    onChange={(event) => setBulkAssignOwnerId(event.target.value)}
+                    className="bg-transparent text-xs text-gray-200 outline-none disabled:opacity-50"
+                  >
+                    <option value="">Send to sales rep…</option>
+                    {salesOwners.map((owner) => (
+                      <option key={owner.accountKey} value={owner.accountKey}>
+                        {ownerLabel(owner)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={bulkBusy || !bulkAssignOwnerId}
+                    onClick={() => void runBulkAction('assign', { ownerId: bulkAssignOwnerId })}
+                    className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </div>
+              )}
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('delete')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-900/40 text-red-200 text-xs hover:bg-red-900/50 disabled:opacity-50"
+              >
+                {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                Delete
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('not-sold')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+              >
+                <ArchiveX size={13} />
+                Not sold
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('secondary')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+              >
+                Secondary
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('restore')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+              >
+                <Undo2 size={13} />
+                Restore
+              </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('send-welcome')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+              >
+                <Send size={13} />
+                Send confirmation
+              </button>
+              <select
+                disabled={bulkBusy}
+                defaultValue=""
+                onChange={(event) => {
+                  const kind = event.target.value as '3d' | '24h' | '1h' | '';
+                  event.target.value = '';
+                  if (kind) void runBulkAction('send-reminder', { kind });
+                }}
+                className="px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+              >
+                <option value="" disabled>Send reminder…</option>
+                <option value="3d">Reminder 3 days</option>
+                <option value="24h">Reminder 24h</option>
+                <option value="1h">Reminder 1h</option>
+              </select>
+            </div>
+          ) : (
+            <p className="text-[11px] text-gray-500">
+              Tick client cards to run mass actions.
+              {isSalesAdmin
+                ? ' Admin can also send selected clients to another sales rep.'
+                : ' Assigning clients between sales reps is admin-only.'}
+            </p>
+          )}
         </div>
       </div>
 
@@ -1406,50 +1795,88 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       ) : (
         <div className="space-y-3">
           <div className="text-xs text-gray-400">
-            Sorted by meeting date: closest upcoming first. Past meetings are grouped under <span className="text-red-300">Past due</span>. Secondary leads stay in the same timeline and are tagged.
+            Sorted by next action time. Recently overdue clients stay above the main list for 48 hours, then move to <span className="text-red-300">Forfalt</span>. Click a section header to hide the cards and only see the count.
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 items-start">
-            {orderedTimelineClients.map((client) => {
+            {timelineRows.map((row) => {
+            if (row.kind === 'divider') {
+              return (
+                <div
+                  key={row.id}
+                  className="lg:col-span-2 2xl:col-span-3 h-px bg-gradient-to-r from-transparent via-neutral-400/70 to-transparent"
+                  aria-hidden="true"
+                />
+              );
+            }
+            if (row.kind === 'header') {
+              const collapsed = Boolean(collapsedBuckets[row.id]);
+              const toneClass =
+                row.tone === 'recent'
+                  ? 'border-amber-300 bg-amber-50 text-amber-900'
+                  : row.tone === 'upcoming'
+                    ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : row.tone === 'past'
+                      ? 'border-red-200 bg-red-50 text-red-800'
+                      : 'border-neutral-200 bg-neutral-50 text-neutral-700';
+              return (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => toggleTimelineBucket(row.id)}
+                  className={`lg:col-span-2 2xl:col-span-3 rounded-xl border px-3 py-2.5 text-left ${toneClass}`}
+                >
+                  <span className="flex items-center justify-between gap-3">
+                    <span>
+                      <span className="block text-sm font-semibold">{row.title}</span>
+                      <span className="block text-[11px] opacity-80 mt-0.5">{row.hint}</span>
+                    </span>
+                    <span className="inline-flex items-center gap-2 shrink-0">
+                      <span className="text-sm font-semibold tabular-nums">{row.count}</span>
+                      <ChevronDown size={16} className={`transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                    </span>
+                  </span>
+                </button>
+              );
+            }
+            const client = row.client;
             const clientIsSsu = isSsuClient(client);
-            const step0Done = Boolean(client.agreedTime && client.meetingAt);
-            const timeline: { key: ProgressionKey; done: boolean }[] = [
-              { key: 'step0AgreeMeetingTime', done: step0Done },
-              { key: 'contractSigned', done: Boolean(client.progression?.contractSigned) },
-              ...(clientIsSsu
-                ? ([{ key: 'paymentReceived', done: Boolean(client.progression?.paymentReceived) }] as { key: ProgressionKey; done: boolean }[])
-                : []),
-            ];
             const publicPreviewUrl = getPublicClientPreviewUrl(client);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const expanded = expandedId === client.id;
             const editBeforeSend = clientEditsEmailBeforeSend(client);
             const sendingWelcome = sendingEmailKey === `welcome:${client.id}`;
-            const sendingReminder = sendingEmailKey === `reminder:${client.id}`;
-            const meetingTimestamp = client.agreedTime ? parseMeetingTimestamp(client.meetingAt) : null;
-            const isPastDueMeeting = meetingTimestamp !== null && meetingTimestamp < meetingNowMs;
-            const showNoMeetingDateHeading = Boolean(firstNoMeetingDateClientId) && client.id === firstNoMeetingDateClientId;
-            const showPastDueHeading = Boolean(firstPastDueClientId) && client.id === firstPastDueClientId;
+            const sendingReminder3d = sendingEmailKey === `reminder-3d:${client.id}`;
+            const sendingReminder24h = sendingEmailKey === `reminder-24h:${client.id}`;
+            const sendingReminder1h = sendingEmailKey === `reminder-1h:${client.id}`;
+            const nextAction = getActiveNextAction(client);
+            const nextActionMs = getClientNextActionMs(client);
+            const isPastDueAction = nextActionMs !== null && nextActionMs < meetingNowMs;
+            const missingNextAction = nextActionMs === null;
             const websiteSold = Boolean(client.progression?.contractSigned);
-            const canMarkSold = step0Done && Boolean(client.progression?.contractSigned);
+            const canMarkSold = Boolean(client.progression?.contractSigned);
+            const clientSelected = selectedClientIds.includes(client.id);
             return (
               <React.Fragment key={client.id}>
-                {showNoMeetingDateHeading && (
-                  <div className="lg:col-span-2 2xl:col-span-3 rounded-xl border border-amber-700/40 bg-amber-900/20 px-3 py-2 text-sm text-amber-200">
-                    No agreed meeting date
-                  </div>
-                )}
-                {showPastDueHeading && (
-                  <div className="lg:col-span-2 2xl:col-span-3 rounded-xl border border-red-700/40 bg-red-900/20 px-3 py-2 text-sm text-red-200">
-                    Past due
-                  </div>
-                )}
-                <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-4 flex flex-col gap-3">
+                <div
+                  onClick={(event) => handleClientCardClick(event, client.id)}
+                  className={`rounded-2xl bg-[#2a2a2a] border p-4 flex flex-col gap-3 cursor-pointer ${
+                    clientSelected ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40' : 'border-white/10'
+                  }`}
+                >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={clientSelected}
+                        onChange={() => toggleClientSelected(client.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Select ${client.businessName || 'client'}`}
+                        className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
+                      />
                       <h3 className="text-white font-semibold truncate">{client.businessName || 'Unnamed business'}</h3>
-                      <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-300">
-                        {client.meetingMode === 'in-person' ? 'In person' : 'Online'}
+                      <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-black/20 border border-[#FF5B00]/30 text-[#ffb087]">
+                        {nextAction?.name || 'Ingen handling'}
                       </span>
                       {clientIsSsu && (
                         <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-sky-900/30 border border-sky-700/30 text-sky-300">
@@ -1466,15 +1893,20 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           In development
                         </span>
                       )}
-                      {isPastDueMeeting && (
+                      {isPastDueAction && (
                         <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-red-900/30 border border-red-700/30 text-red-300">
                           Past due
+                        </span>
+                      )}
+                      {missingNextAction && (
+                        <span className="shrink-0 px-2 py-0.5 rounded text-[11px] bg-amber-900/30 border border-amber-700/30 text-amber-300">
+                          Sett handling
                         </span>
                       )}
                     </div>
                     <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                       <CalendarClock size={12} className="shrink-0" />
-                      <span className="truncate">{client.agreedTime ? formatWhen(client.meetingAt) : 'Step 0 pending'}</span>
+                      <span className="truncate">{nextAction?.dueAt ? formatWhen(nextAction.dueAt) : 'Ingen neste handling satt'}</span>
                     </div>
                     {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
@@ -1489,6 +1921,36 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         ) : null}
                       </div>
                     ) : null}
+                    <div className="mt-1 text-[11px] text-gray-500 truncate">
+                      {client.meetingMode === 'in-person' ? 'IRL' : 'Online'}
+                      {client.meetingPlace ? ` · ${client.meetingPlace}` : ''}
+                    </div>
+                    {isSalesAdmin && salesOwners.length > 0 && (
+                      <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
+                        <span className="shrink-0">Owner</span>
+                        <select
+                          value={
+                            salesOwners.some((owner) => owner.accountKey === (client.ownerId || ''))
+                              ? (client.ownerId || '')
+                              : ''
+                          }
+                          disabled={assigningOwnerId === client.id}
+                          onChange={(event) => void assignClientOwner(client, event.target.value)}
+                          className="min-w-0 flex-1 rounded-md bg-black/30 border border-white/10 text-gray-200 px-2 py-1 disabled:opacity-50"
+                        >
+                          {!salesOwners.some((owner) => owner.accountKey === (client.ownerId || '')) && (
+                            <option value="" disabled>
+                              Unassigned
+                            </option>
+                          )}
+                          {salesOwners.map((owner) => (
+                            <option key={owner.accountKey} value={owner.accountKey}>
+                              {ownerLabel(owner)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
                   </div>
                   <button
                     type="button"
@@ -1519,41 +1981,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   ) : null}
                 />
 
-                <div className="flex flex-wrap gap-1.5">
-                  {timeline.map((step) => {
-                    const stepDone = step.key === 'step0AgreeMeetingTime'
-                      ? Boolean(client.agreedTime && client.meetingAt)
-                      : step.done;
-                    return (
-                    <button
-                      key={step.key}
-                      type="button"
-                      disabled={
-                        progressBusyKey === `${client.id}:${step.key}`
-                        || (step.key === 'contractSigned' && !stepDone && !step0Done)
-                      }
-                      onClick={() => void toggleProgress(client, step.key)}
-                      title={
-                        step.key === 'step0AgreeMeetingTime'
-                          ? 'Set agreed meeting date/time in Edit client'
-                          : step.key === 'contractSigned' && !step0Done
-                            ? 'Sett avtalt møtetid først'
-                            : step.key === 'contractSigned' && stepDone
-                              ? 'Klikk for å angre solgt nettside'
-                              : undefined
-                      }
-                      className={`px-2 py-1 rounded-md text-[11px] border transition-colors hover:border-[#FF5B00]/40 disabled:opacity-60 ${
-                        stepDone
-                          ? 'bg-green-900/40 border-green-600/40 text-green-300'
-                          : 'bg-black/20 border-white/10 text-gray-400'
-                      }`}
-                    >
-                      {stepDone ? <CheckCircle2 size={11} className="inline mr-1" /> : null}
-                      {formatStepLabel(step.key)}
-                    </button>
-                    );
-                  })}
-                </div>
+                <SalesGoalTimeline
+                  client={client}
+                  progressBusyKey={progressBusyKey}
+                  actionBusy={nextActionBusyId === client.id}
+                  onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
+                  onMutateAction={(body) => mutateNextAction(client, body)}
+                />
 
                 <div className="flex flex-wrap items-center gap-2">
                   {!clientIsSsu && (
@@ -1586,28 +2020,44 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       !client.agreedTime || !client.meetingAt
                         ? 'Set agreed meeting time first'
                         : editBeforeSend
-                          ? 'Open the welcome email editor for this client, then send'
-                          : 'Send the branded welcome email and Google Calendar invite now'
+                          ? 'Open the confirmation email editor for this client, then send'
+                          : client.meetingMode === 'in-person'
+                            ? 'Send the branded in-person confirmation and Google Calendar invite'
+                            : 'Send the branded online confirmation and Google Calendar invite'
                     }
                   >
                     {sendingWelcome ? <Loader2 size={13} className="animate-spin" /> : editBeforeSend ? <MailPlus size={13} /> : <Send size={13} />}
-                    Send welcome email
+                    {client.meetingMode === 'in-person' ? 'Send IRL confirmation' : 'Send confirmation'}
                   </button>
                   <button
                     type="button"
-                    onClick={() => void sendReminderEmail(client)}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder}
+                    onClick={() => void sendReminderEmail(client, '3d')}
+                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder3d}
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={
-                      !client.agreedTime || !client.meetingAt
-                        ? 'Set agreed meeting time first'
-                        : editBeforeSend
-                          ? 'Open the reminder email editor for this client, then send'
-                          : 'Send the branded reminder email now'
-                    }
+                    title="Send the 3-day reminder for this meeting type"
                   >
-                    {sendingReminder ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
-                    Send reminder
+                    {sendingReminder3d ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
+                    Reminder 3 days
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void sendReminderEmail(client, '24h')}
+                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder24h}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    title="Send the 24-hour reminder for this meeting type"
+                  >
+                    {sendingReminder24h ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
+                    Reminder 24h
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void sendReminderEmail(client, '1h')}
+                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder1h}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    title="Send the 1-hour reminder for this meeting type"
+                  >
+                    {sendingReminder1h ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
+                    Reminder 1h
                   </button>
                   {client.meetingMode === 'online' && client.calendar?.meetLink && (
                     <button
@@ -1672,8 +2122,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         setNotice(`${client.businessName || 'Kunden'} er solgt og ligger under Utvikling → Deployment.`);
                       }}
                       title={canMarkSold
-                        ? 'Møte avtalt og kontrakt signert. Åpner deployment-utvikling.'
-                        : 'Solgt nettside kan bare klikkes når møte er avtalt og kontrakt er signert.'}
+                        ? 'Kontrakt signert. Åpner deployment-utvikling.'
+                        : 'Solgt nettside kan bare klikkes når kontrakt er signert.'}
                       className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40 ${
                         websiteSold
                           ? 'bg-emerald-900/40 border border-emerald-700/40 text-emerald-200'
@@ -1692,6 +2142,16 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   >
                     {statusBusyId === `not-sold:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
                     Ikke solgt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void markSecondary(client)}
+                    disabled={statusBusyId === `secondary:${client.id}` || websiteSold || client.status === 'secondary'}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                    title="Move to secondary / not interested in website"
+                  >
+                    {statusBusyId === `secondary:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : null}
+                    Secondary
                   </button>
                 </div>
 
@@ -1712,7 +2172,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         <div>
                           <div className="text-sm text-white font-medium">Edit email before send</div>
                           <p className="text-[11px] text-gray-400 mt-1">
-                            Off by default. Send welcome email sends the branded template and the Google Calendar invite immediately.
+                            Off by default. Confirmation and reminder buttons send the matching online or IRL template immediately, plus the Google Calendar invite on confirmation.
                             Turn this on only if you need to edit the template for this client first.
                           </p>
                         </div>
@@ -1756,6 +2216,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
                           <li>Meet link: {client.calendar?.meetLink || '—'}</li>
                           <li>Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}</li>
+                          <li>3-day reminder: {client.reminders?.reminder3dSentAt ? formatWhen(client.reminders.reminder3dSentAt) : 'Pending/Skipped'}</li>
                           <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>
                           <li>1h reminder: {client.reminders?.reminder1hSentAt ? formatWhen(client.reminders.reminder1hSentAt) : 'Pending/Skipped'}</li>
                         </ul>
@@ -2082,11 +2543,29 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             </span>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
-            {archivedClients.map((client) => (
-              <div key={client.id} className="rounded-xl bg-black/20 border border-white/10 p-3 space-y-2">
+            {archivedClients.map((client) => {
+              const clientSelected = selectedClientIds.includes(client.id);
+              return (
+              <div
+                key={client.id}
+                onClick={(event) => handleClientCardClick(event, client.id)}
+                className={`rounded-xl bg-black/20 border p-3 space-y-2 cursor-pointer ${
+                  clientSelected ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40' : 'border-white/10'
+                }`}
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <div className="text-sm font-medium text-white truncate">{client.businessName || 'Unnamed business'}</div>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={clientSelected}
+                        onChange={() => toggleClientSelected(client.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Select ${client.businessName || 'archived client'}`}
+                        className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
+                      />
+                      <div className="text-sm font-medium text-white truncate">{client.businessName || 'Unnamed business'}</div>
+                    </div>
                     <div className="text-xs text-gray-400 truncate">
                       {[client.contactPerson || 'No contact person', client.meetingPlace || 'No address']
                         .filter(Boolean)
@@ -2136,7 +2615,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   </button>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}

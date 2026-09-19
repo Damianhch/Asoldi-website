@@ -113,7 +113,7 @@ export function UsersSection(props: Props) {
             <label className="block text-xs text-gray-400 mb-1">Name</label>
             <input
               type="text"
-              placeholder="Alexander"
+              placeholder="First name"
               value={userForm.name}
               onChange={(e) => onUserFormChange({ ...userForm, name: e.target.value })}
               className="px-4 py-2 rounded-lg bg-[#1a1a1a] border border-white/20 text-white w-40"
@@ -207,7 +207,7 @@ const EditableUserRow: React.FC<{
             type="text"
             value={draftName}
             onChange={(e) => setDraftName(e.target.value)}
-            placeholder="Alexander"
+            placeholder="First name"
             className="px-2 py-1 rounded bg-[#1a1a1a] border border-white/20 text-white w-36"
           />
         ) : (

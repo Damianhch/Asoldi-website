@@ -4,6 +4,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { ExternalLink, Loader2, Send } from 'lucide-react';
 import { EmailVisualEditor } from './EmailVisualEditor';
 import { composeSalesEmail, saveEmailDraft, sendComposedEmail, type MergeField } from './emailApi';
+import { getSalesToken } from '../Admin/shared';
 
 export function SalesEmailComposer() {
   const navigate = useNavigate();
@@ -25,13 +26,18 @@ export function SalesEmailComposer() {
   const [previewPhone, setPreviewPhone] = useState('');
 
   const templates = [
-    { key: 'thank-you', label: 'Velkomst / møtebekreftelse' },
-    { key: 'reminder-24h', label: 'Påminnelse 24 timer' },
-    { key: 'reminder-1h', label: 'Påminnelse 1 time' },
+    { key: 'thank-you', label: 'Bekreftelse — online' },
+    { key: 'thank-you-in-person', label: 'Bekreftelse — fysisk' },
+    { key: 'reminder-3d', label: 'Påminnelse 3 dager — online' },
+    { key: 'reminder-3d-in-person', label: 'Påminnelse 3 dager — fysisk' },
+    { key: 'reminder-24h', label: 'Påminnelse 24 timer — online' },
+    { key: 'reminder-24h-in-person', label: 'Påminnelse 24 timer — fysisk' },
+    { key: 'reminder-1h', label: 'Påminnelse 1 time — online' },
+    { key: 'reminder-1h-in-person', label: 'Påminnelse 1 time — fysisk' },
   ];
 
   useEffect(() => {
-    const token = localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken') || localStorage.getItem('employeeToken');
+    const token = getSalesToken();
     if (!token) {
       navigate('/login/ansatt', { replace: true });
       return;
@@ -122,7 +128,7 @@ export function SalesEmailComposer() {
         <title>{title} – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <div className="min-h-screen bg-[#1a1a1a] text-white">
+      <div className="staff-light min-h-screen bg-[#1a1a1a] text-white">
         <header className="border-b border-white/10 bg-[#222]">
           <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between gap-4">
             <div>

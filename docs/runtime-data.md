@@ -10,7 +10,7 @@ Product split (hub vs client Git vs disk): [deployment-split.md](deployment-spli
 2. Commit the **Asoldi-website** repo
 3. Deploy to **https://asoldi.com** with a **small archive** (no Sales wavs / large `public/media`). Do **not** Git-auto-deploy while those files are still in the repo — Hostinger clones a second copy and fills the disk.
 
-Git never contains sales clients or Admin users. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN. Call recordings live on Hostinger `nodejs/public/myphoner-audio`; keep a copy under `~/.asoldi-website-data/myphoner-audio` before overwrite deploys.
+Git never contains sales clients or Admin users. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN. Call recordings live under the persistent data dir `myphoner-audio` (on Hostinger that is `domains/asoldi.com/.asoldi-website-data/myphoner-audio`, with a backup in `/home/u439392007/.asoldi-website-data/myphoner-audio`). Do not keep the only copy in `nodejs/public/myphoner-audio` — archive deploys wipe that folder.
 
 ## 2) Sales / client data → production is the only source of truth
 

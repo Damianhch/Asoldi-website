@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { composeEmailForClient } from '../lib/email-templates-store.js';
+import { deriveReminderSchedule } from '../data/sales.js';
 import { buildSalesSender } from '../lib/sales-sender.js';
 import {
   buildSalesCalendarInvite,
@@ -40,12 +41,48 @@ test('sales images stay in the HTML and are not file attachments', () => {
   assert.deepEqual(embedded.attachments, []);
 });
 
+test('in-person confirmation uses the maps CTA, not Google Meet', () => {
+  const client = getSalesEmailPreviewClient({ meetingMode: 'in-person' });
+  const message = composeEmailForClient(client, 'thank-you').message;
+  assert.match(message.subject, /fysisk møte/i);
+  assert.match(message.html, /Åpne i Kart/);
+  assert.match(message.html, /Østre berg 10/);
+  assert.equal(message.html.includes('Åpne Google Meet'), false);
+});
+
+test('online confirmation keeps the Google Meet CTA', () => {
+  const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you').message;
+  assert.match(message.subject, /online møte/i);
+  assert.match(message.html, /Åpne Google Meet/);
+});
+
+test('3-day reminder copy follows the meeting type', () => {
+  const online = composeEmailForClient(getSalesEmailPreviewClient(), 'reminder-3d').message;
+  const irl = composeEmailForClient(getSalesEmailPreviewClient({ meetingMode: 'in-person' }), 'reminder-3d').message;
+  assert.match(online.subject, /om 3 dager/);
+  assert.match(online.html, /online-møtet/);
+  assert.match(irl.subject, /Fysisk møte/);
+  assert.match(irl.html, /Åpne i Kart/);
+});
+
 test('composed welcome mail has hosted images and no extra file attachments', () => {
   const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you').message;
   assert.match(message.html, /https:\/\/asoldi\.com\/email\/sales\/hero-desktop\.jpg/);
   assert.equal(message.html.includes('cid:'), false);
   assert.deepEqual(message.attachments, []);
   assert.equal(message.icalEvent, undefined);
+});
+
+test('3-day reminder is only scheduled when the meeting is more than 3 days away', () => {
+  const now = Date.parse('2026-09-14T08:00:00.000Z');
+  const far = deriveReminderSchedule({ agreedTime: true, meetingAt: '2026-09-20T12:00:00.000Z' }, now);
+  const soon = deriveReminderSchedule({ agreedTime: true, meetingAt: '2026-09-15T12:00:00.000Z' }, now);
+  assert.ok(far.reminder3dAt);
+  assert.ok(far.reminder24hAt);
+  assert.ok(far.reminder1hAt);
+  assert.equal(soon.reminder3dAt, '');
+  assert.ok(soon.reminder24hAt);
+  assert.ok(soon.reminder1hAt);
 });
 
 test('ICS is attached only when calendar invite fallback is requested', () => {

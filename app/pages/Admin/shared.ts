@@ -6,7 +6,12 @@ export function getToken() {
 
 // Sales workspace (role=sales) authenticates with the staff token; the admin panel uses the admin token.
 export function getSalesToken() {
-  return localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken') || localStorage.getItem('employeeToken');
+  const admin = localStorage.getItem('adminToken') || localStorage.getItem('superAdminToken');
+  const employee = localStorage.getItem('employeeToken');
+  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/sales')) {
+    return employee || admin;
+  }
+  return admin || employee;
 }
 
 export function salesAuthHeaders() {
@@ -152,8 +157,29 @@ export type Site = {
 
 export type ManageClientsView = 'clients' | 'development' | 'sales';
 
+export type SalesGoalKey = 'meetingHeld' | 'offerSent' | 'contractSigned' | 'paymentReceived';
+
+export type SalesNextActionPreset = 'meeting' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
+
+export type SalesNextAction = {
+  id: string;
+  goalKey: SalesGoalKey;
+  presetKey: SalesNextActionPreset;
+  name: string;
+  dueAt: string;
+  doneAt: string;
+  createdAt: string;
+  relativeToMeetingHours: number | null;
+  addToCalendar: boolean;
+  calendarEventId: string;
+};
+
 export type SalesProgression = {
+  meetingHeld: boolean;
   step0AgreeMeetingTime: boolean;
+  offerSent: boolean;
+  checkIn1: boolean;
+  checkIn2: boolean;
   contractSigned: boolean;
   paymentReceived: boolean;
   domainConnected: boolean;
@@ -180,6 +206,8 @@ export type DevelopmentItem = {
 
 export type SalesReminders = {
   thankYouSentAt: string;
+  reminder3dAt?: string;
+  reminder3dSentAt?: string;
   reminder24hAt: string;
   reminder24hSentAt: string;
   reminder1hAt: string;
@@ -202,6 +230,7 @@ export type SalesCalendarMeta = {
   calendarId: string;
   accountKey: string;
   syncedAt: string;
+  guestInvitedAt?: string;
 };
 
 export type SalesWebsiteImportMeta = {
@@ -299,6 +328,7 @@ export type SalesClient = {
   details: SalesClientDetails;
   myphoner: SalesMyphonerMeta;
   progression: SalesProgression;
+  nextActions: SalesNextAction[];
   development?: SalesDevelopment;
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;
@@ -312,6 +342,7 @@ export type SalesClient = {
     liveUrl?: string;
   };
   status: 'active' | 'not-sold' | 'secondary';
+  ownerId?: string;
   archive: SalesArchiveMeta;
   createdAt: string;
   updatedAt: string;

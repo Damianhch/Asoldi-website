@@ -98,7 +98,7 @@ export const LaptopPreviews = () => {
 
   if (status === 'checking') {
     return (
-      <div className="min-h-screen bg-[#1a1a1a] flex items-center justify-center text-gray-300">
+      <div className="staff-light min-h-screen bg-[#1a1a1a] flex items-center justify-center text-gray-300">
         <Loader2 className="animate-spin mr-2" size={20} /> Loading public previews…
       </div>
     );
@@ -106,7 +106,7 @@ export const LaptopPreviews = () => {
 
   if (status === 'denied') {
     return (
-      <div className="min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center gap-4 text-gray-300 px-6 text-center">
+      <div className="staff-light min-h-screen bg-[#1a1a1a] flex flex-col items-center justify-center gap-4 text-gray-300 px-6 text-center">
         <h1 className="text-xl font-semibold text-white">No access</h1>
         <p className="max-w-md text-sm text-gray-400">
           This page lists the same asoldi.com website previews clients see in checkout. Sign in with a sales or admin account.
@@ -124,7 +124,7 @@ export const LaptopPreviews = () => {
         <title>Public website previews – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <div className="min-h-screen bg-[#1a1a1a] text-white">
+      <div className="staff-light min-h-screen bg-[#1a1a1a] text-white">
         <header className="border-b border-white/10 bg-[#222]">
           <div className="max-w-[1100px] mx-auto px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>

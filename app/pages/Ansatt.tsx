@@ -32,13 +32,21 @@ export const Ansatt = () => {
     fetch('/api/auth/me', { headers: { Authorization: `Bearer ${t}` } })
       .then(async (res) => {
         if (cancelled) return;
-        if (res.status === 401 || res.status === 403) {
+        if (res.status === 401) {
           clearEmployeeToken();
           navigate('/login', { replace: true });
           return;
         }
         if (res.ok) {
           const data = await res.json();
+          if (data.user?.role === 'sales') {
+            navigate('/sales', { replace: true });
+            return;
+          }
+          if (data.user?.role === 'developer') {
+            navigate('/developer', { replace: true });
+            return;
+          }
           setEmployeeProduct(data.user?.employeeProduct === 'ssu' ? 'ssu' : 'asoldi');
           setAllowed(true);
         } else {
