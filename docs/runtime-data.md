@@ -8,9 +8,9 @@ Product split (hub vs client Git vs disk): [deployment-split.md](deployment-spli
 
 1. Edit and test on LAN (`http://192.168.68.92:3200`)
 2. Commit the **Asoldi-website** repo
-3. Deploy to **https://asoldi.com** with a **small archive** (no Sales wavs / large `public/media`). Do **not** Git-auto-deploy while those files are still in the repo — Hostinger clones a second copy and fills the disk.
+3. `git push` — Hostinger auto-deploys `main` to **https://asoldi.com**. Audio/video is gitignored (`public/media/**/*.mp4|wav|…`, `public/myphoner-audio/*`), so the clone stays small. After the build, run `node scripts/hostinger-asoldi-env-check.mjs` (website-maker) if you want to confirm the Environment-variables tab still has every key.
 
-Git never contains sales clients or Admin users. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN. Call recordings live under the persistent data dir `myphoner-audio` (on Hostinger that is `domains/asoldi.com/.asoldi-website-data/myphoner-audio`, with a backup in `/home/u439392007/.asoldi-website-data/myphoner-audio`). Do not keep the only copy in `nodejs/public/myphoner-audio` — archive deploys wipe that folder.
+Git never contains sales clients, Admin users, or media. A deploy does not copy LAN JSON onto production, and it does not copy production JSON onto LAN. Call recordings live under the persistent data dir `myphoner-audio` / `myphoner-recordings`; marketing videos, lydklipp and other uploads live in the **media library** (`~/.asoldi-website-data/media`, Admin → Manage website → Media) and are served at `/media/<name>` ahead of anything left in `nodejs/public/media`. `npm run media:pull` downloads the library into a local clone (`ASOLDI_ADMIN_USER` + `ASOLDI_ADMIN_PASS` or `ASOLDI_ADMIN_TOKEN`).
 
 ## 2) Sales / client data → production is the only source of truth
 

@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, ChevronDown, FileSignature, FileText, FolderCog, Globe, LogOut, Mail, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
+import { BarChart3, ChevronDown, FileSignature, FileText, FolderCog, Globe, Image as ImageIcon, LogOut, Mail, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
@@ -32,6 +32,9 @@ const EmailTemplateStudio = lazy(() =>
 );
 const OfferReviewSection = lazy(() =>
   import('./sections/OfferReviewSection').then((m) => ({ default: m.OfferReviewSection }))
+);
+const MediaLibrarySection = lazy(() =>
+  import('./sections/MediaLibrarySection').then((m) => ({ default: m.MediaLibrarySection }))
 );
 
 export const Admin = () => {
@@ -485,7 +488,7 @@ export const Admin = () => {
                 type="button"
                 onClick={() => setWebsiteNavOpen((open) => !open)}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-left text-xs font-semibold uppercase tracking-wide ${
-                  tab === 'pages' || tab === 'users' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
+                  tab === 'pages' || tab === 'media' || tab === 'users' ? 'text-white' : 'text-gray-400 hover:text-gray-200'
                 }`}
               >
                 <span className="inline-flex items-center gap-2">
@@ -497,6 +500,7 @@ export const Admin = () => {
               {websiteNavOpen && (
                 <div className="ml-3 mt-1 space-y-1">
                   <SidebarButton active={tab === 'pages'} onClick={() => setTab('pages')} icon={<FileText size={18} />} label="Pages" />
+                  <SidebarButton active={tab === 'media'} onClick={() => setTab('media')} icon={<ImageIcon size={18} />} label="Media" />
                   {features.users !== false && <SidebarButton active={tab === 'users'} onClick={() => setTab('users')} icon={<Users size={18} />} label="Users" />}
                 </div>
               )}
@@ -572,6 +576,11 @@ export const Admin = () => {
             />
           )}
           {tab === 'pages' && <PagesSection />}
+          {tab === 'media' && (
+            <Suspense fallback={<div className="text-sm text-gray-400">Loading media…</div>}>
+              <MediaLibrarySection />
+            </Suspense>
+          )}
           {tab === 'users' && (
             <UsersSection
               users={users}

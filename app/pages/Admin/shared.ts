@@ -43,7 +43,20 @@ export function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social' | 'email' | 'offers';
+export type Tab = 'clients' | 'pages' | 'media' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social' | 'email' | 'offers';
+
+export type MediaItem = {
+  name: string;
+  url: string;
+  size: number;
+  kind: 'image' | 'video' | 'audio' | 'document' | 'other';
+  mime: string;
+  alt: string;
+  tags: string[];
+  uploadedBy: string;
+  createdAt: string;
+  source: 'disk' | 'git' | 'both';
+};
 
 export type Features = {
   users?: boolean;

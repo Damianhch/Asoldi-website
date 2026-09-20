@@ -8,7 +8,24 @@ import { dirname, join } from 'path';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import AdmZip from 'adm-zip';
+import multer from 'multer';
 import * as store from './data/store.js';
+import {
+  deleteHubMedia,
+  getHubMediaItem,
+  hubMediaDir,
+  isAllowedMediaName,
+  listHubMedia,
+  mediaMimeForName,
+  pickUploadTarget,
+  readMediaMaxBytes,
+  registerHubMediaUpload,
+  renameHubMedia,
+  resolveMediaPath,
+  sanitizeMediaFileName,
+  sanitizeMediaFolder,
+  updateHubMediaMeta,
+} from './lib/hub-media-library.js';
 import * as hub from './data/hub.js';
 import * as employees from './data/employees.js';
 import * as sales from './data/sales.js';
@@ -8374,6 +8391,120 @@ app.put('/api/admin/me/sender', adminAuth, async (req, res) => {
   res.json({ ok: true, sender });
 });
 
+// --- Media library (asoldi.com). Files live in <data dir>/media, served at /media/<name>.
+const HUB_MEDIA_DIR = hubMediaDir();
+const PUBLIC_MEDIA_DIR = join(publicPath, 'media');
+const hubMediaUpload = multer({
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      const folder = sanitizeMediaFolder(req.query.folder || req.body?.folder || '');
+      const dir = folder ? join(HUB_MEDIA_DIR, folder) : HUB_MEDIA_DIR;
+      try {
+        mkdirSync(dir, { recursive: true });
+        cb(null, dir);
+      } catch (error) {
+        cb(error);
+      }
+    },
+    filename: (req, file, cb) => {
+      const safe = sanitizeMediaFileName(file.originalname);
+      if (!isAllowedMediaName(safe)) {
+        return cb(new Error(`File type not allowed: ${file.originalname}`));
+      }
+      const folder = sanitizeMediaFolder(req.query.folder || req.body?.folder || '');
+      const dir = folder ? join(HUB_MEDIA_DIR, folder) : HUB_MEDIA_DIR;
+      const override = String(req.query.override || '') === '1';
+      cb(null, pickUploadTarget(dir, safe, { override }));
+    },
+  }),
+  limits: { fileSize: readMediaMaxBytes(), files: 20 },
+  // Browsers send raw UTF-8 in `filename=`; busboy's default is latin1, which turns "Ø" into "Ã˜".
+  defParamCharset: 'utf8',
+  fileFilter: (_req, file, cb) => {
+    if (!isAllowedMediaName(sanitizeMediaFileName(file.originalname))) {
+      return cb(new Error(`File type not allowed: ${file.originalname}`));
+    }
+    cb(null, true);
+  },
+});
+
+function hubMediaListOptions() {
+  return { publicMediaDir: PUBLIC_MEDIA_DIR };
+}
+
+app.get('/api/admin/media', adminAuth, (_req, res) => {
+  res.json({
+    items: listHubMedia(hubMediaListOptions()),
+    maxBytes: readMediaMaxBytes(),
+    dir: HUB_MEDIA_DIR,
+  });
+});
+
+app.post('/api/admin/media', adminAuth, (req, res) => {
+  hubMediaUpload.array('files', 20)(req, res, (error) => {
+    if (error) {
+      const tooBig = error && error.code === 'LIMIT_FILE_SIZE';
+      return res.status(tooBig ? 413 : 400).json({
+        message: tooBig
+          ? `File is larger than ${Math.round(readMediaMaxBytes() / 1024 / 1024)} MB (HUB_MEDIA_MAX_MB).`
+          : error.message || 'Upload failed',
+      });
+    }
+    const files = Array.isArray(req.files) ? req.files : [];
+    if (!files.length) return res.status(400).json({ message: 'No files uploaded' });
+    const folder = sanitizeMediaFolder(req.query.folder || req.body?.folder || '');
+    const tags = req.body?.tags || '';
+    const uploaded = [];
+    for (const file of files) {
+      const name = folder ? `${folder}/${file.filename}` : file.filename;
+      registerHubMediaUpload({ name, uploadedBy: req.admin?.username || 'admin', alt: req.body?.alt || '', tags: String(tags).split(',') });
+      const item = getHubMediaItem(name, hubMediaListOptions());
+      if (item) uploaded.push(item);
+    }
+    res.status(201).json({ items: uploaded });
+  });
+});
+
+app.patch('/api/admin/media/*', adminAuth, (req, res) => {
+  const name = decodeURIComponent(String(req.params[0] || ''));
+  if (!resolveMediaPath(HUB_MEDIA_DIR, name)) return res.status(400).json({ message: 'Invalid name' });
+  const current = getHubMediaItem(name, hubMediaListOptions());
+  if (!current) return res.status(404).json({ message: 'Not found' });
+  const { alt, tags, rename } = req.body || {};
+  let finalName = name;
+  if (rename && String(rename).trim() && String(rename).trim() !== current.name.split('/').pop()) {
+    if (current.source === 'git') {
+      return res.status(409).json({ message: 'This file only exists in Git. Upload it here first, then rename.' });
+    }
+    const result = renameHubMedia(name, String(rename).trim());
+    if (!result.ok) {
+      const messages = {
+        exists: 'A file with that name already exists.',
+        'bad-name': 'Invalid file name (keep the same extension).',
+        'not-found': 'File not found on disk.',
+      };
+      return res.status(400).json({ message: messages[result.reason] || 'Rename failed' });
+    }
+    finalName = result.name;
+  }
+  if (alt !== undefined || tags !== undefined) updateHubMediaMeta(finalName, { alt, tags });
+  res.json({ item: getHubMediaItem(finalName, hubMediaListOptions()) });
+});
+
+app.delete('/api/admin/media/*', adminAuth, (req, res) => {
+  const name = decodeURIComponent(String(req.params[0] || ''));
+  const result = deleteHubMedia(name);
+  if (!result.ok) {
+    if (result.reason === 'git-only') {
+      return res.status(409).json({
+        message: 'This file is only tracked in Git (public/media). Remove it from the repository to delete it.',
+      });
+    }
+    return res.status(400).json({ message: 'Could not delete file' });
+  }
+  res.json({ ok: true });
+});
+
 app.post('/api/admin/change-password', adminAuth, async (req, res) => {
   const { currentPassword, newPassword } = req.body || {};
   if (!currentPassword || !newPassword) {
@@ -14222,6 +14353,23 @@ for (const extraAudioDir of extraMyphonerAudioDirs()) {
   );
 }
 
+// Media library on the persistent disk wins over the Git copy in public/media,
+// so a GitHub deploy that no longer ships the mp4/wav files changes nothing
+// for visitors. X-Media-Source lets the migration script verify the switch.
+app.use(
+  '/media',
+  express.static(HUB_MEDIA_DIR, {
+    fallthrough: true,
+    dotfiles: 'ignore',
+    setHeaders: (res, filePath) => {
+      res.setHeader('Content-Type', mediaMimeForName(filePath));
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Media-Source', 'disk');
+    },
+  })
+);
+
 app.use(express.static(distPath, {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
@@ -14231,8 +14379,9 @@ app.use(express.static(distPath, {
 }));
 
 app.use(express.static(publicPath, {
-  setHeaders: (res) => {
+  setHeaders: (res, filePath) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (String(filePath).startsWith(PUBLIC_MEDIA_DIR)) res.setHeader('X-Media-Source', 'git');
   }
 }));
 

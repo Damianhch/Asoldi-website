@@ -13,3 +13,18 @@ data/admin.json
 data/sites.json
 data/reset-tokens.json
 .builds/data/
+
+# Media lives on the Hostinger disk (Admin -> Manage website -> Media), not in Git.
+# Small marketing images/SVGs under public/media stay tracked; audio/video does not.
+# Fetch the AV files for local dev with `npm run media:pull`.
+public/media/**/*.mp4
+public/media/**/*.webm
+public/media/**/*.mov
+public/media/**/*.m4v
+public/media/**/*.mp3
+public/media/**/*.wav
+public/media/**/*.m4a
+public/media/**/*.ogg
+public/media/**/*.flac
+public/myphoner-audio/*
+!public/myphoner-audio/.gitkeep
