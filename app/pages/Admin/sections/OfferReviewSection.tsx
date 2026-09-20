@@ -215,6 +215,16 @@ export function OfferReviewSection() {
     });
   }
 
+  async function toggleMva(next: boolean) {
+    if (!offer) return;
+    await runAction('mva', async () => {
+      const data = await saveAdminOffer(offer.id, { html, subject, preheader, mvaIncluded: next }) as { offer: SalesOffer };
+      patchOffer(data.offer, { resetHtml: true });
+      setNotice(next ? 'Mva er nå inkludert i oppgitt pris (e-post og kontrakt).' : 'Mva legges til på toppen av oppgitt pris.');
+      void loadList();
+    });
+  }
+
   function addTier() {
     if (!offer || !addTierId) return;
     const tier = detail?.tiers.find((item) => item.id === addTierId);
@@ -567,9 +577,22 @@ export function OfferReviewSection() {
                   <aside className="space-y-3">
                     <OfferProductsCard
                       products={offer.products}
+                      mvaIncluded={Boolean(offer.mvaIncluded)}
                       onRemove={locked ? undefined : removeProduct}
                       onEdit={locked ? undefined : (product) => (product.kind === 'custom' ? startCustomProduct(product) : undefined)}
                     />
+                    <label
+                      className={`flex items-center gap-2 rounded-xl border border-white/10 bg-[#161616] px-4 py-3 text-xs ${locked ? 'text-gray-500' : 'text-gray-200'}`}
+                      title="Standard: mva legges til på toppen. Slått på: oppgitt pris er det kunden betaler inkl. mva (selger kan også velge dette)."
+                    >
+                      <input
+                        type="checkbox"
+                        checked={Boolean(offer.mvaIncluded)}
+                        disabled={locked || busy === 'mva'}
+                        onChange={(e) => void toggleMva(e.target.checked)}
+                      />
+                      Inkluder mva i prisen
+                    </label>
                     {!locked && (
                       <div className="rounded-xl border border-white/10 bg-[#161616] p-4 space-y-3 text-sm">
                         <div className="font-medium text-white">Legg til produkt</div>
@@ -590,7 +613,7 @@ export function OfferReviewSection() {
                             <input value={customDraft.name} onChange={(e) => setCustomDraft({ ...customDraft, name: e.target.value })} placeholder="Produktnavn (f.eks. Bookingsystem)" className="w-full px-2 py-1.5 rounded bg-[#111] border border-white/15 text-white text-xs" />
                             <div className="grid grid-cols-3 gap-2">
                               <label className="text-[10px] text-gray-400">
-                                Pris eks. mva/mnd
+                                Pris {offer.mvaIncluded ? 'inkl.' : 'eks.'} mva/mnd
                                 <input type="number" value={customDraft.priceExMva || ''} onChange={(e) => setCustomDraft({ ...customDraft, priceExMva: Number(e.target.value) })} className="mt-0.5 w-full px-2 py-1 rounded bg-[#111] border border-white/15 text-white text-xs" />
                               </label>
                               <label className="text-[10px] text-gray-400">
@@ -726,7 +749,7 @@ export function OfferReviewSection() {
                     )}
                   </div>
                   <aside className="space-y-3">
-                    <ContractSummaryCard summary={offer.contract.summary} />
+                    <ContractSummaryCard summary={offer.contract.summary} mvaIncluded={Boolean(offer.mvaIncluded)} />
                     <p className="text-[11px] text-gray-500">
                       Kontrakten er et sammendrag (ingen prisnedbryting): produkter, «opp til N sider», inkluderte punkter, månedspris eks./inkl. mva og leveringstid. Kundedata hentes fra kundekortet.
                     </p>

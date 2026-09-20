@@ -206,3 +206,134 @@ test('sales offers store: draft → review → verify → send lifecycle with lo
   const flagged = store.updateSalesOffer(standard.id, { reviewRequested: true });
   assert.equal(store.offerNeedsVerification(flagged), true);
 });
+
+test('offer email: "inkluder mva" treats the listed price as the all-in monthly price', () => {
+  const products = offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[0].id);
+  const listed = tiers.WEBSITE_TIERS[0].monthlyExMva;
+
+  const onTop = offerEmail.offerTotals(products);
+  assert.equal(onTop.mvaIncluded, false);
+  assert.equal(onTop.exMva, listed);
+  assert.equal(onTop.inclMva, Math.round(listed * 1.25));
+
+  const absorbed = offerEmail.offerTotals(products, { mvaIncluded: true });
+  assert.equal(absorbed.mvaIncluded, true);
+  assert.equal(absorbed.inclMva, listed, 'client pays the listed price');
+  assert.equal(absorbed.exMva, Math.round(listed / 1.25));
+  assert.equal(absorbed.exMva + absorbed.mva, absorbed.inclMva);
+
+  const html = offerEmail.buildOfferEmail({ client: CLIENT, products, mvaIncluded: true, mergeTags: false }).html;
+  assert.match(html, /data-mva-included="1"/);
+  assert.match(html, /Pris inkl\. mva:/);
+  assert.match(html, new RegExp(`Pris: ${tiers.formatKr(listed).replace(/\\s/g, '\\s')} inkl\\. mva per måned`.replace(/ /g, '[\\s\\u00a0]')));
+  assert.match(html, /Herav MVA \(25 %\)/);
+
+  // Flipping the toggle re-renders the block in place (no duplicate product blocks).
+  const back = offerEmail.applyOfferProducts(html, products, { mvaIncluded: false });
+  assert.match(back, /data-mva-included="0"/);
+  assert.match(back, /Pris eks\. mva:/);
+  assert.equal((back.match(/data-offer-product="1"/g) || []).length, 1);
+
+  assert.match(offerEmail.summarizeOfferProducts(products, { mvaIncluded: true }), /mva er inkludert i oppgitt pris/);
+});
+
+test('offer email: shell has no envelope icon and a left-aligned heading; old drafts are refreshed', async () => {
+  const layoutMod = await import('../lib/sales-email.js');
+  const email = offerEmail.buildOfferEmail({ client: CLIENT, products: [], mergeTags: true, layout: layoutMod.buildSalesLayoutEmail, layoutOptions: { embed: false, assetBase: '/email/sales' } });
+  assert.doesNotMatch(email.html, /<img\b[^>]*width="160"/, 'no envelope illustration');
+  assert.match(email.html, /text-align:left;[^>]*>\s*<h1[^>]*>Tilbud fra Asoldi<\/h1>/, 'heading is left-aligned');
+
+  const legacy = '<td style="padding:28px 20px 0;text-align:center;">\n<h1 style="margin:0;">Tilbud fra Asoldi</h1>\n<img src="/email/sales/envelope.png" width="160" alt="" style="display:block;" />\n</td>';
+  const refreshed = offerEmail.refreshOfferShell(legacy);
+  assert.doesNotMatch(refreshed, /<img/);
+  assert.match(refreshed, /text-align:left;/);
+  assert.equal(offerEmail.refreshOfferShell(refreshed), refreshed, 'idempotent');
+});
+
+test('offer email: template placeholders are detectable until filled or deleted', () => {
+  const email = offerEmail.buildOfferEmail({ client: CLIENT, products: [], mergeTags: true });
+  const found = offerEmail.findOfferPlaceholders(email.html);
+  assert.ok(found.length >= 4, `expected template placeholders, got ${found.length}`);
+  assert.ok(found.some((label) => /Velg nettside tier/.test(label)));
+
+  const withTier = offerEmail.applyOfferProducts(email.html, offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[1].id));
+  assert.ok(!offerEmail.findOfferPlaceholders(withTier).some((label) => /Velg nettside tier/.test(label)), 'tier placeholder gone');
+
+  const filled = offerEmail.fillOfferSlots(withTier, {
+    need: 'ny nettside',
+    project: ['Avsnitt 1', 'Avsnitt 2', 'Avsnitt 3'],
+    terms: 'Logo og bilder fra dere.',
+    benefits: 'Flere kunder.',
+  });
+  assert.deepEqual(offerEmail.findOfferPlaceholders(filled), []);
+
+  // Legacy markup without the data attribute (drafts made before this change) is still detected.
+  const legacy = '<span style="background:#fff3ea;color:#b34300;">[Avsnitt 2]</span>';
+  assert.deepEqual(offerEmail.findOfferPlaceholders(legacy), ['Avsnitt 2']);
+});
+
+test('sales offers store: preview approval is tied to the exact content and mva mode', () => {
+  const offer = store.createSalesOffer({
+    salesClientId: 'client-preview',
+    ownerId: 'x',
+    tierId: tiers.WEBSITE_TIERS[0].id,
+    products: offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[0].id),
+    email: { subject: 'Tilbud', preheader: '', html: '<p>hei</p>' },
+  });
+  assert.equal(offer.mvaIncluded, false);
+  assert.equal(store.offerPreviewIsCurrent(offer), false, 'never previewed');
+
+  const previewed = store.markOfferPreviewed(offer.id, { actor: 'anna' });
+  assert.equal(store.offerPreviewIsCurrent(previewed), true);
+  assert.ok(previewed.previewedAt);
+  assert.ok(previewed.history.some((entry) => entry.action === 'previewed'));
+
+  const edited = store.updateSalesOffer(offer.id, { email: { html: '<p>hei igjen</p>' } });
+  assert.equal(store.offerPreviewIsCurrent(edited), false, 'content edit invalidates the approval');
+
+  store.markOfferPreviewed(offer.id, { actor: 'anna' });
+  const mvaFlipped = store.updateSalesOffer(offer.id, { mvaIncluded: true });
+  assert.equal(mvaFlipped.mvaIncluded, true);
+  assert.equal(store.offerPreviewIsCurrent(mvaFlipped), false, 'mva mode change invalidates the approval');
+});
+
+test('contract pdf: mva-included offers state the incl. VAT price as the quoted amount', async () => {
+  const inputs = contractPdf.contractInputsForOffer({ tierId: tiers.WEBSITE_TIERS[0].id, products: [], mvaIncluded: true, contract: { summary: null } });
+  assert.equal(inputs.mvaIncluded, true);
+  const buffer = await contractPdf.buildContractPdf({ client: CLIENT, ...inputs });
+  assert.ok(buffer.length > 1000);
+  assert.equal(buffer.subarray(0, 4).toString(), '%PDF');
+});
+
+test('users store + sender: phone is normalized, formatted and flows into {{signerPhone}}', async () => {
+  const users = await import('../data/store.js');
+  const senderMod = await import('../lib/sales-sender.js');
+  const salesEmail = await import('../lib/sales-email.js');
+
+  assert.equal(users.normalizePhone('+47 92331098'), '+4792331098');
+  assert.equal(users.normalizePhone('923 31 098'), '+4792331098');
+  assert.equal(users.normalizePhone('004792331098'), '+4792331098');
+  assert.equal(users.normalizePhone('abc'), '');
+  assert.equal(users.normalizePhone(''), '');
+
+  assert.equal(senderMod.formatPhoneNumber('+4792331098'), '+47 923 31 098');
+  assert.equal(senderMod.formatPhoneNumber('73 51 00 00'), '+47 73 51 00 00');
+
+  const sender = senderMod.buildSalesSender({ name: 'Alexander', username: 'alexander@asoldi.com', phone: '+4792331098' });
+  assert.equal(sender.phone, '+47 923 31 098');
+  assert.equal(sender.fromEmail, 'alexander@asoldi.com');
+  const merge = salesEmail.salesEmailMergeMap(CLIENT, {}, sender);
+  assert.equal(merge.signerPhone, '+47 923 31 098');
+  assert.equal(merge.signerEmail, 'alexander@asoldi.com');
+  // No number on the profile → office fallback, never an empty signature.
+  assert.match(salesEmail.salesEmailMergeMap(CLIENT, {}, senderMod.buildSalesSender({ name: 'Ola', username: 'ola@asoldi.com' })).signerPhone, /^\+47 /);
+
+  // Users created without a phone can get one later; alexander@asoldi.com is seeded on first read.
+  const created = await users.createUser('alexander@asoldi.com', 'secret-pass', 'sales', { name: 'Alexander' });
+  assert.equal(created.ok, true);
+  const seeded = await users.getUserByUsername('alexander@asoldi.com');
+  assert.equal(seeded.phone, '+4792331098', 'seeded number is written to users.json');
+  const updated = await users.updateUserProfile(created.user.id, { phone: '+47 999 88 777' });
+  assert.equal(updated.user.phone, '+4799988777', 'admin edit wins over the seed');
+  assert.equal((await users.getUserByUsername('alexander@asoldi.com')).phone, '+4799988777', 'seed does not overwrite an existing number');
+});

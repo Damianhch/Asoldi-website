@@ -60,7 +60,15 @@ import {
   saveEmailTemplate,
 } from './lib/email-templates-store.js';
 import * as salesOffers from './data/sales-offers.js';
-import { applyOfferProducts, escapeHtml as escapeOfferHtml, fillOfferSlots, productsWithTier, summarizeOfferProducts } from './lib/offer-email.js';
+import {
+  applyOfferProducts,
+  escapeHtml as escapeOfferHtml,
+  fillOfferSlots,
+  findOfferPlaceholders,
+  productsWithTier,
+  refreshOfferShell,
+  summarizeOfferProducts,
+} from './lib/offer-email.js';
 import { offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
 import { buildContractPdf, contractFileName, contractInputsForOffer, offerContractIsAvailable } from './lib/offer-contract-pdf.js';
 import { isDeepseekConfigured } from './lib/deepseek.js';
@@ -7588,6 +7596,7 @@ async function resolveSalesSenderForAccount(salesUser = {}) {
     profile = {
       name: admin?.name || '',
       fromEmail: admin?.fromEmail || '',
+      phone: admin?.phone || '',
       username: admin?.username || String(accountKey).slice('admin:'.length),
     };
   } else if (salesUser.userId) {
@@ -7596,6 +7605,7 @@ async function resolveSalesSenderForAccount(salesUser = {}) {
       profile = {
         name: user?.name || '',
         fromEmail: user?.fromEmail || '',
+        phone: user?.phone || '',
         username: user?.username || '',
       };
     } catch {
@@ -8258,17 +8268,31 @@ app.post('/api/admin/client-payment-requests/:userId/mark-handled', adminAuth, a
   });
 });
 
+const PHONE_REQUIRED_MESSAGE = 'Sales reps must have a phone number — it is printed in every offer and confirmation e-mail they send.';
+
+/** A phone that was sent but does not normalize to anything usable (e.g. "abc" or 3 digits). */
+function phoneIsInvalid(phone) {
+  return phone !== undefined && String(phone).trim() !== '' && !store.normalizePhone(phone);
+}
+
 app.post('/api/admin/users', adminAuth, async (req, res) => {
-  const { username, password, role, name, fromEmail } = req.body || {};
+  const { username, password, role, name, fromEmail, phone } = req.body || {};
   if (!username || !password) {
     return res.status(400).json({ message: 'Username and password required' });
   }
   if (fromEmail && !normalizeAsoldiFromEmail(fromEmail)) {
     return res.status(400).json({ message: 'Send-from must be an @asoldi.com address, for example alexander@asoldi.com.' });
   }
+  if (phoneIsInvalid(phone)) {
+    return res.status(400).json({ message: 'Phone number must be a valid number, for example +47 923 31 098.' });
+  }
+  if (role === 'sales' && !store.normalizePhone(phone)) {
+    return res.status(400).json({ message: PHONE_REQUIRED_MESSAGE });
+  }
   const result = await store.createUser(username, password, role || 'none', {
     name,
     fromEmail: normalizeAsoldiFromEmail(fromEmail),
+    phone,
   });
   if (!result.ok) {
     return res.status(400).json({ message: result.error });
@@ -8278,18 +8302,30 @@ app.post('/api/admin/users', adminAuth, async (req, res) => {
 
 app.put('/api/admin/users/:id', adminAuth, async (req, res) => {
   const { id } = req.params;
-  const { username, password, role, employeeProduct, name, fromEmail } = req.body || {};
+  const { username, password, role, employeeProduct, name, fromEmail, phone } = req.body || {};
+  const existing = await store.getUserById(id);
+  if (!existing) return res.status(404).json({ message: 'User not found' });
+  if (phoneIsInvalid(phone)) {
+    return res.status(400).json({ message: 'Phone number must be a valid number, for example +47 923 31 098.' });
+  }
+  // Sales reps are required to have a number: block clearing it, and block the role change without one.
+  const nextPhone = phone === undefined ? store.normalizePhone(existing.phone) : store.normalizePhone(phone);
+  const nextRole = role !== undefined ? role : existing.role;
+  if (nextRole === 'sales' && !nextPhone) {
+    return res.status(400).json({ message: PHONE_REQUIRED_MESSAGE });
+  }
   if (username !== undefined) {
     const result = await store.updateUserUsername(id, username);
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
-  if (name !== undefined || fromEmail !== undefined) {
+  if (name !== undefined || fromEmail !== undefined || phone !== undefined) {
     if (fromEmail && !normalizeAsoldiFromEmail(fromEmail)) {
       return res.status(400).json({ message: 'Send-from must be an @asoldi.com address, for example alexander@asoldi.com.' });
     }
     const result = await store.updateUserProfile(id, {
       name,
       fromEmail: fromEmail === undefined ? undefined : normalizeAsoldiFromEmail(fromEmail),
+      phone,
     });
     if (!result.ok) return res.status(400).json({ message: result.error });
   }
@@ -8312,6 +8348,30 @@ app.delete('/api/admin/users/:id', adminAuth, async (req, res) => {
   const result = await store.deleteUser(req.params.id);
   if (!result.ok) return res.status(404).json({ message: result.error });
   res.json({ ok: true });
+});
+
+// Admin's own sender profile (printed as {{signerName}} / {{signerEmail}} / {{signerPhone}} when admin sends).
+app.get('/api/admin/me/sender', adminAuth, async (_req, res) => {
+  res.json({ sender: await store.getAdminSender() });
+});
+
+app.put('/api/admin/me/sender', adminAuth, async (req, res) => {
+  const { name, fromEmail, phone } = req.body || {};
+  if (fromEmail && !normalizeAsoldiFromEmail(fromEmail)) {
+    return res.status(400).json({ message: 'Send-from must be an @asoldi.com address.' });
+  }
+  if (phoneIsInvalid(phone)) {
+    return res.status(400).json({ message: 'Phone number must be a valid number, for example +47 923 31 098.' });
+  }
+  if (phone !== undefined && !store.normalizePhone(phone)) {
+    return res.status(400).json({ message: 'Admin must have a phone number — it is printed in offers and confirmations you send.' });
+  }
+  const sender = await store.updateAdminSender({
+    name,
+    fromEmail: fromEmail === undefined ? undefined : normalizeAsoldiFromEmail(fromEmail),
+    phone,
+  });
+  res.json({ ok: true, sender });
 });
 
 app.post('/api/admin/change-password', adminAuth, async (req, res) => {
@@ -11849,7 +11909,21 @@ function presentOffer(offer) {
     needsVerification: salesOffers.offerNeedsVerification(offer),
     canSend: salesOffers.offerCanBeSentBySales(offer),
     contractAvailable: offerContractIsAvailable(offer),
+    // Send is gated on a full preview of exactly this content, and on no template placeholders left.
+    previewCurrent: salesOffers.offerPreviewIsCurrent(offer),
+    placeholders: findOfferPlaceholders(offer.email?.html),
   };
+}
+
+/**
+ * Stored drafts keep the shell they were created with. Non-sent offers are brought up to the current
+ * template (no envelope icon, left-aligned heading) on read so the fix shows up without a "Nytt tilbud".
+ */
+function refreshStoredOfferShell(offer, req) {
+  if (!offer || offer.status === 'sent') return offer;
+  const html = refreshOfferShell(offer.email?.html || '');
+  if (html === (offer.email?.html || '')) return offer;
+  return salesOffers.updateSalesOffer(offer.id, { email: { html } }, { actor: offerActor(req), action: '' }) || offer;
 }
 
 function offerReadiness(client) {
@@ -11870,7 +11944,7 @@ function meetingForOffer(client, offer) {
 
 async function ensureOfferDraft(client, req) {
   const existing = salesOffers.getOfferForClient(client.id);
-  if (existing) return existing;
+  if (existing) return refreshStoredOfferShell(existing, req);
   const sender = await resolveSalesSenderForAccount(req.salesUser);
   const email = buildOfferEmailForClient(client, {}, { sender });
   return salesOffers.createSalesOffer({
@@ -11893,18 +11967,27 @@ function offerPatchFromBody(body = {}, current = {}) {
   if (typeof body.meetingId === 'string') patch.meetingId = body.meetingId;
   if (typeof body.reviewRequested === 'boolean') patch.reviewRequested = body.reviewRequested;
 
+  const mvaChanged = typeof body.mvaIncluded === 'boolean' && body.mvaIncluded !== Boolean(current.mvaIncluded);
+  const mvaIncluded = mvaChanged ? body.mvaIncluded : Boolean(current.mvaIncluded);
+  if (mvaChanged) patch.mvaIncluded = mvaIncluded;
+
   let products = Array.isArray(body.products) ? salesOffers.normalizeOfferProducts(body.products) : null;
   const tierChanged = typeof body.tierId === 'string' && sanitizeText(body.tierId) !== sanitizeText(current.tierId);
   if (tierChanged) {
     const tierId = salesOffers.normalizeOfferTierId(body.tierId) || (sanitizeText(body.tierId) === '' ? '' : current.tierId);
     patch.tierId = tierId;
     products = productsWithTier(products || current.products || [], tierId);
+    // Skreddersydd always goes via admin. Coming back to a standard tier resets the flag so the rep decides
+    // again (the checkbox in the composer) instead of inheriting "review" from the custom pick.
     if (tierId === CUSTOM_TIER_ID) patch.reviewRequested = true;
+    else if (current.tierId === CUSTOM_TIER_ID && typeof body.reviewRequested !== 'boolean') patch.reviewRequested = false;
   }
-  if (products) {
-    patch.products = products;
+  if (current.tierId === CUSTOM_TIER_ID && !tierChanged) patch.reviewRequested = true;
+  if (products || mvaChanged) {
+    const list = products || current.products || [];
+    if (products) patch.products = products;
     const html = typeof email.html === 'string' ? email.html : current.email?.html || '';
-    patch.email = { ...(patch.email || {}), html: applyOfferProducts(html, products) };
+    patch.email = { ...(patch.email || {}), html: applyOfferProducts(html, list, { mvaIncluded }) };
   }
   return patch;
 }
@@ -11919,7 +12002,7 @@ async function notifyOfferReviewRequested(offer, client, req) {
     `Selger: ${sender.fullName || sender.name || offerActor(req)}`,
     `Pakke: ${offer.tierId === CUSTOM_TIER_ID ? 'Skreddersydd' : tierById(offer.tierId)?.name || 'ikke valgt'}`,
     '',
-    summarizeOfferProducts(offer.products),
+    summarizeOfferProducts(offer.products, { mvaIncluded: offer.mvaIncluded }),
     '',
     `Åpne i admin: ${link}`,
   ].join('\n');
@@ -11944,7 +12027,7 @@ async function notifyOfferVerified(offer, client, req) {
     `Verifisert tilbud klart: ${client.businessName}`,
     offer.adminNote ? `Melding fra admin: ${offer.adminNote}` : '',
     '',
-    summarizeOfferProducts(offer.products),
+    summarizeOfferProducts(offer.products, { mvaIncluded: offer.mvaIncluded }),
     '',
     `Åpne kunden og trykk "Send tilbud": ${link}`,
   ].filter((line, index, all) => line !== '' || all[index - 1] !== '').join('\n');
@@ -11968,6 +12051,33 @@ async function offerContractBuffer(offer, client) {
   const buffer = await buildContractPdf({ client, ...inputs });
   const fileName = contractFileName({ client, tierId: inputs.summary && inputs.preferSummary && offer.tierId === CUSTOM_TIER_ID ? CUSTOM_TIER_ID : offer.tierId });
   return { buffer, fileName };
+}
+
+/** The exact message the client receives (merge fields resolved, hosted assets), used for preview and send. */
+async function composeOfferMessage(offer, client, req) {
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const composed = composeEmailForClient(client, 'offer', {
+    html: offer.email.html,
+    subject: offer.email.subject,
+    preheader: offer.email.preheader,
+  }, { sender, attachInvite: false, offer: { products: offer.products, mvaIncluded: offer.mvaIncluded } }).message;
+  return { sender, composed };
+}
+
+/** Why a rep cannot send this offer right now ('' when they can). Mirrors the composer's disabled hints. */
+function offerSendBlocker(offer, { ignorePreview = false } = {}) {
+  if (!offer.products.length) return 'Velg en nettside-tier (eller få tilbudet verifisert) før du sender.';
+  if (!salesOffers.offerCanBeSentBySales(offer)) {
+    return offer.status === 'review-requested'
+      ? 'Tilbudet venter på gjennomgang hos admin.'
+      : 'Dette tilbudet må kjøres via admin først (skreddersydd eller merket for gjennomgang).';
+  }
+  const placeholders = findOfferPlaceholders(offer.email.html);
+  if (placeholders.length) {
+    return `E-posten har ${placeholders.length} felt fra malen som ikke er fylt ut: ${placeholders.slice(0, 3).map((label) => `«${label}»`).join(', ')}${placeholders.length > 3 ? ' …' : ''}. Fyll ut eller slett dem før du sender.`;
+  }
+  if (!ignorePreview && !salesOffers.offerPreviewIsCurrent(offer)) return 'Forhåndsvis e-posten og bekreft at den ser riktig ut før du sender.';
+  return '';
 }
 
 function sendPdf(res, buffer, fileName, { download = false } = {}) {
@@ -12090,6 +12200,57 @@ app.get('/api/admin/sales/:id/offer/contract.pdf', salesAuth, async (req, res) =
   }
 });
 
+/**
+ * Full preview of what the client will receive: latest edits saved, merge fields resolved with the real
+ * client + rep values, plus the checks that still block sending. Does not mark the preview as approved.
+ */
+app.post('/api/admin/sales/:id/offer/preview', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  let offer = await ensureOfferDraft(client, req);
+  if (offer.status !== 'sent' && offer.status !== 'verified' && offer.status !== 'review-requested') {
+    offer = salesOffers.updateSalesOffer(offer.id, offerPatchFromBody(req.body || {}, offer), { actor: offerActor(req), action: '' });
+  }
+  try {
+    const { sender, composed } = await composeOfferMessage(offer, client, req);
+    const contractAvailable = offerContractIsAvailable(offer);
+    const contractName = contractAvailable
+      ? contractFileName({ client, tierId: offer.tierId === CUSTOM_TIER_ID || offer.products.some((item) => item.kind !== 'tier') ? CUSTOM_TIER_ID : offer.tierId })
+      : '';
+    const readiness = offerReadiness(client);
+    res.json({
+      offer: presentOffer(offer),
+      preview: {
+        to: sanitizeText(req.body?.to) || client.contactEmail,
+        from: composed.from,
+        replyTo: composed.replyTo,
+        subject: composed.subject,
+        html: composed.html,
+        contractFileName: contractName,
+        contractAvailable,
+        sender: { name: sender.fullName || sender.name, email: sender.fromEmail, phone: sender.phone || '' },
+      },
+      placeholders: findOfferPlaceholders(offer.email.html),
+      readiness,
+      blocker: readiness.ready ? offerSendBlocker(offer, { ignorePreview: true }) : readiness.message,
+    });
+  } catch (error) {
+    res.status(400).json({ message: sanitizeText(error?.message) || 'Kunne ikke lage forhåndsvisning.' });
+  }
+});
+
+/** The rep confirmed the preview looks right: remember the content fingerprint so send can require it. */
+app.post('/api/admin/sales/:id/offer/approve-preview', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const offer = await ensureOfferDraft(client, req);
+  if (offer.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.', offer: presentOffer(offer) });
+  const updated = salesOffers.markOfferPreviewed(offer.id, { actor: offerActor(req) });
+  res.json({ offer: presentOffer(updated) });
+});
+
 app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
@@ -12104,25 +12265,16 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
   if (offer.status !== 'verified') {
     offer = salesOffers.updateSalesOffer(offer.id, offerPatchFromBody(req.body || {}, offer), { actor: offerActor(req), action: '' });
   }
-  if (!offer.products.length) return res.status(400).json({ message: 'Velg en nettside-tier (eller få tilbudet verifisert) før du sender.' });
-  if (!salesOffers.offerCanBeSentBySales(offer)) {
-    return res.status(409).json({
-      message: offer.status === 'review-requested'
-        ? 'Tilbudet venter på gjennomgang hos admin.'
-        : 'Dette tilbudet må kjøres via admin først (skreddersydd eller merket for gjennomgang).',
-      offer: presentOffer(offer),
-    });
+  const blocker = offerSendBlocker(offer);
+  if (blocker) {
+    const waiting = offer.status === 'review-requested' || (salesOffers.offerNeedsVerification(offer) && offer.status !== 'verified');
+    return res.status(waiting ? 409 : 400).json({ message: blocker, offer: presentOffer(offer) });
   }
   const to = sanitizeText(req.body?.to) || client.contactEmail;
   if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
   try {
-    const sender = await resolveSalesSenderForAccount(req.salesUser);
     const { buffer, fileName } = await offerContractBuffer(offer, client);
-    const composed = composeEmailForClient(client, 'offer', {
-      html: offer.email.html,
-      subject: offer.email.subject,
-      preheader: offer.email.preheader,
-    }, { sender, attachInvite: false, offer: { products: offer.products } }).message;
+    const { composed } = await composeOfferMessage(offer, client, req);
     await emailLib.sendEmail({
       to,
       from: composed.from,
@@ -12196,8 +12348,9 @@ app.get('/api/admin/offers/contract-template/:tierId.pdf', salesAuth, async (req
 
 app.get('/api/admin/offers/:id', salesAuth, async (req, res) => {
   if (!requireOfferAdmin(req, res)) return;
-  const offer = salesOffers.getSalesOfferById(req.params.id);
-  if (!offer) return res.status(404).json({ message: 'Offer not found.' });
+  const stored = salesOffers.getSalesOfferById(req.params.id);
+  if (!stored) return res.status(404).json({ message: 'Offer not found.' });
+  const offer = refreshStoredOfferShell(stored, req);
   const client = sales.getSalesClientById(offer.salesClientId);
   const ownerNames = await salesOwnerNameMap(req);
   const meetings = (client?.meetings || []).map((ref) => ({ ...ref, media: describeFirefliesMedia(ref.meetingId) }));
@@ -12221,7 +12374,7 @@ app.put('/api/admin/offers/:id', salesAuth, async (req, res) => {
   const patch = offerPatchFromBody(req.body || {}, current);
   if (typeof req.body?.adminNote === 'string') patch.adminNote = req.body.adminNote;
   // Content changed after verification → back to review so the rep can't send stale content.
-  const contentChanged = Boolean(patch.email || patch.products || patch.tierId !== undefined);
+  const contentChanged = Boolean(patch.email || patch.products || patch.tierId !== undefined || patch.mvaIncluded !== undefined);
   if (current.status === 'verified' && contentChanged) {
     patch.status = 'review-requested';
     patch.verifiedAt = '';

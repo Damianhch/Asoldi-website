@@ -75,6 +75,8 @@ export type AdminUser = {
   employeeProduct?: EmployeeProduct;
   name?: string;
   fromEmail?: string;
+  /** E.164-ish ("+4792331098"). Required for sales reps — printed in every e-mail they send. */
+  phone?: string;
 };
 
 export type ClientPaymentRequest = {
@@ -222,6 +224,8 @@ export type SalesSender = {
   fromEmail: string;
   from: string;
   replyTo: string;
+  /** Formatted for display ("+47 923 31 098"); '' when the rep has no number yet. */
+  phone?: string;
 };
 
 export type SalesCalendarMeta = {
@@ -360,6 +364,8 @@ export type SalesOffer = {
   status: SalesOfferStatus;
   reviewRequested: boolean;
   tierId: string;
+  /** Rep absorbed the VAT: listed prices are what the client pays incl. 25 % MVA (default false = MVA on top). */
+  mvaIncluded: boolean;
   email: { subject: string; preheader: string; html: string };
   products: OfferProduct[];
   contract: { summary: OfferContractSummary | null; generatedAt: string; pdfPath: string };
@@ -369,6 +375,8 @@ export type SalesOffer = {
   reviewRequestedAt: string;
   verifiedAt: string;
   verifiedBy: string;
+  previewHash: string;
+  previewedAt: string;
   sentAt: string;
   sentTo: string;
   sentBy: string;
@@ -378,6 +386,10 @@ export type SalesOffer = {
   needsVerification?: boolean;
   canSend?: boolean;
   contractAvailable?: boolean;
+  /** The rep approved a full preview of exactly the current content. */
+  previewCurrent?: boolean;
+  /** Template placeholders still left in the email (must be filled or deleted before sending). */
+  placeholders?: string[];
 };
 
 export type SalesClient = {

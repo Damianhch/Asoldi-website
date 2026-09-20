@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from 'fs';
+import { createHash } from 'crypto';
 import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 import { CUSTOM_TIER_ID, tierById } from '../lib/website-tiers.js';
 
@@ -136,8 +137,13 @@ export function normalizeSalesOffer(raw = {}) {
     status: normalizeOfferStatus(raw.status),
     reviewRequested: Boolean(raw.reviewRequested),
     tierId: normalizeOfferTierId(raw.tierId),
+    /** Rep absorbed the VAT: listed prices are what the client pays incl. 25 % MVA (default: MVA added on top). */
+    mvaIncluded: Boolean(raw.mvaIncluded),
     email: normalizeEmail(raw.email),
     products: normalizeOfferProducts(raw.products),
+    /** Content hash at the moment the rep approved the full preview; must match on send. */
+    previewHash: sanitizeText(raw.previewHash),
+    previewedAt: sanitizeText(raw.previewedAt),
     contract: {
       summary: normalizeContractSummary(contract.summary),
       generatedAt: sanitizeText(contract.generatedAt),
@@ -308,6 +314,36 @@ export function deleteSalesOffer(id) {
 /** Whether this offer must be verified by an admin before a rep may send it. */
 export function offerNeedsVerification(offer = {}) {
   return offer.tierId === CUSTOM_TIER_ID || Boolean(offer.reviewRequested);
+}
+
+/**
+ * Fingerprint of everything the client will actually receive. The rep must approve a full preview of
+ * exactly this content before sending; any later edit changes the hash and invalidates the approval.
+ */
+export function offerContentHash(offer = {}) {
+  const payload = JSON.stringify({
+    subject: sanitizeText(offer?.email?.subject),
+    preheader: sanitizeText(offer?.email?.preheader),
+    html: String(offer?.email?.html || ''),
+    products: normalizeOfferProducts(offer?.products),
+    mvaIncluded: Boolean(offer?.mvaIncluded),
+    tierId: sanitizeText(offer?.tierId),
+    summary: offer?.contract?.summary || null,
+  });
+  return createHash('sha1').update(payload).digest('hex');
+}
+
+export function offerPreviewIsCurrent(offer = {}) {
+  return Boolean(offer?.previewHash) && offer.previewHash === offerContentHash(offer);
+}
+
+export function markOfferPreviewed(id, { actor = '' } = {}) {
+  const current = getSalesOfferById(id);
+  if (!current) return null;
+  return updateSalesOffer(id, {
+    previewHash: offerContentHash(current),
+    previewedAt: nowIso(),
+  }, { actor, action: 'previewed' });
 }
 
 export function offerCanBeSentBySales(offer = {}) {

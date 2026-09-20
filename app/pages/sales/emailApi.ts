@@ -1,4 +1,4 @@
-import { API, salesAuthHeaders } from '../Admin/shared';
+import { API, salesAuthHeaders, type SalesOffer } from '../Admin/shared';
 
 export type EmailTemplate = {
   id: string;
@@ -113,6 +113,32 @@ export function requestClientOfferReview(clientId: string, payload: Record<strin
 
 export function sendClientOffer(clientId: string, payload: Record<string, unknown>) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/send`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export type OfferPreview = {
+  to: string;
+  from: string;
+  replyTo: string;
+  subject: string;
+  html: string;
+  contractFileName: string;
+  contractAvailable: boolean;
+  sender: { name: string; email: string; phone: string };
+};
+
+/** Renders the exact message the client will get (merge fields resolved) and saves the latest edits first. */
+export function previewClientOffer(clientId: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/preview`, { method: 'POST', body: JSON.stringify(payload) }) as Promise<{
+    offer: SalesOffer;
+    preview: OfferPreview;
+    placeholders: string[];
+    readiness: OfferReadiness;
+    blocker: string;
+  }>;
+}
+
+export function approveClientOfferPreview(clientId: string) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/approve-preview`, { method: 'POST', body: '{}' }) as Promise<{ offer: SalesOffer }>;
 }
 
 /** PDF routes need the Authorization header, so fetch as a blob and open it in a new tab. */

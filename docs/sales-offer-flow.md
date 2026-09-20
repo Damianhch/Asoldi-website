@@ -29,7 +29,8 @@ draft ──(request review)──▶ review-requested ──(verify)──▶ v
 * `sent` – e-mail + contract PDF delivered (BCC copy to the rep). **Nytt tilbud** starts a fresh draft.
 
 **Custom tier (`Skreddersydd`) always requires verification.** Standard tiers require it only when the rep ticks
-“Kjør via admin først”.
+“Kjør via admin først”. The flag is derived from the server: choosing `custom` forces it on (checkbox locked);
+switching from `custom` back to a tier 1–3 clears it; toggling it on a standard tier never changes the tier.
 
 ## Hard requirements before sending
 
@@ -37,6 +38,27 @@ draft ──(request review)──▶ review-requested ──(verify)──▶ v
 (falls back to `meetingPlace`), `contactPerson`, `contactEmail`. Enforced in the UI (amber banner) and on the
 `send` / `request-review` routes (HTTP 400 with the missing labels). **Hent fra Brønnøysund** in the client edit
 form fills org number + address (`GET /api/admin/sales/brreg-search`).
+
+**Preview gate.** A rep cannot send until they have opened **Forhåndsvis e-post** (modal with the fully merged
+e-mail, subject, attachment name and signature) and clicked *Ser riktig ut – klar til sending*.
+`POST …/offer/preview` returns the merged HTML + remaining template placeholders + the send blocker;
+`POST …/offer/approve-preview` stores `previewHash` = `offerContentHash(offer)` (tier, products, MVA mode, subject,
+preheader, html, contract summary). Any content change invalidates the approval (`offerPreviewIsCurrent`).
+The `send` route refuses (400) while the preview is stale or `findOfferPlaceholders(html)` still finds
+`[…]`-style template fields (`data-offer-placeholder`). The old “Forhåndsvis PC / telefon” buttons are gone — the
+visual editor already has the desktop/phone switch.
+
+**MVA mode.** `offer.mvaIncluded` (default `false` = prices ex. MVA + 25 % on top). When the rep/admin ticks
+**Inkluder mva i prisen**, the same product prices are treated as incl. MVA: the e-mail totals show *Pris inkl.
+mva / Herav MVA / eks. mva*, the product card says “inkl. mva/mnd”, and the contract PDF states the fee as incl.
+MVA (`priceLineFor`). The flag rides along in `offerContentHash`, so flipping it requires a fresh preview.
+
+**Signer phone.** `{{signerPhone}}` / `{{signerEmail}}` in the footer come from the sending account
+(`lib/sales-sender.js` → `profile.phone`). Phone lives on `users.json` (per user) and `admin.json` (admin sender
+profile) in the persistent data dir, so it survives deploys. Required for the `sales` role and for the admin
+sender profile (Admin → Users → *Your sender profile*), optional for everyone else; server-side validation in
+`POST/PUT /api/admin/users` and `PUT /api/admin/me/sender`. `data/store.js#seedKnownPhones` backfills known
+numbers (alexander@asoldi.com → `+47 923 31 098`) on first read if the stored record has none.
 
 ## Pricing source of truth
 
@@ -56,7 +78,9 @@ weeks and included features live. `app/data/websiteProducts.ts`, `app/data/clien
   (`fillOfferSlots`) or by hand.
 
 Each product renders: name, “Opp til N sider”, included bullets, monthly price ex. MVA; the totals table shows
-ex. MVA, MVA 25 % and incl. MVA **per month** (retainer).
+ex. MVA, MVA 25 % and incl. MVA **per month** (retainer). The shell has no envelope illustration and the
+“Tilbud fra Asoldi” heading is left-aligned (`hideIllustration` / `titleAlign` view options in
+`lib/sales-email-layout.js`); `refreshOfferShell` upgrades drafts created before that change on load.
 
 ## AI (DeepSeek)
 
@@ -99,7 +123,8 @@ non-sent one). Every transition is appended to `offer.history`.
 ## Routes
 
 Sales (owner or admin): `GET/PUT /api/admin/sales/:id/offer`, `POST …/offer/new`, `POST …/offer/fill`,
-`POST …/offer/request-review`, `GET …/offer/contract.pdf`, `POST …/offer/send`.
+`POST …/offer/preview`, `POST …/offer/approve-preview`, `POST …/offer/request-review`,
+`GET …/offer/contract.pdf`, `POST …/offer/send`. Sender profile: `GET/PUT /api/admin/me/sender` (admin).
 
 Admin only: `GET /api/admin/offers[?status=]`, `GET/PUT /api/admin/offers/:id`,
 `POST …/:id/reflect-contract`, `PUT …/:id/contract`, `POST …/:id/verify`, `POST …/:id/reopen` (`{toDraft}`),
