@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
+  FileText,
   Filter,
   Gift,
   Loader2,
@@ -114,6 +115,12 @@ type Props = {
   onMovedToDevelopment?: () => void;
 };
 
+type BrregEntity = {
+  organizationNumber: string;
+  name: string;
+  address: string;
+};
+
 type SalesFormState = {
   product: SalesProduct;
   businessName: string;
@@ -121,6 +128,8 @@ type SalesFormState = {
   contactEmail: string;
   contactPhone: string;
   meetingPlace: string;
+  orgNumber: string;
+  businessAddress: string;
   industry: string;
   meetingMode: 'online' | 'in-person';
   agreedTime: boolean;
@@ -141,6 +150,8 @@ const INITIAL_FORM: SalesFormState = {
   contactEmail: '',
   contactPhone: '',
   meetingPlace: '',
+  orgNumber: '',
+  businessAddress: '',
   industry: '',
   meetingMode: 'online',
   agreedTime: false,
@@ -359,6 +370,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
+  const [brregLoading, setBrregLoading] = useState(false);
+  const [brregError, setBrregError] = useState('');
+  const [brregResults, setBrregResults] = useState<BrregEntity[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -956,6 +970,10 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=${encodeURIComponent(template)}`);
   }
 
+  function openOfferComposer(client: SalesClient) {
+    navigate(`/sales/offer?clientId=${encodeURIComponent(client.id)}`);
+  }
+
   async function toggleEditEmailBeforeSend(client: SalesClient) {
     if (emailToggleBusyId === client.id) return;
     const nextValue = !clientEditsEmailBeforeSend(client);
@@ -1076,8 +1094,44 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  function applyBrregEntity(entity: BrregEntity) {
+    setForm((prev) => ({
+      ...prev,
+      businessName: prev.businessName.trim() || entity.name,
+      orgNumber: entity.organizationNumber || prev.orgNumber,
+      businessAddress: entity.address || prev.businessAddress,
+    }));
+    setBrregResults([]);
+    setBrregError('');
+  }
+
+  async function lookupBrreg() {
+    const query = form.orgNumber.replace(/\D+/g, '').length === 9 ? form.orgNumber : form.businessName;
+    if (!query.trim()) return;
+    setBrregLoading(true);
+    setBrregError('');
+    setBrregResults([]);
+    try {
+      const data = await request(`/admin/sales/brreg-search?q=${encodeURIComponent(query.trim())}`) as { results?: BrregEntity[] };
+      const results = Array.isArray(data.results) ? data.results.filter((row) => row.organizationNumber) : [];
+      if (!results.length) {
+        setBrregError('Fant ingen selskaper i Brønnøysund. Skriv inn org. nr manuelt.');
+      } else if (results.length === 1) {
+        applyBrregEntity(results[0]);
+      } else {
+        setBrregResults(results);
+      }
+    } catch (err) {
+      setBrregError(err instanceof Error ? err.message : 'Oppslag mot Brønnøysund feilet.');
+    } finally {
+      setBrregLoading(false);
+    }
+  }
+
   function openEdit(client: SalesClient) {
     const details = parseDetails(client.details);
+    setBrregResults([]);
+    setBrregError('');
     setEditingId(client.id);
     setForm({
       product: normalizeSalesProduct(client.product),
@@ -1086,6 +1140,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       contactEmail: client.contactEmail || '',
       contactPhone: client.contactPhone || '',
       meetingPlace: client.meetingPlace || '',
+      orgNumber: client.orgNumber || '',
+      businessAddress: client.businessAddress || '',
       industry: client.industry || '',
       meetingMode: client.meetingMode === 'in-person' ? 'in-person' : 'online',
       agreedTime: Boolean(client.agreedTime),
@@ -1114,6 +1170,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         contactEmail: form.contactEmail,
         contactPhone: form.contactPhone,
         meetingPlace: form.meetingPlace,
+        orgNumber: form.orgNumber,
+        businessAddress: form.businessAddress,
         industry: form.industry,
         meetingMode: form.meetingMode,
         agreedTime: form.agreedTime,
@@ -2054,6 +2112,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   actionBusy={nextActionBusyId === client.id}
                   onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
                   onMutateAction={(body) => mutateNextAction(client, body)}
+                  onOpenOffer={clientIsSsu ? undefined : () => openOfferComposer(client)}
                 />
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -2146,6 +2205,30 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                     >
                       {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
                       {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
+                    </button>
+                  )}
+                  {!clientIsSsu && (
+                    <button
+                      type="button"
+                      onClick={() => openOfferComposer(client)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                      title="Åpne tilbuds-e-posten med kontrakt (PDF) for denne kunden"
+                    >
+                      <FileText size={13} />
+                      Send tilbud
+                      {client.offerStatus ? (
+                        <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${
+                          client.offerStatus === 'sent'
+                            ? 'bg-emerald-500/20 text-emerald-200'
+                            : client.offerStatus === 'verified'
+                              ? 'bg-sky-500/20 text-sky-200'
+                              : client.offerStatus === 'review-requested'
+                                ? 'bg-amber-500/20 text-amber-200'
+                                : 'bg-white/10 text-gray-300'
+                        }`}>
+                          {client.offerStatus === 'sent' ? 'Sendt' : client.offerStatus === 'verified' ? 'Verifisert' : client.offerStatus === 'review-requested' ? 'Hos admin' : 'Utkast'}
+                        </span>
+                      ) : null}
                     </button>
                   )}
                   {!clientIsSsu && clientOffers.length > 0 && (
@@ -2269,6 +2352,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           <li>Phone: {client.contactPhone || '—'}</li>
                           <li>Meeting: {client.meetingMode === 'in-person' ? 'In person' : 'Online (Google Meet)'}</li>
                           <li>Address: {client.meetingPlace || '—'}</li>
+                          <li>Org. nr: {client.orgNumber || '—'}</li>
+                          <li>Forretningsadresse: {client.businessAddress || (client.meetingPlace ? `${client.meetingPlace} (fra adresse)` : '—')}</li>
                           <li>Industry: {client.industry || '—'}</li>
                           <li>Duration: {durationForMode(client.meetingMode)} min</li>
                           <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
@@ -2812,6 +2897,42 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
               <Field label="Contact person" value={form.contactPerson} onChange={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))} required />
               <Field label="Email (optional)" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} />
               <Field label="Phone number" value={form.contactPhone} onChange={(value) => setForm((prev) => ({ ...prev, contactPhone: value }))} />
+              <div className="md:col-span-2 rounded-lg border border-white/10 bg-[#161616] p-3 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm text-gray-300">Kontraktdata (kreves før tilbud kan sendes)</span>
+                  <button
+                    type="button"
+                    onClick={() => void lookupBrreg()}
+                    disabled={brregLoading || !(form.businessName.trim() || form.orgNumber.trim())}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-xs text-white hover:bg-white/15 disabled:opacity-50"
+                  >
+                    {brregLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
+                    Hent fra Brønnøysund
+                  </button>
+                </div>
+                {brregError && <p className="text-xs text-amber-300">{brregError}</p>}
+                {brregResults.length > 1 && (
+                  <div className="space-y-1">
+                    <p className="text-xs text-gray-400">Flere treff — velg riktig selskap:</p>
+                    {brregResults.map((row) => (
+                      <button
+                        key={row.organizationNumber || row.name}
+                        type="button"
+                        onClick={() => applyBrregEntity(row)}
+                        className="w-full text-left px-3 py-2 rounded-lg bg-black/30 hover:bg-black/50 text-xs text-gray-200"
+                      >
+                        <span className="font-medium text-white">{row.name}</span>
+                        {row.organizationNumber ? ` · ${row.organizationNumber}` : ''}
+                        {row.address ? ` · ${row.address}` : ''}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="grid md:grid-cols-2 gap-3">
+                  <Field label="Org. nr (9 siffer)" value={form.orgNumber} onChange={(value) => setForm((prev) => ({ ...prev, orgNumber: value }))} />
+                  <Field label="Forretningsadresse" value={form.businessAddress} onChange={(value) => setForm((prev) => ({ ...prev, businessAddress: value }))} />
+                </div>
+              </div>
               <Field label="Industry" value={form.industry} onChange={(value) => setForm((prev) => ({ ...prev, industry: value }))} />
               {form.product !== 'ssu' && (
                 <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />

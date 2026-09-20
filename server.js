@@ -47,6 +47,7 @@ import {
   htmlToPlainText,
 } from './lib/sales-email.js';
 import {
+  buildOfferEmailForClient,
   composeEmailForClient,
   deleteEmailTemplate,
   getEmailDraft,
@@ -58,6 +59,15 @@ import {
   saveEmailDraft,
   saveEmailTemplate,
 } from './lib/email-templates-store.js';
+import * as salesOffers from './data/sales-offers.js';
+import { applyOfferProducts, escapeHtml as escapeOfferHtml, fillOfferSlots, productsWithTier, summarizeOfferProducts } from './lib/offer-email.js';
+import { offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
+import { buildContractPdf, contractFileName, contractInputsForOffer, offerContractIsAvailable } from './lib/offer-contract-pdf.js';
+import { isDeepseekConfigured } from './lib/deepseek.js';
+import { fillOfferFromTranscript, reflectContractFromEmail } from './lib/offer-ai.js';
+import { matchMeetingToClients } from './lib/fireflies-client-match.js';
+import { describeFirefliesMedia, firefliesMediaFilePath, persistFirefliesMedia } from './lib/fireflies-media.js';
+import { CUSTOM_TIER_ID, WEBSITE_TIERS, tierById } from './lib/website-tiers.js';
 import { buildSalesSender, normalizeAsoldiFromEmail } from './lib/sales-sender.js';
 import {
   authorizeFathomWebhook,
@@ -67,9 +77,15 @@ import {
 import {
   authorizeFirefliesWebhook,
   isFirefliesWebhookConfigured,
+  listStoredFirefliesMeetings,
+  meetingRefForClient,
   notifyFirefliesRecording,
   readFirefliesWebhookConfig,
+  readStoredFirefliesMeeting,
+  refreshFirefliesMeeting,
+  updateStoredFirefliesMeeting,
 } from './lib/fireflies-webhook.js';
+import { clientWebsitePlans } from './lib/website-tiers.js';
 import { renderSalesEmailDocument } from './lib/sales-email-layout.js';
 import {
   DEVELOPMENT_KEYS,
@@ -354,57 +370,8 @@ let serpApiBlockedUntilMs = 0;
 let braveSearchLastRequestAt = 0;
 let salesLinkBackfillRunning = false;
 
-const CLIENT_WEBSITE_PLANS = [
-  {
-    id: 'tier-1-standard',
-    name: 'Tier 1: Standard',
-    price: '999,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Inkluderer nettside, hosting, opprettelse, domene og e-post.',
-    features: [
-      'Nettsideutvikling',
-      'Hosting',
-      'Opprettelse',
-      'Domene',
-      'E-post',
-    ],
-    category: 'website',
-  },
-  {
-    id: 'tier-2-seo',
-    name: 'Tier 2: SEO',
-    price: '1 499,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Inkluderer Tier 1 + SEO-optimalisering og synlighetstiltak.',
-    features: [
-      'Alt i Tier 1',
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier sync',
-      'E-postliste innsamling',
-    ],
-    category: 'website',
-  },
-  {
-    id: 'tier-3-ecommerce',
-    name: 'Tier 3: Nettbutikk',
-    price: '1 999,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Inkluderer Tier 2 + nettbutikk og utvidet analyse.',
-    features: [
-      'Alt i Tier 2',
-      'Nettbutikk-funksjonalitet',
-      'Analyse-dashboard',
-      'Gjennomgangsmøte',
-    ],
-    category: 'website',
-  },
-];
+// Derived from the shared tier catalog (lib/website-tiers.js) — same data as the client portal and /pricing.
+const CLIENT_WEBSITE_PLANS = clientWebsitePlans();
 
 function findWebsitePlan(planId) {
   return CLIENT_WEBSITE_PLANS.find((entry) => entry.id === sanitizeText(planId)) || null;
@@ -1911,6 +1878,8 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
     contactPhone: sanitizeText(source.contactPhone ?? existing?.contactPhone),
     meetingPlace: meetingPlaceRaw,
+    orgNumber: sales.sanitizeOrgNumber(source.orgNumber ?? existing?.orgNumber),
+    businessAddress: sanitizeText(source.businessAddress ?? existing?.businessAddress),
     industry: sanitizeText(source.industry ?? existing?.industry),
     meetingMode: mode,
     agreedTime,
@@ -9406,6 +9375,18 @@ app.post('/api/client/account/delete', clientAuth, async (req, res) => {
   });
 });
 
+// Sales/admin lookup used by the client card "Hent fra Brønnøysund" (org nr + registered address for contracts).
+app.get('/api/admin/sales/brreg-search', salesAuth, async (req, res) => {
+  const query = sanitizeText(req.query?.q);
+  if (query.length < 2) return res.json({ results: [] });
+  try {
+    const results = await searchBrregBusinesses(query);
+    return res.json({ results });
+  } catch (error) {
+    return res.status(502).json({ message: error.message || 'Oppslag mot Brønnøysund feilet.' });
+  }
+});
+
 app.get('/api/client/brreg-search', clientAuth, async (req, res) => {
   const user = await store.getUserById(req.client.userId);
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
@@ -9903,14 +9884,84 @@ async function handleFirefliesWebhook(req, res) {
   }
 
   try {
-    const result = await notifyFirefliesRecording(payload);
+    const result = await notifyFirefliesRecording(payload, readFirefliesWebhookConfig(), firefliesClientDeps());
     console.log(
-      `[fireflies] webhook via=${auth.via} sent=${result.sent} reason=${result.reason || ''} id=${result.meetingId || ''} to=${result.to || ''}`
+      `[fireflies] webhook via=${auth.via} sent=${result.sent} reason=${result.reason || ''} id=${result.meetingId || ''} to=${result.to || ''} client=${result.match?.clientId || '-'} (${result.match?.confidence || 'unmatched'})`
     );
+    if (result.meetingId && result.reason !== 'ignored-event' && result.reason !== 'already-notified') {
+      // Copy video/audio/transcript to the data dir in the background so the signed URLs can expire safely.
+      void persistFirefliesMediaInBackground(result.meetingId);
+    }
     return res.json({ ok: true, ...result });
   } catch (error) {
     console.error('[fireflies] webhook failed', sanitizeText(error?.message) || error);
     return res.status(500).json({ ok: false, message: 'Failed to process Fireflies recording.' });
+  }
+}
+
+/** Owner account key -> that rep's e-mail, so the matcher can credit meetings hosted by the client's own rep. */
+async function salesOwnerEmailMap() {
+  const map = {};
+  try {
+    const admin = await store.getAdmin();
+    const adminKey = admin?.username ? `admin:${admin.username}` : '';
+    for (const email of [admin?.fromEmail, admin?.email]) {
+      if (adminKey && sanitizeText(email)) map[adminKey] = sanitizeText(email).toLowerCase();
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const users = await store.getAllUsers();
+    for (const user of Array.isArray(users) ? users : []) {
+      if (!user?.id) continue;
+      // Staff usernames are e-mail addresses; fromEmail is the sender override if set.
+      const email = sanitizeText(user.fromEmail || user.email || (String(user.username || '').includes('@') ? user.username : '')).toLowerCase();
+      if (!email) continue;
+      // Owner keys follow salesUserOwnerKeys(): sales:<userId> / sales:<username>.
+      map[`sales:${user.id}`] = email;
+      if (user.username) map[`sales:${user.username}`] = email;
+    }
+  } catch {
+    // ignore
+  }
+  for (const key of Object.keys(map)) {
+    const google = getGoogleCalendarStatus(key);
+    if (sanitizeText(google?.googleEmail)) map[key] = sanitizeText(google.googleEmail).toLowerCase();
+  }
+  return map;
+}
+
+function firefliesClientDeps() {
+  return {
+    matchClients: async (record) => matchMeetingToClients(record, sales.getSalesClients(), { ownerEmailById: await salesOwnerEmailMap() }),
+    linkMeeting: async (clientId, ref) => sales.linkMeetingToSalesClient(clientId, ref),
+  };
+}
+
+const firefliesMediaInFlight = new Set();
+
+async function persistFirefliesMediaInBackground(meetingId) {
+  const id = sanitizeText(meetingId);
+  if (!id || firefliesMediaInFlight.has(id)) return;
+  firefliesMediaInFlight.add(id);
+  try {
+    const record = readStoredFirefliesMeeting(id);
+    if (!record) return;
+    const result = await persistFirefliesMedia(record);
+    updateStoredFirefliesMeeting(id, {
+      media: {
+        savedAt: new Date().toISOString(),
+        video: result.video?.path ? { bytes: result.video.bytes } : { skipped: result.video?.skipped || 'unknown' },
+        audio: result.audio?.path ? { bytes: result.audio.bytes } : { skipped: result.audio?.skipped || 'unknown' },
+        hasTranscript: Boolean(sanitizeText(record.transcript)),
+      },
+    });
+    console.log(`[fireflies] media saved id=${id} video=${result.video?.bytes || result.video?.skipped} audio=${result.audio?.bytes || result.audio?.skipped}`);
+  } catch (error) {
+    console.error('[fireflies] media download failed', id, sanitizeText(error?.message) || error);
+  } finally {
+    firefliesMediaInFlight.delete(id);
   }
 }
 
@@ -10836,10 +10887,14 @@ app.get('/api/admin/sales', salesAuth, async (req, res) => {
   const owned = req.salesUser.isAdmin
     ? all
     : all.filter((client) => canAccessSalesClient(req, client));
-  const clients =
+  const filtered =
     productFilter === 'asoldi' || productFilter === 'ssu'
       ? owned.filter((client) => sales.normalizeSalesProduct(client.product) === productFilter)
       : owned;
+  const clients = filtered.map((client) => {
+    const offer = salesOffers.getOfferForClient(client.id);
+    return { ...client, offerStatus: offer ? offer.status : '' };
+  });
   const calendar = presentCalendarStatus(
     await ensureSharedCalendarTokens(req.salesUser.accountKey),
     req.salesUser
@@ -11748,6 +11803,600 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
   } catch (error) {
     return res.status(500).json({ message: formatSmtpSendError(error) });
   }
+});
+
+/* ------------------------------------------------------------------ Offers (tilbud) */
+
+function offerActor(req) {
+  return sanitizeText(req.salesUser?.accountKey) || 'unknown';
+}
+
+function compactTiers() {
+  return WEBSITE_TIERS.map((tier) => ({
+    id: tier.id,
+    name: tier.name,
+    shortName: tier.shortName,
+    offerName: tier.offerName,
+    monthlyExMva: tier.monthlyExMva,
+    pages: tier.pages,
+    deliveryWeeks: tier.deliveryWeeks,
+    includes: tier.includes,
+  }));
+}
+
+function compactOfferClient(client = {}) {
+  return {
+    id: client.id,
+    ownerId: client.ownerId || '',
+    businessName: client.businessName || '',
+    contactPerson: client.contactPerson || '',
+    contactEmail: client.contactEmail || '',
+    contactPhone: client.contactPhone || '',
+    orgNumber: client.orgNumber || '',
+    businessAddress: client.businessAddress || '',
+    meetingPlace: client.meetingPlace || '',
+    industry: client.industry || '',
+    websiteDomain: client.websiteDomain || '',
+    meetingAt: client.meetingAt || '',
+    meetings: Array.isArray(client.meetings) ? client.meetings : [],
+  };
+}
+
+function presentOffer(offer) {
+  if (!offer) return null;
+  return {
+    ...offer,
+    needsVerification: salesOffers.offerNeedsVerification(offer),
+    canSend: salesOffers.offerCanBeSentBySales(offer),
+    contractAvailable: offerContractIsAvailable(offer),
+  };
+}
+
+function offerReadiness(client) {
+  const missing = offerMissingFields(client);
+  return { ready: missing.length === 0, missing, message: offerReadinessMessage(missing) };
+}
+
+/** Stored Fireflies meeting used to fill the offer: explicit offer.meetingId, else the client's newest linked meeting. */
+function meetingForOffer(client, offer) {
+  const ids = [sanitizeText(offer?.meetingId), ...(Array.isArray(client?.meetings) ? client.meetings.map((item) => item.meetingId) : [])].filter(Boolean);
+  for (const id of ids) {
+    const stored = readStoredFirefliesMeeting(id);
+    if (stored) return stored;
+  }
+  const ref = Array.isArray(client?.meetings) ? client.meetings[0] : null;
+  return ref ? { ...ref, transcript: '' } : null;
+}
+
+async function ensureOfferDraft(client, req) {
+  const existing = salesOffers.getOfferForClient(client.id);
+  if (existing) return existing;
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const email = buildOfferEmailForClient(client, {}, { sender });
+  return salesOffers.createSalesOffer({
+    salesClientId: client.id,
+    ownerId: sanitizeText(client.ownerId) || sanitizeText(req.salesUser?.accountKey),
+    email: { subject: email.subject, preheader: email.preheader, html: email.html },
+    products: [],
+    tierId: '',
+    meetingId: Array.isArray(client.meetings) && client.meetings[0] ? client.meetings[0].meetingId : '',
+  }, { actor: offerActor(req) });
+}
+
+function offerPatchFromBody(body = {}, current = {}) {
+  const patch = {};
+  const email = {};
+  if (typeof body.subject === 'string') email.subject = body.subject;
+  if (typeof body.preheader === 'string') email.preheader = body.preheader;
+  if (typeof body.html === 'string') email.html = body.html;
+  if (Object.keys(email).length) patch.email = email;
+  if (typeof body.meetingId === 'string') patch.meetingId = body.meetingId;
+  if (typeof body.reviewRequested === 'boolean') patch.reviewRequested = body.reviewRequested;
+
+  let products = Array.isArray(body.products) ? salesOffers.normalizeOfferProducts(body.products) : null;
+  const tierChanged = typeof body.tierId === 'string' && sanitizeText(body.tierId) !== sanitizeText(current.tierId);
+  if (tierChanged) {
+    const tierId = salesOffers.normalizeOfferTierId(body.tierId) || (sanitizeText(body.tierId) === '' ? '' : current.tierId);
+    patch.tierId = tierId;
+    products = productsWithTier(products || current.products || [], tierId);
+    if (tierId === CUSTOM_TIER_ID) patch.reviewRequested = true;
+  }
+  if (products) {
+    patch.products = products;
+    const html = typeof email.html === 'string' ? email.html : current.email?.html || '';
+    patch.email = { ...(patch.email || {}), html: applyOfferProducts(html, products) };
+  }
+  return patch;
+}
+
+async function notifyOfferReviewRequested(offer, client, req) {
+  const config = readFirefliesWebhookConfig();
+  const origin = publicRequestOrigin(req);
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const link = `${origin}/admin?tab=offers&offer=${encodeURIComponent(offer.id)}`;
+  const text = [
+    `Se gjennom tilbud: ${client.businessName}`,
+    `Selger: ${sender.fullName || sender.name || offerActor(req)}`,
+    `Pakke: ${offer.tierId === CUSTOM_TIER_ID ? 'Skreddersydd' : tierById(offer.tierId)?.name || 'ikke valgt'}`,
+    '',
+    summarizeOfferProducts(offer.products),
+    '',
+    `Åpne i admin: ${link}`,
+  ].join('\n');
+  if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
+  await emailLib.sendEmail({
+    to: config.notifyEmail,
+    subject: `Se gjennom tilbud — ${client.businessName}`,
+    text,
+    html: `<pre style="font-family:Arial,Helvetica,sans-serif;white-space:pre-wrap;line-height:1.5;">${escapeOfferHtml(text)}</pre><p><a href="${escapeOfferHtml(link)}" style="display:inline-block;background:#FF5B00;color:#fff;text-decoration:none;padding:10px 16px;border-radius:8px;font-weight:700;">Åpne tilbudet</a></p>`,
+  });
+  return { sent: true, to: config.notifyEmail };
+}
+
+async function notifyOfferVerified(offer, client, req) {
+  const origin = publicRequestOrigin(req);
+  const owners = await salesOwnerEmailMap();
+  const to = owners[sanitizeText(offer.ownerId)]
+    || (await accountKeyToEmail(offer.ownerId))
+    || readFirefliesWebhookConfig().notifyEmail;
+  const link = `${origin}/sales?client=${encodeURIComponent(client.id)}`;
+  const text = [
+    `Verifisert tilbud klart: ${client.businessName}`,
+    offer.adminNote ? `Melding fra admin: ${offer.adminNote}` : '',
+    '',
+    summarizeOfferProducts(offer.products),
+    '',
+    `Åpne kunden og trykk "Send tilbud": ${link}`,
+  ].filter((line, index, all) => line !== '' || all[index - 1] !== '').join('\n');
+  if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
+  await emailLib.sendEmail({
+    to,
+    subject: `Verifisert tilbud — ${client.businessName}`,
+    text,
+    html: `<pre style="font-family:Arial,Helvetica,sans-serif;white-space:pre-wrap;line-height:1.5;">${escapeOfferHtml(text)}</pre>`,
+  });
+  return { sent: true, to };
+}
+
+async function offerContractBuffer(offer, client) {
+  const inputs = contractInputsForOffer(offer);
+  if (!offerContractIsAvailable(offer)) {
+    throw new Error(offer.tierId === CUSTOM_TIER_ID
+      ? 'Kontrakten for skreddersydd tilbud lages av admin (Speil e-post i kontrakt) før verifisering.'
+      : 'Velg en nettside-tier før kontrakten kan lages.');
+  }
+  const buffer = await buildContractPdf({ client, ...inputs });
+  const fileName = contractFileName({ client, tierId: inputs.summary && inputs.preferSummary && offer.tierId === CUSTOM_TIER_ID ? CUSTOM_TIER_ID : offer.tierId });
+  return { buffer, fileName };
+}
+
+function sendPdf(res, buffer, fileName, { download = false } = {}) {
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Disposition', `${download ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(fileName)}`);
+  res.send(buffer);
+}
+
+// --- Sales side: one offer per client --------------------------------------------------------
+
+app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const offer = await ensureOfferDraft(client, req);
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const meeting = meetingForOffer(client, offer);
+  res.json({
+    offer: presentOffer(offer),
+    client: compactOfferClient(client),
+    readiness: offerReadiness(client),
+    tiers: compactTiers(),
+    mergeFields: mergeFieldsMeta(),
+    sender,
+    deepseek: isDeepseekConfigured(),
+    meeting: meeting ? { meetingId: meeting.meetingId, title: meeting.title, when: meeting.when, hasTranscript: Boolean(sanitizeText(meeting.transcript)), hasSummary: Boolean(sanitizeText(meeting.summary)) } : null,
+    canSendEmail: emailLib.canSendEmail(),
+  });
+});
+
+app.put('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const current = await ensureOfferDraft(client, req);
+  if (current.status === 'sent') {
+    return res.status(409).json({ message: 'Tilbudet er allerede sendt. Start et nytt tilbud for å endre.', offer: presentOffer(current) });
+  }
+  if (current.status === 'verified' && !req.salesUser?.isAdmin) {
+    return res.status(409).json({ message: 'Tilbudet er verifisert av admin og låst. Be admin åpne det igjen for endringer.', offer: presentOffer(current) });
+  }
+  const patch = offerPatchFromBody(req.body || {}, current);
+  const updated = salesOffers.updateSalesOffer(current.id, patch, { actor: offerActor(req), action: '' });
+  res.json({ offer: presentOffer(updated), readiness: offerReadiness(client) });
+});
+
+app.post('/api/admin/sales/:id/offer/new', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const current = salesOffers.getOfferForClient(client.id);
+  if (current && current.status !== 'sent') return res.json({ offer: presentOffer(current) });
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const email = buildOfferEmailForClient(client, {}, { sender });
+  const created = salesOffers.createSalesOffer({
+    salesClientId: client.id,
+    ownerId: sanitizeText(client.ownerId) || sanitizeText(req.salesUser?.accountKey),
+    email: { subject: email.subject, preheader: email.preheader, html: email.html },
+    meetingId: current?.meetingId || (client.meetings?.[0]?.meetingId || ''),
+  }, { actor: offerActor(req) });
+  res.status(201).json({ offer: presentOffer(created) });
+});
+
+app.post('/api/admin/sales/:id/offer/fill', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  if (!isDeepseekConfigured()) return res.status(503).json({ message: 'DeepSeek er ikke konfigurert (DEEPSEEK_API_KEY mangler).' });
+  const current = await ensureOfferDraft(client, req);
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const meeting = meetingForOffer(client, { ...current, meetingId: sanitizeText(req.body?.meetingId) || current.meetingId });
+  if (!meeting || (!sanitizeText(meeting.transcript) && !sanitizeText(meeting.summary))) {
+    return res.status(400).json({ message: 'Ingen møtedata (Fireflies) er koblet til denne kunden enda.' });
+  }
+  try {
+    const html = typeof req.body?.html === 'string' ? req.body.html : current.email.html;
+    const nuances = await fillOfferFromTranscript({ client, meeting, products: current.products, tierId: current.tierId });
+    const filled = fillOfferSlots(html, nuances);
+    const updated = salesOffers.updateSalesOffer(current.id, {
+      email: { html: filled },
+      meetingId: sanitizeText(meeting.meetingId),
+    }, { actor: offerActor(req), action: 'ai-filled', note: sanitizeText(meeting.title) });
+    res.json({ offer: presentOffer(updated), nuances });
+  } catch (error) {
+    const status = Number(error?.status) >= 400 ? Number(error.status) : 502;
+    res.status(status).json({ message: sanitizeText(error?.message) || 'AI-utfylling feilet.' });
+  }
+});
+
+app.post('/api/admin/sales/:id/offer/request-review', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const readiness = offerReadiness(client);
+  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
+  const current = await ensureOfferDraft(client, req);
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const patched = salesOffers.updateSalesOffer(current.id, offerPatchFromBody(req.body || {}, current), { actor: offerActor(req), action: '' });
+  const updated = salesOffers.requestOfferReview(patched.id, { actor: offerActor(req), note: sanitizeText(req.body?.note) });
+  let notification = { sent: false };
+  try {
+    notification = await notifyOfferReviewRequested(updated, client, req);
+  } catch (error) {
+    notification = { sent: false, reason: sanitizeText(error?.message) };
+  }
+  res.json({ offer: presentOffer(updated), notification });
+});
+
+app.get('/api/admin/sales/:id/offer/contract.pdf', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const offer = await ensureOfferDraft(client, req);
+  try {
+    const { buffer, fileName } = await offerContractBuffer(offer, client);
+    sendPdf(res, buffer, fileName, { download: sanitizeText(req.query?.download) === '1' });
+  } catch (error) {
+    res.status(400).json({ message: sanitizeText(error?.message) || 'Kunne ikke lage kontrakt.' });
+  }
+});
+
+app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  // Client-card completeness first: that is the error the rep can act on.
+  const readiness = offerReadiness(client);
+  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
+  if (!emailLib.canSendEmail()) return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
+
+  let offer = await ensureOfferDraft(client, req);
+  if (offer.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.', offer: presentOffer(offer) });
+  if (offer.status !== 'verified') {
+    offer = salesOffers.updateSalesOffer(offer.id, offerPatchFromBody(req.body || {}, offer), { actor: offerActor(req), action: '' });
+  }
+  if (!offer.products.length) return res.status(400).json({ message: 'Velg en nettside-tier (eller få tilbudet verifisert) før du sender.' });
+  if (!salesOffers.offerCanBeSentBySales(offer)) {
+    return res.status(409).json({
+      message: offer.status === 'review-requested'
+        ? 'Tilbudet venter på gjennomgang hos admin.'
+        : 'Dette tilbudet må kjøres via admin først (skreddersydd eller merket for gjennomgang).',
+      offer: presentOffer(offer),
+    });
+  }
+  const to = sanitizeText(req.body?.to) || client.contactEmail;
+  if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
+  try {
+    const sender = await resolveSalesSenderForAccount(req.salesUser);
+    const { buffer, fileName } = await offerContractBuffer(offer, client);
+    const composed = composeEmailForClient(client, 'offer', {
+      html: offer.email.html,
+      subject: offer.email.subject,
+      preheader: offer.email.preheader,
+    }, { sender, attachInvite: false, offer: { products: offer.products } }).message;
+    await emailLib.sendEmail({
+      to,
+      from: composed.from,
+      replyTo: composed.replyTo,
+      bcc: salesEmailCopyBcc(to),
+      subject: composed.subject,
+      text: composed.text || htmlToPlainText(composed.html),
+      html: composed.html,
+      attachments: [
+        ...(Array.isArray(composed.attachments) ? composed.attachments : []),
+        { filename: fileName, content: buffer, contentType: 'application/pdf' },
+      ],
+    });
+    const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to });
+    res.json({ ok: true, offer: presentOffer(sent), copyTo: salesEmailCopyBcc(to), contractFileName: fileName });
+  } catch (error) {
+    res.status(500).json({ message: formatSmtpSendError(error) });
+  }
+});
+
+// --- Admin side: review queue -------------------------------------------------------------------
+
+function requireOfferAdmin(req, res) {
+  if (req.salesUser?.isAdmin) return true;
+  res.status(403).json({ message: 'Admin only.' });
+  return false;
+}
+
+async function offerListRow(offer, ownerNames) {
+  const client = sales.getSalesClientById(offer.salesClientId);
+  return {
+    ...presentOffer(offer),
+    email: { subject: offer.email.subject, preheader: offer.email.preheader, html: '' },
+    client: client ? compactOfferClient(client) : null,
+    ownerName: ownerNames[sanitizeText(offer.ownerId)] || offer.ownerId || '',
+  };
+}
+
+async function salesOwnerNameMap(req) {
+  const map = {};
+  try {
+    for (const option of await listSalesOwnerOptions(req.salesUser)) {
+      map[option.accountKey] = option.name || option.username || option.accountKey;
+    }
+  } catch {
+    // ignore
+  }
+  return map;
+}
+
+app.get('/api/admin/offers', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const status = sanitizeText(req.query?.status);
+  const ownerNames = await salesOwnerNameMap(req);
+  const offers = salesOffers.listSalesOffers({ status });
+  const rows = [];
+  for (const offer of offers) rows.push(await offerListRow(offer, ownerNames));
+  res.json({
+    offers: rows,
+    counts: salesOffers.countOffersByStatus(),
+    unmatchedMeetings: listStoredFirefliesMeetings({ unmatchedOnly: true }).length,
+  });
+});
+
+app.get('/api/admin/offers/contract-template/:tierId.pdf', salesAuth, async (req, res) => {
+  const tier = tierById(req.params.tierId);
+  if (!tier) return res.status(404).json({ message: 'Unknown tier.' });
+  const buffer = await buildContractPdf({ tierId: tier.id, blank: true });
+  sendPdf(res, buffer, contractFileName({ tierId: tier.id, blank: true }), { download: sanitizeText(req.query?.download) === '1' });
+});
+
+app.get('/api/admin/offers/:id', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const offer = salesOffers.getSalesOfferById(req.params.id);
+  if (!offer) return res.status(404).json({ message: 'Offer not found.' });
+  const client = sales.getSalesClientById(offer.salesClientId);
+  const ownerNames = await salesOwnerNameMap(req);
+  const meetings = (client?.meetings || []).map((ref) => ({ ...ref, media: describeFirefliesMedia(ref.meetingId) }));
+  res.json({
+    offer: presentOffer(offer),
+    client: client ? compactOfferClient(client) : null,
+    readiness: client ? offerReadiness(client) : { ready: false, missing: [], message: 'Kunden finnes ikke lenger.' },
+    ownerName: ownerNames[sanitizeText(offer.ownerId)] || offer.ownerId || '',
+    tiers: compactTiers(),
+    mergeFields: mergeFieldsMeta(),
+    meetings,
+    deepseek: isDeepseekConfigured(),
+  });
+});
+
+app.put('/api/admin/offers/:id', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const current = salesOffers.getSalesOfferById(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Offer not found.' });
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const patch = offerPatchFromBody(req.body || {}, current);
+  if (typeof req.body?.adminNote === 'string') patch.adminNote = req.body.adminNote;
+  // Content changed after verification → back to review so the rep can't send stale content.
+  const contentChanged = Boolean(patch.email || patch.products || patch.tierId !== undefined);
+  if (current.status === 'verified' && contentChanged) {
+    patch.status = 'review-requested';
+    patch.verifiedAt = '';
+    patch.verifiedBy = '';
+  }
+  const updated = salesOffers.updateSalesOffer(current.id, patch, { actor: offerActor(req), action: contentChanged ? 'admin-edited' : '' });
+  res.json({ offer: presentOffer(updated) });
+});
+
+app.post('/api/admin/offers/:id/reflect-contract', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const current = salesOffers.getSalesOfferById(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Offer not found.' });
+  if (!isDeepseekConfigured()) return res.status(503).json({ message: 'DeepSeek er ikke konfigurert (DEEPSEEK_API_KEY mangler).' });
+  const patched = salesOffers.updateSalesOffer(current.id, offerPatchFromBody(req.body || {}, current), { actor: offerActor(req), action: '' });
+  if (!patched.products.length) return res.status(400).json({ message: 'Legg til minst ett produkt (tier eller skreddersydd) før kontrakten kan speiles.' });
+  try {
+    const summary = await reflectContractFromEmail({ emailHtml: patched.email.html, products: patched.products });
+    const updated = salesOffers.updateSalesOffer(patched.id, {
+      contract: { summary, generatedAt: new Date().toISOString() },
+    }, { actor: offerActor(req), action: 'contract-reflected' });
+    res.json({ offer: presentOffer(updated), summary });
+  } catch (error) {
+    const status = Number(error?.status) >= 400 ? Number(error.status) : 502;
+    res.status(status).json({ message: sanitizeText(error?.message) || 'Kunne ikke speile e-posten i kontrakten.' });
+  }
+});
+
+app.put('/api/admin/offers/:id/contract', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const current = salesOffers.getSalesOfferById(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Offer not found.' });
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const summary = salesOffers.normalizeContractSummary(req.body?.summary);
+  if (!summary) return res.status(400).json({ message: 'Ugyldig kontraktsammendrag.' });
+  const updated = salesOffers.updateSalesOffer(current.id, {
+    contract: { summary, generatedAt: new Date().toISOString() },
+  }, { actor: offerActor(req), action: 'contract-edited' });
+  res.json({ offer: presentOffer(updated) });
+});
+
+app.post('/api/admin/offers/:id/verify', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const current = salesOffers.getSalesOfferById(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Offer not found.' });
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const client = sales.getSalesClientById(current.salesClientId);
+  if (!client) return res.status(404).json({ message: 'Kunden finnes ikke lenger.' });
+  const patched = salesOffers.updateSalesOffer(current.id, offerPatchFromBody(req.body || {}, current), { actor: offerActor(req), action: '' });
+  if (!patched.products.length) return res.status(400).json({ message: 'Tilbudet har ingen produkter enda.' });
+  if (!offerContractIsAvailable(patched)) {
+    return res.status(400).json({ message: 'Speil e-posten i kontrakten (eller velg en tier) før du verifiserer.' });
+  }
+  const updated = salesOffers.verifySalesOffer(patched.id, { actor: offerActor(req), adminNote: sanitizeText(req.body?.adminNote ?? patched.adminNote) });
+  let notification = { sent: false };
+  try {
+    notification = await notifyOfferVerified(updated, client, req);
+  } catch (error) {
+    notification = { sent: false, reason: sanitizeText(error?.message) };
+  }
+  res.json({ offer: presentOffer(updated), notification });
+});
+
+app.post('/api/admin/offers/:id/reopen', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const current = salesOffers.getSalesOfferById(req.params.id);
+  if (!current) return res.status(404).json({ message: 'Offer not found.' });
+  if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
+  const updated = salesOffers.reopenSalesOffer(current.id, {
+    actor: offerActor(req),
+    note: sanitizeText(req.body?.note),
+    toDraft: Boolean(req.body?.toDraft),
+  });
+  res.json({ offer: presentOffer(updated) });
+});
+
+app.get('/api/admin/offers/:id/contract.pdf', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const offer = salesOffers.getSalesOfferById(req.params.id);
+  if (!offer) return res.status(404).json({ message: 'Offer not found.' });
+  const client = sales.getSalesClientById(offer.salesClientId) || {};
+  try {
+    const { buffer, fileName } = await offerContractBuffer(offer, client);
+    sendPdf(res, buffer, fileName, { download: sanitizeText(req.query?.download) === '1' });
+  } catch (error) {
+    res.status(400).json({ message: sanitizeText(error?.message) || 'Kunne ikke lage kontrakt.' });
+  }
+});
+
+// --- Fireflies meetings: list / link / media ----------------------------------------------------
+
+function meetingListRow(record = {}) {
+  const { transcript, candidates, ...rest } = record;
+  return {
+    ...rest,
+    hasTranscript: Boolean(sanitizeText(transcript)),
+    candidates: Array.isArray(candidates) ? candidates.slice(0, 5) : [],
+    mediaOnDisk: describeFirefliesMedia(record.meetingId),
+  };
+}
+
+function canViewMeeting(req, record) {
+  if (req.salesUser?.isAdmin) return true;
+  const clientId = sanitizeText(record?.match?.clientId);
+  if (!clientId) return false;
+  return canAccessSalesClient(req, sales.getSalesClientById(clientId));
+}
+
+app.get('/api/admin/fireflies/meetings', salesAuth, (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const unmatchedOnly = sanitizeText(req.query?.unmatched) === '1';
+  const clientId = sanitizeText(req.query?.clientId);
+  res.json({ meetings: listStoredFirefliesMeetings({ unmatchedOnly, clientId }).map(meetingListRow) });
+});
+
+app.get('/api/admin/fireflies/meetings/:meetingId', salesAuth, (req, res) => {
+  const record = readStoredFirefliesMeeting(req.params.meetingId);
+  if (!record) return res.status(404).json({ message: 'Meeting not found.' });
+  if (!canViewMeeting(req, record)) return res.status(403).json({ message: 'Not your meeting.' });
+  res.json({ meeting: { ...meetingListRow(record), transcript: record.transcript || '' } });
+});
+
+app.post('/api/admin/fireflies/meetings/:meetingId/link', salesAuth, (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const record = readStoredFirefliesMeeting(req.params.meetingId);
+  if (!record) return res.status(404).json({ message: 'Meeting not found.' });
+  const client = sales.getSalesClientById(sanitizeText(req.body?.clientId));
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  const match = { clientId: client.id, businessName: client.businessName, confidence: 'manual', score: 100, reasons: ['Koblet manuelt av admin'], linkedBy: offerActor(req), linkedAt: new Date().toISOString() };
+  sales.linkMeetingToSalesClient(client.id, meetingRefForClient(record, match, { linkedBy: offerActor(req) }));
+  const updated = updateStoredFirefliesMeeting(record.meetingId, { match });
+  res.json({ meeting: meetingListRow(updated), client: compactOfferClient(sales.getSalesClientById(client.id)) });
+});
+
+app.post('/api/admin/fireflies/meetings/:meetingId/unlink', salesAuth, (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  const record = readStoredFirefliesMeeting(req.params.meetingId);
+  if (!record) return res.status(404).json({ message: 'Meeting not found.' });
+  const clientId = sanitizeText(record.match?.clientId);
+  if (clientId) sales.unlinkMeetingFromSalesClient(clientId, record.meetingId);
+  const updated = updateStoredFirefliesMeeting(record.meetingId, { match: null });
+  res.json({ meeting: meetingListRow(updated) });
+});
+
+app.post('/api/admin/fireflies/meetings/:meetingId/refresh', salesAuth, async (req, res) => {
+  if (!requireOfferAdmin(req, res)) return;
+  try {
+    const updated = await refreshFirefliesMeeting(req.params.meetingId);
+    void persistFirefliesMediaInBackground(updated.meetingId);
+    const clientId = sanitizeText(updated.match?.clientId);
+    if (clientId) sales.linkMeetingToSalesClient(clientId, meetingRefForClient(updated, updated.match, { linkedBy: updated.match?.linkedBy || 'auto' }));
+    res.json({ meeting: meetingListRow(updated) });
+  } catch (error) {
+    res.status(502).json({ message: sanitizeText(error?.message) || 'Kunne ikke oppdatere fra Fireflies.' });
+  }
+});
+
+// <video>/<audio> tags cannot send Authorization headers, so this one route also accepts ?token=.
+app.get('/api/admin/fireflies/meetings/:meetingId/media/:kind', (req, res, next) => {
+  if (!req.headers.authorization && sanitizeText(req.query?.token)) {
+    req.headers.authorization = `Bearer ${sanitizeText(req.query.token)}`;
+  }
+  salesAuth(req, res, next);
+}, (req, res) => {
+  const record = readStoredFirefliesMeeting(req.params.meetingId);
+  if (!record) return res.status(404).json({ message: 'Meeting not found.' });
+  if (!canViewMeeting(req, record)) return res.status(403).json({ message: 'Not your meeting.' });
+  const kind = ['video', 'audio', 'transcript'].includes(req.params.kind) ? req.params.kind : 'video';
+  const filePath = firefliesMediaFilePath(record.meetingId, kind);
+  if (!filePath) return res.status(404).json({ message: 'Filen er ikke lastet ned (enda).' });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+  res.setHeader('Content-Type', kind === 'video' ? 'video/mp4' : kind === 'audio' ? 'audio/mpeg' : 'text/plain; charset=utf-8');
+  if (kind === 'transcript') res.setHeader('Content-Disposition', `inline; filename="fireflies-transcript-${encodeURIComponent(record.meetingId)}.txt"`);
+  return res.sendFile(filePath);
 });
 
 app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) => {

@@ -2,38 +2,17 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Check, ArrowRight, ChevronDown, Globe } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { WEBSITE_TIERS } from '../../lib/website-tiers.js';
 
-const websiteTiers = [
-  { 
-    name: 'Starter', 
-    price: 999,
-    features: [
-      "Full nettsideutvikling",
-      "Opp til 5 hovedsider",
-      "Hosting og vedlikehold",
-      "Kontaktskjema & standard seksjoner"
-    ]
-  },
-  { 
-    name: 'SEO', 
-    price: 1499,
-    features: [
-      "Full nettsideutvikling",
-      "Opp til 5 hovedsider",
-      "Hosting og vedlikehold",
-      "Rank høyere på google, google maps og ai"
-    ]
-  },
-  { 
-    name: 'Nettbutikk', 
-    price: 1999,
-    features: [
-      "Full nettsideutvikling",
-      "Opp til 5 hovedsider",
-      "Hosting og vedlikehold",
-      "Selg i nettbutikk med e-commerce funksjonalitet"
-    ]
-  },
+type WebsiteTierDeal = { name: string; price: number | null; features: string[] };
+
+// Tiers 1-3 from the shared catalog (lib/website-tiers.js); "Skreddersydd" is marketing-only.
+const websiteTiers: WebsiteTierDeal[] = [
+  ...WEBSITE_TIERS.map((tier) => ({
+    name: tier.shortName,
+    price: tier.monthlyExMva,
+    features: [...tier.dealFeatures],
+  })),
   { 
     name: 'Skreddersydd', 
     price: null,

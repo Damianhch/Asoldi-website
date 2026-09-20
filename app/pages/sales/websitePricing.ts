@@ -1,3 +1,5 @@
+import { WEBSITE_TIERS } from '../../../lib/website-tiers.js';
+
 export type PricingService = {
   id: string;
   name: string;
@@ -19,15 +21,21 @@ export type MeetingQuoteState = {
   identity: string;
 };
 
+// Service ids each named package bundles in (prices and page counts come from lib/website-tiers.js).
+const TIER_SERVICE_IDS: Record<string, string[]> = {
+  starter: ['blog'],
+  seo: ['seo', 'social', 'email', 'blog'],
+  nettbutikk: ['seo', 'social', 'email', 'ecom', 'dashboard', 'blog', 'multilingual'],
+};
+
 export const PRICING = {
   oneTimeMultiplier: 9,
   minMonthly: 999,
+  // includedPages is the à-la-carte baseline; named packages use their own `pages` (5 / 7 / 10).
   pageScaling: { includedPages: 5, ratePercent: 0.1 },
-  packagePrices: {
-    starter: 999,
-    seo: 1499,
-    nettbutikk: 1999,
-  } as Record<string, number>,
+  packagePrices: Object.fromEntries(
+    WEBSITE_TIERS.map((tier) => [tier.marketingId, tier.monthlyExMva]),
+  ) as Record<string, number>,
   alwaysOn: [{ id: 'webdesign', name: 'Layout, responsivitet og generell webdesign', price: 0 }] as PricingService[],
   defaultOn: [
     { id: 'meeting', name: 'Veilednings- og gjennomgangsmøte', price: 0 },
@@ -39,13 +47,17 @@ export const PRICING = {
     { id: 'changes', name: 'Innholdsendringer (opptil 4/mnd)', price: 199 },
   ] as PricingService[],
   tiers: [
-    { id: 'starter', label: 'Starter', delivery: '2 uker', includes: ['blog'] },
-    { id: 'seo', label: 'SEO', delivery: '2 uker', includes: ['seo', 'social', 'email', 'blog'] },
-    { id: 'nettbutikk', label: 'Nettbutikk', delivery: '3 uker', includes: ['seo', 'social', 'email', 'ecom', 'dashboard', 'blog'] },
-    { id: 'custom', label: 'Skreddersydd', delivery: 'Etter avtale', includes: [] as string[] },
+    ...WEBSITE_TIERS.map((tier) => ({
+      id: tier.marketingId,
+      label: tier.shortName,
+      delivery: `${tier.deliveryWeeks} uker`,
+      pages: tier.pages,
+      includes: TIER_SERVICE_IDS[tier.marketingId] || [],
+    })),
+    { id: 'custom', label: 'Skreddersydd', delivery: 'Etter avtale', pages: 5, includes: [] as string[] },
   ],
   addOns: [
-    { id: 'seo', name: 'SEO optimalisering', price: 300, scalesWithPages: true },
+    { id: 'seo', name: 'SEO optimalisering (Google, Google Maps og AI-søk)', price: 300, scalesWithPages: true },
     { id: 'social', name: 'Anmeldelser & sosiale medier synk', price: 100 },
     { id: 'email', name: 'E-postliste innsamling', price: 100 },
     { id: 'ecom', name: 'Nettbutikk-funksjonalitet', price: 900 },
@@ -132,13 +144,19 @@ export function customBaselineIds() {
   return [...PRICING.defaultOn.map((s) => s.id), ...PRICING.base.map((b) => b.id)];
 }
 
-function extraPages(pages: number) {
-  return Math.max(0, pages - PRICING.pageScaling.includedPages);
+/** Pages covered before the extra-page surcharge: the named package's own count, or the à-la-carte baseline. */
+export function includedPagesFor(tierId?: string, customMode = false) {
+  if (customMode || !tierId || tierId === 'custom') return PRICING.pageScaling.includedPages;
+  return getTier(tierId).pages || PRICING.pageScaling.includedPages;
 }
 
-export function adjustedPrice(item: PricingService, pages: number) {
+export function extraPages(pages: number, tierId?: string, customMode = false) {
+  return Math.max(0, pages - includedPagesFor(tierId, customMode));
+}
+
+export function adjustedPrice(item: PricingService, pages: number, tierId?: string, customMode = false) {
   const perPage = item.scalesWithPages ? item.price * PRICING.pageScaling.ratePercent : 0;
-  const scale = perPage * extraPages(pages);
+  const scale = perPage * extraPages(pages, tierId, customMode);
   return { base: item.price, perPage, scale, total: item.price + scale };
 }
 
@@ -151,9 +169,9 @@ function isTimeCapped(item: PricingService, oneTime: boolean) {
   return Boolean(item.oneTimeMonths && oneTime);
 }
 
-function recurringUnit(item: PricingService, pages: number, oneTime: boolean) {
+function recurringUnit(item: PricingService, pages: number, oneTime: boolean, tierId?: string, customMode = false) {
   if (isTimeCapped(item, oneTime)) return 0;
-  return adjustedPrice(item, pages).total;
+  return adjustedPrice(item, pages, tierId, customMode).total;
 }
 
 export function quotedMonthly(quote: MeetingQuoteState) {
@@ -161,7 +179,7 @@ export function quotedMonthly(quote: MeetingQuoteState) {
   if (quote.customMode || quote.tierId === 'custom') {
     let monthly = 0;
     allPaidRecurringServices().forEach((item) => {
-      if (selected.has(item.id)) monthly += recurringUnit(item, quote.pages, quote.oneTime);
+      if (selected.has(item.id)) monthly += recurringUnit(item, quote.pages, quote.oneTime, 'custom', true);
     });
     return Math.max(PRICING.minMonthly, monthly);
   }
@@ -169,8 +187,8 @@ export function quotedMonthly(quote: MeetingQuoteState) {
   let scale = 0;
   let addons = 0;
   allPaidRecurringServices().forEach((item) => {
-    if (pkg.has(item.id)) scale += adjustedPrice(item, quote.pages).scale;
-    else if (selected.has(item.id)) addons += recurringUnit(item, quote.pages, quote.oneTime);
+    if (pkg.has(item.id)) scale += adjustedPrice(item, quote.pages, quote.tierId).scale;
+    else if (selected.has(item.id)) addons += recurringUnit(item, quote.pages, quote.oneTime, quote.tierId);
   });
   return (PRICING.packagePrices[quote.tierId] || PRICING.minMonthly) + scale + addons;
 }
@@ -211,7 +229,7 @@ export function namedPackageMonthly(tierId: string, pages: number) {
   const pkg = packageIds(tierId);
   let scale = 0;
   allPaidRecurringServices().forEach((item) => {
-    if (pkg.has(item.id)) scale += adjustedPrice(item, pages).scale;
+    if (pkg.has(item.id)) scale += adjustedPrice(item, pages, tierId).scale;
   });
   return (PRICING.packagePrices[tierId] || PRICING.minMonthly) + scale;
 }

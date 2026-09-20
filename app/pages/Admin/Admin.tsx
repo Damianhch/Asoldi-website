@@ -1,6 +1,6 @@
 import React, { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { BarChart3, ChevronDown, FileText, FolderCog, Globe, LogOut, Mail, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
+import { BarChart3, ChevronDown, FileSignature, FileText, FolderCog, Globe, LogOut, Mail, Newspaper, Share2, ShoppingBag, Users, UserPlus } from 'lucide-react';
 import { Helmet } from 'react-helmet-async';
 import { ManageClientsSection } from './sections/ManageClientsSection';
 import { PagesSection } from './sections/PagesSection';
@@ -30,6 +30,9 @@ import {
 const EmailTemplateStudio = lazy(() =>
   import('../sales/EmailTemplateStudio').then((m) => ({ default: m.EmailTemplateStudio }))
 );
+const OfferReviewSection = lazy(() =>
+  import('./sections/OfferReviewSection').then((m) => ({ default: m.OfferReviewSection }))
+);
 
 export const Admin = () => {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
@@ -38,6 +41,7 @@ export const Admin = () => {
   const [loginError, setLoginError] = useState('');
   const [tab, setTab] = useState<Tab>('clients');
   const [websiteNavOpen, setWebsiteNavOpen] = useState(true);
+  const [pendingOffers, setPendingOffers] = useState(0);
   const [features, setFeatures] = useState<Features>(DEFAULT_FEATURES);
   const [siteName, setSiteName] = useState('');
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -140,6 +144,26 @@ export const Admin = () => {
     }
     Promise.all([fetchUsers(), fetchSites(), fetchPaymentRequests()]).then(() => setLoggedIn(true)).catch(() => setLoggedIn(false));
   }, [fetchUsers, fetchSites, fetchPaymentRequests]);
+
+  // Badge for the Tilbud tab: how many offers are waiting for admin review.
+  useEffect(() => {
+    if (!loggedIn) return undefined;
+    let cancelled = false;
+    const poll = () => {
+      fetch(`${API}/admin/offers?status=review-requested`, { headers: authHeaders() })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data: { counts?: Record<string, number> } | null) => {
+          if (!cancelled && data) setPendingOffers(Number(data.counts?.['review-requested']) || 0);
+        })
+        .catch(() => undefined);
+    };
+    poll();
+    const timer = setInterval(poll, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [loggedIn, tab]);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -480,6 +504,12 @@ export const Admin = () => {
             {features.ecommerce && <SidebarButton active={tab === 'ecommerce'} onClick={() => setTab('ecommerce')} icon={<ShoppingBag size={18} />} label="Ecommerce" />}
             {features.blog && <SidebarButton active={tab === 'blog'} onClick={() => setTab('blog')} icon={<Newspaper size={18} />} label="Blog" />}
             <SidebarButton active={tab === 'email'} onClick={() => setTab('email')} icon={<Mail size={18} />} label="E-post" />
+            <SidebarButton
+              active={tab === 'offers'}
+              onClick={() => setTab('offers')}
+              icon={<FileSignature size={18} />}
+              label={pendingOffers ? `Tilbud (${pendingOffers})` : 'Tilbud'}
+            />
             {features.socialSync && <SidebarButton active={tab === 'social'} onClick={() => setTab('social')} icon={<Share2 size={18} />} label="Social sync" />}
             {features.analytics && <SidebarButton active={tab === 'analytics'} onClick={() => setTab('analytics')} icon={<BarChart3 size={18} />} label="Analytics" />}
           </nav>
@@ -568,6 +598,11 @@ export const Admin = () => {
           {tab === 'email' && (
             <Suspense fallback={<p className="text-gray-400">Laster e-posteditor…</p>}>
               <EmailTemplateStudio embedded />
+            </Suspense>
+          )}
+          {tab === 'offers' && (
+            <Suspense fallback={<p className="text-gray-400">Laster tilbud…</p>}>
+              <OfferReviewSection />
             </Suspense>
           )}
           {tab === 'social' && <PlaceholderSection title="Social sync" description="Reviews and social media sync. Coming soon." />}

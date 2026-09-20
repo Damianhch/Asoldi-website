@@ -34,6 +34,7 @@ export function SalesEmailComposer() {
     { key: 'reminder-24h-in-person', label: 'Påminnelse 24 timer — fysisk' },
     { key: 'reminder-1h', label: 'Påminnelse 1 time — online' },
     { key: 'reminder-1h-in-person', label: 'Påminnelse 1 time — fysisk' },
+    { key: 'offer', label: 'Tilbud + kontrakt' },
   ];
 
   useEffect(() => {
@@ -45,6 +46,11 @@ export function SalesEmailComposer() {
     if (!clientId) {
       setError('Mangler kunde.');
       setLoading(false);
+      return;
+    }
+    if (templateKey === 'offer') {
+      // The offer has its own composer (tier picker, AI fill, contract PDF, admin review).
+      navigate(`/sales/offer?clientId=${encodeURIComponent(clientId)}`, { replace: true });
       return;
     }
     setLoading(true);

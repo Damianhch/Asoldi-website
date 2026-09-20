@@ -1,3 +1,5 @@
+import { WEBSITE_TIERS, toWebsiteProduct } from '../../lib/website-tiers.js';
+
 export type WebsiteProduct = {
   id: string;
   name: string;
@@ -8,71 +10,10 @@ export type WebsiteProduct = {
   popular?: boolean;
 };
 
+// Tiers 1-3 come from the shared catalog (lib/website-tiers.js) so /pricing,
+// the client portal, the sales calculator, offers and contracts always agree.
 export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
-  {
-    id: 'starter',
-    name: 'Starter',
-    price: '999,-/mnd',
-    description: 'Simpel og funksjonell nettside.',
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'Leveringstid: 2 uker',
-    ],
-    notIncludedFeatures: [
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Nettbutikk-funksjonalitet',
-      'Analyse-dashbord',
-    ],
-  },
-  {
-    id: 'seo',
-    name: 'SEO',
-    price: '1 499,-/mnd',
-    description: 'Optimalisert nettside for økt synlighet og konvertering.',
-    popular: true,
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Leveringstid: 2 uker',
-    ],
-    notIncludedFeatures: ['Nettbutikk-funksjonalitet', 'Analyse-dashbord', 'Gjennomgangsmøte'],
-  },
-  {
-    id: 'nettbutikk',
-    name: 'Nettbutikk',
-    price: '1 999,-/mnd',
-    description: 'Full nettbutikk-funksjonalitet og analyse.',
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Nettbutikk-funksjonalitet',
-      'Analyse-dashbord',
-      'Gjennomgangsmøte',
-      'Leveringstid: 3 uker',
-    ],
-    notIncludedFeatures: [],
-  },
+  ...WEBSITE_TIERS.map((tier) => toWebsiteProduct(tier) as WebsiteProduct),
   {
     id: 'skreddersydd',
     name: 'Skreddersydd',
@@ -85,10 +26,12 @@ export const WEBSITE_PRODUCTS: WebsiteProduct[] = [
       'Kontaktskjema & standard seksjoner',
       'Ubegrenset innholdsendringer',
       'SEO optimalisering',
+      'Rangering på Google, Google Maps og AI-søk',
       'Anmeldelser & sosiale medier synk',
       'E-postliste innsamling',
       'Innledende veiledningsmøte',
       'Nettbutikk-funksjonalitet',
+      'Flerspråklig funksjonalitet',
       'Analyse-dashbord',
       'Gjennomgangsmøte',
       'Skreddersydde web-applikasjoner',

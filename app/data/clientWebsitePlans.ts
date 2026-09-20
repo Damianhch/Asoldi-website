@@ -1,3 +1,5 @@
+import { clientWebsitePlans } from '../../lib/website-tiers.js';
+
 export type ClientWebsitePlan = {
   id: string;
   name: string;
@@ -13,87 +15,8 @@ export type ClientWebsitePlan = {
   category: 'website';
 };
 
-export const CLIENT_WEBSITE_PLANS: ClientWebsitePlan[] = [
-  {
-    id: 'tier-1-standard',
-    name: 'Tier 1: Standard',
-    price: '999,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Simpel og funksjonell nettside.',
-    features: ['Full nettsideutvikling', 'Opp til 5 hovedsider', 'Hosting og vedlikehold', 'Kontaktskjema & standard seksjoner'],
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'Leveringstid: 2 uker',
-    ],
-    notIncludedFeatures: [
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Nettbutikk-funksjonalitet',
-      'Analyse-dashbord',
-    ],
-    category: 'website',
-  },
-  {
-    id: 'tier-2-seo',
-    name: 'Tier 2: SEO',
-    price: '1 499,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Optimalisert nettside for økt synlighet og konvertering.',
-    popular: true,
-    features: ['Alt i Tier 1', 'SEO optimalisering', 'E-postliste innsamling'],
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Leveringstid: 2 uker',
-    ],
-    notIncludedFeatures: ['Nettbutikk-funksjonalitet', 'Analyse-dashbord', 'Gjennomgangsmøte'],
-    category: 'website',
-  },
-  {
-    id: 'tier-3-ecommerce',
-    name: 'Tier 3: Nettbutikk',
-    price: '1 999,-/mnd',
-    setupFee: '999,- /engang',
-    domainPrice: '79,-/mnd',
-    emailPrice: '49,-/mnd',
-    description: 'Full nettbutikk-funksjonalitet og analyse.',
-    features: ['Alt i Tier 2', 'Nettbutikk-funksjonalitet', 'Analyse-dashbord'],
-    includedFeatures: [
-      'Full nettsideutvikling',
-      'Opp til 5 hovedsider',
-      'Hosting og vedlikehold',
-      'Kontaktskjema & standard seksjoner',
-      'Opptil 4 innholdsendringer/mnd',
-      'SEO optimalisering',
-      'Anmeldelser & sosiale medier synk',
-      'E-postliste innsamling',
-      'Innledende veiledningsmøte',
-      'Nettbutikk-funksjonalitet',
-      'Analyse-dashbord',
-      'Gjennomgangsmøte',
-      'Leveringstid: 3 uker',
-    ],
-    notIncludedFeatures: [],
-    category: 'website',
-  },
-];
+// Derived from the shared tier catalog (lib/website-tiers.js); server.js uses the same helper.
+export const CLIENT_WEBSITE_PLANS: ClientWebsitePlan[] = clientWebsitePlans() as ClientWebsitePlan[];
 
 export function findWebsitePlan(planId: string): ClientWebsitePlan | undefined {
   return CLIENT_WEBSITE_PLANS.find((plan) => plan.id === planId);

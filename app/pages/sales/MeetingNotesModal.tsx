@@ -10,6 +10,7 @@ import {
   fmtKr,
   getTier,
   grandTotal,
+  includedPagesFor,
   namedPackageMonthly,
   normalizeMeetingQuote,
   packageService,
@@ -75,8 +76,10 @@ export function MeetingNotesModal({ businessName, notes, quote, saving, onClose,
     setState((prev) => ({ ...prev, oneTimeAddOns: [...next] }));
   }
 
+  const includedPages = includedPagesFor(state.tierId, state.customMode);
+
   function extraPages() {
-    return Math.max(0, state.pages - PRICING.pageScaling.includedPages);
+    return Math.max(0, state.pages - includedPages);
   }
 
   function scalingLabel(item: { scalesWithPages?: boolean; price: number }, checked: boolean) {
@@ -112,7 +115,7 @@ export function MeetingNotesModal({ businessName, notes, quote, saving, onClose,
                 className="mt-1 w-24 px-3 py-2 rounded-lg bg-[#111] border border-white/10 text-white"
               />
               <span className="ml-2 text-xs text-gray-500">
-                {PRICING.pageScaling.includedPages} inkludert.
+                {includedPages} inkludert i {state.customMode ? 'à la carte' : getTier(state.tierId).label}.
                 {extraPages() > 0 ? ` ${extraPages()} ekstra.` : ' Ingen ekstra.'}
               </span>
             </label>
@@ -185,7 +188,7 @@ export function MeetingNotesModal({ businessName, notes, quote, saving, onClose,
                   {allPaidRecurringServices().map((item) => {
                     const checked = selected.has(item.id);
                     const inPackage = packageService(state, item.id);
-                    const p = adjustedPrice(item, state.pages);
+                    const p = adjustedPrice(item, state.pages, state.tierId, state.customMode);
                     return (
                       <tr key={item.id} className={`border-t border-white/5 ${checked ? '' : 'text-gray-500'}`}>
                         <td className="p-2">

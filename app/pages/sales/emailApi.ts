@@ -75,3 +75,114 @@ export function sendComposedEmail(clientId: string, payload: Record<string, unkn
     body: JSON.stringify(payload),
   });
 }
+
+/* ------------------------------------------------------------- offers (tilbud) */
+
+export type OfferTier = {
+  id: string;
+  name: string;
+  shortName: string;
+  offerName: string;
+  monthlyExMva: number;
+  pages: number;
+  deliveryWeeks: number;
+  includes: string[];
+};
+
+export type OfferReadiness = { ready: boolean; missing: { key: string; label: string }[]; message: string };
+
+export function getClientOffer(clientId: string) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer`);
+}
+
+export function saveClientOffer(clientId: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export function startNewClientOffer(clientId: string) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/new`, { method: 'POST', body: '{}' });
+}
+
+export function fillClientOffer(clientId: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/fill`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function requestClientOfferReview(clientId: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/request-review`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function sendClientOffer(clientId: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/send`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+/** PDF routes need the Authorization header, so fetch as a blob and open it in a new tab. */
+export async function openAuthedPdf(path: string) {
+  const response = await fetch(`${API}${path}`, { headers: salesAuthHeaders() });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({} as { message?: string }));
+    throw new Error(String((data as { message?: string }).message || `Kunne ikke hente PDF (${response.status})`));
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/* ----------------------------------------------------------------- admin review */
+
+export function listAdminOffers(status = '') {
+  return emailRequest(`/admin/offers${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+}
+
+export function getAdminOffer(id: string) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}`);
+}
+
+export function saveAdminOffer(id: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) });
+}
+
+export function reflectAdminOfferContract(id: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}/reflect-contract`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function saveAdminOfferContract(id: string, summary: Record<string, unknown>) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}/contract`, { method: 'PUT', body: JSON.stringify({ summary }) });
+}
+
+export function verifyAdminOffer(id: string, payload: Record<string, unknown>) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}/verify`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function reopenAdminOffer(id: string, payload: Record<string, unknown> = {}) {
+  return emailRequest(`/admin/offers/${encodeURIComponent(id)}/reopen`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
+export function listFirefliesMeetings(params: { unmatched?: boolean; clientId?: string } = {}) {
+  const query = new URLSearchParams();
+  if (params.unmatched) query.set('unmatched', '1');
+  if (params.clientId) query.set('clientId', params.clientId);
+  const suffix = query.toString();
+  return emailRequest(`/admin/fireflies/meetings${suffix ? `?${suffix}` : ''}`);
+}
+
+export function getFirefliesMeeting(meetingId: string) {
+  return emailRequest(`/admin/fireflies/meetings/${encodeURIComponent(meetingId)}`);
+}
+
+export function linkFirefliesMeeting(meetingId: string, clientId: string) {
+  return emailRequest(`/admin/fireflies/meetings/${encodeURIComponent(meetingId)}/link`, { method: 'POST', body: JSON.stringify({ clientId }) });
+}
+
+export function unlinkFirefliesMeeting(meetingId: string) {
+  return emailRequest(`/admin/fireflies/meetings/${encodeURIComponent(meetingId)}/unlink`, { method: 'POST', body: '{}' });
+}
+
+export function refreshFirefliesMeeting(meetingId: string) {
+  return emailRequest(`/admin/fireflies/meetings/${encodeURIComponent(meetingId)}/refresh`, { method: 'POST', body: '{}' });
+}
+
+export function firefliesMediaUrl(meetingId: string, kind: 'video' | 'audio' | 'transcript') {
+  const token = (salesAuthHeaders() as { Authorization?: string }).Authorization?.replace(/^Bearer\s+/i, '') || '';
+  return `${API}/admin/fireflies/meetings/${encodeURIComponent(meetingId)}/media/${kind}?token=${encodeURIComponent(token)}`;
+}

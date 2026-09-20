@@ -32,6 +32,7 @@ const LoginResetPassword = lazy(() => import('./pages/LoginResetPassword').then(
 const Ansatt = lazy(() => import('./pages/Ansatt').then((m) => ({ default: m.Ansatt })));
 const SalesWorkspace = lazy(() => import('./pages/sales/SalesWorkspace').then((m) => ({ default: m.SalesWorkspace })));
 const SalesEmailComposer = lazy(() => import('./pages/sales/SalesEmailComposer').then((m) => ({ default: m.SalesEmailComposer })));
+const SalesOfferComposer = lazy(() => import('./pages/sales/SalesOfferComposer').then((m) => ({ default: m.SalesOfferComposer })));
 const EmailTemplateStudioPage = lazy(() => import('./pages/sales/EmailTemplateStudio').then((m) => ({ default: m.EmailTemplateStudioPage })));
 const DeveloperWorkspace = lazy(() => import('./pages/developer/DeveloperWorkspace').then((m) => ({ default: m.DeveloperWorkspace })));
 const LaptopPreviews = lazy(() => import('./pages/sales/LaptopPreviews').then((m) => ({ default: m.LaptopPreviews })));
@@ -103,6 +104,7 @@ function AppLayout() {
           <Route path="/ansatt" element={<Ansatt />} />
           <Route path="/sales" element={<SalesWorkspace />} />
           <Route path="/sales/email" element={<SalesEmailComposer />} />
+          <Route path="/sales/offer" element={<SalesOfferComposer />} />
           <Route path="/sales/email/templates" element={<EmailTemplateStudioPage />} />
           <Route path="/developer" element={<DeveloperWorkspace />} />
           <Route path="/previews" element={<LaptopPreviews />} />

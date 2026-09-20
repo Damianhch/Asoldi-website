@@ -317,6 +317,51 @@ function normalizeMyphoner(value = {}) {
   };
 }
 
+const MAX_CLIENT_MEETINGS = 12;
+
+/** Fireflies meetings linked to this client (compact refs; the full transcript lives in fireflies-meetings.json). */
+function normalizeMeetings(list) {
+  if (!Array.isArray(list)) return [];
+  const seen = new Set();
+  const out = [];
+  for (const raw of list) {
+    const meetingId = sanitizeText(raw?.meetingId);
+    if (!meetingId || seen.has(meetingId)) continue;
+    seen.add(meetingId);
+    out.push({
+      meetingId,
+      title: sanitizeText(raw.title) || 'Fireflies-møte',
+      when: sanitizeText(raw.when),
+      startedAt: sanitizeText(raw.startedAt),
+      durationMinutes: raw.durationMinutes === '' || raw.durationMinutes == null ? '' : Number(raw.durationMinutes) || '',
+      transcriptUrl: sanitizeText(raw.transcriptUrl),
+      videoUrl: sanitizeText(raw.videoUrl),
+      confidence: ['high', 'medium', 'low', 'manual'].includes(sanitizeText(raw.confidence)) ? sanitizeText(raw.confidence) : 'manual',
+      score: Number(raw.score) || 0,
+      reasons: Array.isArray(raw.reasons) ? raw.reasons.map((item) => sanitizeText(item)).filter(Boolean).slice(0, 6) : [],
+      summary: sanitizeText(raw.summary).slice(0, 2000),
+      actionItems: Array.isArray(raw.actionItems) ? raw.actionItems.map((item) => sanitizeText(item)).filter(Boolean).slice(0, 20) : [],
+      hasTranscript: Boolean(raw.hasTranscript),
+      linkedAt: sanitizeText(raw.linkedAt) || nowIso(),
+      linkedBy: sanitizeText(raw.linkedBy) || 'auto',
+    });
+  }
+  return out
+    .sort((a, b) => new Date(b.startedAt || b.linkedAt).getTime() - new Date(a.startedAt || a.linkedAt).getTime())
+    .slice(0, MAX_CLIENT_MEETINGS);
+}
+
+/** Norwegian org numbers are 9 digits; keep only digits so "934 327 497" and "934327497" compare equal. */
+export function sanitizeOrgNumber(value = '') {
+  const digits = sanitizeText(value).replace(/\D+/g, '');
+  return digits.length === 9 ? digits : '';
+}
+
+export function formatOrgNumber(value = '') {
+  const digits = sanitizeOrgNumber(value);
+  return digits ? `${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}` : '';
+}
+
 function normalizeSalesClient(raw = {}) {
   const meetingMode = normalizeMeetingMode(raw.meetingMode);
   const agreedTime = Boolean(raw.agreedTime);
@@ -352,6 +397,9 @@ function normalizeSalesClient(raw = {}) {
     contactEmail: sanitizeText(raw.contactEmail),
     contactPhone: sanitizeText(raw.contactPhone),
     meetingPlace: sanitizeText(raw.meetingPlace),
+    // Contract parties block (offer/contract flow): org number + registered business address.
+    orgNumber: sanitizeOrgNumber(raw.orgNumber),
+    businessAddress: sanitizeText(raw.businessAddress),
     industry: sanitizeText(raw.industry),
     meetingMode,
     meetingDurationMinutes: durationForMode(meetingMode),
@@ -367,6 +415,7 @@ function normalizeSalesClient(raw = {}) {
     development: product === 'ssu' ? normalizeDevelopment() : normalizeDevelopment(raw.development),
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
+    meetings: normalizeMeetings(raw.meetings),
     websiteImport: product === 'ssu' ? normalizeWebsiteImport() : normalizeWebsiteImport(raw.websiteImport),
     makerRun: product === 'ssu' ? normalizeMakerRun() : normalizeMakerRun(raw.makerRun),
     hubSite: product === 'ssu' ? normalizeHubSite() : normalizeHubSite(raw.hubSite),
@@ -509,6 +558,45 @@ export function deleteSalesClient(id) {
   if (next.length === state.length) return false;
   writeState(next);
   return true;
+}
+
+/** Attach (or replace) a Fireflies meeting reference on a client. A meeting belongs to one client at a time. */
+export function linkMeetingToSalesClient(clientId, meetingRef = {}) {
+  const meetingId = sanitizeText(meetingRef?.meetingId);
+  if (!meetingId) return null;
+  const state = readState();
+  const index = state.findIndex((entry) => entry.id === sanitizeText(clientId));
+  if (index === -1) return null;
+  let changed = false;
+  for (let i = 0; i < state.length; i += 1) {
+    if (i === index) continue;
+    const before = state[i].meetings.length;
+    state[i].meetings = state[i].meetings.filter((entry) => entry.meetingId !== meetingId);
+    if (state[i].meetings.length !== before) changed = true;
+  }
+  const current = state[index];
+  const rest = current.meetings.filter((entry) => entry.meetingId !== meetingId);
+  state[index] = normalizeSalesClient({ ...current, meetings: [meetingRef, ...rest], updatedAt: nowIso() });
+  writeState(state);
+  return state[index];
+}
+
+export function unlinkMeetingFromSalesClient(clientId, meetingId) {
+  const state = readState();
+  const index = state.findIndex((entry) => entry.id === sanitizeText(clientId));
+  if (index === -1) return null;
+  const current = state[index];
+  const next = current.meetings.filter((entry) => entry.meetingId !== sanitizeText(meetingId));
+  if (next.length === current.meetings.length) return current;
+  state[index] = normalizeSalesClient({ ...current, meetings: next, updatedAt: nowIso() });
+  writeState(state);
+  return state[index];
+}
+
+export function findSalesClientByMeetingId(meetingId) {
+  const target = sanitizeText(meetingId);
+  if (!target) return null;
+  return readState().find((entry) => entry.meetings.some((meeting) => meeting.meetingId === target)) || null;
 }
 
 export function setSalesNotes(id, notes, meetingQuote) {

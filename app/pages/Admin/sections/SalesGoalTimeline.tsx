@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CalendarDays, CheckCircle2, ChevronsDown, ChevronsUp, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { CalendarDays, CheckCircle2, ChevronsDown, ChevronsUp, FileText, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { SalesClient, SalesGoalKey, SalesNextAction, SalesNextActionPreset } from '../shared';
 import {
   formatGoalLabel,
@@ -38,6 +38,8 @@ type Props = {
   actionBusy: boolean;
   onToggleGoal: (key: SalesGoalKey, extra?: { fastTrack?: boolean }) => void;
   onMutateAction: (body: Record<string, unknown>) => Promise<void>;
+  /** Opens the offer composer (tilbud + kontrakt) for this client. Shown on the "Send tilbud" action. */
+  onOpenOffer?: () => void;
 };
 
 function toDateTimeLocal(value = '') {
@@ -72,6 +74,7 @@ export function SalesGoalTimeline({
   actionBusy,
   onToggleGoal,
   onMutateAction,
+  onOpenOffer,
 }: Props) {
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
@@ -258,6 +261,17 @@ export function SalesGoalTimeline({
                     <span title="I Google Kalender" className="shrink-0 text-[#FF5B00]">
                       <CalendarDays size={12} />
                     </span>
+                  ) : null}
+                  {currentAction.presetKey === 'sendOffer' && onOpenOffer ? (
+                    <button
+                      type="button"
+                      onClick={onOpenOffer}
+                      className="shrink-0 inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#FF5B00] text-white text-[11px]"
+                      title="Åpne tilbuds-e-post + kontrakt for denne kunden"
+                    >
+                      <FileText size={11} />
+                      Åpne tilbud
+                    </button>
                   ) : null}
                   <button
                     type="button"

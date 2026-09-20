@@ -43,7 +43,7 @@ export function authHeaders() {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
-export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social' | 'email';
+export type Tab = 'clients' | 'pages' | 'users' | 'analytics' | 'ecommerce' | 'employees' | 'blog' | 'social' | 'email' | 'offers';
 
 export type Features = {
   users?: boolean;
@@ -311,6 +311,75 @@ export type SalesMyphonerMeta = {
 
 export type SalesProduct = 'asoldi' | 'ssu';
 
+export type SalesClientMeeting = {
+  meetingId: string;
+  title: string;
+  when: string;
+  startedAt: string;
+  durationMinutes: number | '';
+  transcriptUrl: string;
+  videoUrl: string;
+  confidence: 'high' | 'medium' | 'low' | 'manual';
+  score: number;
+  reasons: string[];
+  summary: string;
+  actionItems: string[];
+  hasTranscript: boolean;
+  linkedAt: string;
+  linkedBy: string;
+};
+
+export type OfferProduct = {
+  id: string;
+  kind: 'tier' | 'custom';
+  tierId: string;
+  name: string;
+  pages: number;
+  includes: string[];
+  note: string;
+  priceExMva: number;
+  deliveryWeeks: number;
+};
+
+export type OfferContractSummary = {
+  title: string;
+  products: OfferProduct[];
+  monthlyExMva: number;
+  deliveryWeeks: number;
+  extraTerms: string[];
+  scopeSummary: string;
+};
+
+export type SalesOfferStatus = 'draft' | 'review-requested' | 'verified' | 'sent';
+
+export type SalesOffer = {
+  id: string;
+  salesClientId: string;
+  ownerId: string;
+  createdBy: string;
+  status: SalesOfferStatus;
+  reviewRequested: boolean;
+  tierId: string;
+  email: { subject: string; preheader: string; html: string };
+  products: OfferProduct[];
+  contract: { summary: OfferContractSummary | null; generatedAt: string; pdfPath: string };
+  meetingId: string;
+  adminNote: string;
+  history: { at: string; by: string; action: string; note: string }[];
+  reviewRequestedAt: string;
+  verifiedAt: string;
+  verifiedBy: string;
+  sentAt: string;
+  sentTo: string;
+  sentBy: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Server-side presentation flags (presentOffer). */
+  needsVerification?: boolean;
+  canSend?: boolean;
+  contractAvailable?: boolean;
+};
+
 export type SalesClient = {
   id: string;
   product: SalesProduct;
@@ -319,6 +388,12 @@ export type SalesClient = {
   contactEmail: string;
   contactPhone: string;
   meetingPlace: string;
+  /** 9-digit Norwegian org number (contract parties block). */
+  orgNumber?: string;
+  /** Registered business address for the contract; falls back to meetingPlace in the UI. */
+  businessAddress?: string;
+  /** Status of the client's current offer (joined server-side from sales-offers). */
+  offerStatus?: SalesOfferStatus | '';
   industry: string;
   meetingMode: 'online' | 'in-person';
   meetingDurationMinutes: number;
@@ -334,6 +409,8 @@ export type SalesClient = {
   development?: SalesDevelopment;
   reminders: SalesReminders;
   calendar: SalesCalendarMeta;
+  /** Fireflies meetings linked to this client (auto-matched or linked by admin). */
+  meetings?: SalesClientMeeting[];
   websiteImport: SalesWebsiteImportMeta;
   makerRun: SalesMakerRunMeta;
   hubSite?: {
