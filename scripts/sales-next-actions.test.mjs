@@ -8,6 +8,7 @@ import {
   decorateNextActions,
   defaultAddToCalendar,
   getActiveNextAction,
+  getCalendarNextAction,
   getClientNextActionMs,
   getCurrentGoalKey,
   getFutureGoalKeys,
@@ -305,4 +306,47 @@ test('finn møte tidspunkt is a meetingHeld action with optional note', () => {
   assert.equal(created.nextActions.length, 1);
   assert.equal(created.nextActions[0].presetKey, 'findMeetingTime');
   assert.equal(created.nextActions[0].note, 'Vil helst mandag ettermiddag');
+});
+
+test('møtet booket preset defaults to add-to-calendar and marks the client as a calendar contact point', () => {
+  const row = client({ agreedTime: false, meetingAt: '' });
+  assert.equal(getCalendarNextAction(row), null);
+  assert.equal(defaultAddToCalendar('meetingBooked', row), true);
+  assert.equal(suggestedDueAtForPreset('meetingBooked', client()), MEETING_AT);
+
+  const created = applyNextActionMutation(row, {
+    op: 'create',
+    goalKey: 'meetingHeld',
+    presetKey: 'meetingBooked',
+    name: 'Møtet booket',
+    dueAt: '2026-09-23T10:00:00.000Z',
+  });
+  assert.equal(created.error, undefined);
+  assert.equal(created.nextActions[0].presetKey, 'meetingBooked');
+  assert.equal(created.nextActions[0].name, 'Møtet booket');
+  assert.equal(created.nextActions[0].addToCalendar, true);
+
+  const withAction = client({ agreedTime: false, meetingAt: '', nextActions: created.nextActions });
+  assert.equal(getCalendarNextAction(withAction)?.presetKey, 'meetingBooked');
+
+  const toggledOff = applyNextActionMutation(withAction, {
+    op: 'update',
+    id: created.nextActions[0].id,
+    addToCalendar: false,
+  });
+  assert.equal(toggledOff.error, undefined);
+  assert.equal(getCalendarNextAction(client({ agreedTime: false, meetingAt: '', nextActions: toggledOff.nextActions })), null);
+});
+
+test('agreed meeting time counts as a calendar contact point; a plain custom action does not', () => {
+  assert.equal(getCalendarNextAction(client())?.presetKey, 'meeting');
+  const custom = applyNextActionMutation(client({ agreedTime: false, meetingAt: '' }), {
+    op: 'create',
+    goalKey: 'meetingHeld',
+    presetKey: 'custom',
+    name: 'Ring tilbake',
+    dueAt: '2026-09-23T10:00:00.000Z',
+  });
+  assert.equal(custom.error, undefined);
+  assert.equal(getCalendarNextAction(client({ agreedTime: false, meetingAt: '', nextActions: custom.nextActions })), null);
 });

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   BellRing,
   ArchiveX,
+  CalendarCheck2,
   CalendarClock,
   ChevronDown,
   Copy,
@@ -28,12 +29,14 @@ import {
   X,
 } from 'lucide-react';
 import { API, salesAuthHeaders, type SalesClient, type SalesGoalKey, type SalesProduct } from '../shared';
+import { matchesClientSearchQuery, normalizeClientSearchText } from '../clientSearch';
 import { MeetingNotesModal } from '../../sales/MeetingNotesModal';
 import { SalesGoalTimeline } from './SalesGoalTimeline';
 import {
   clientIsSalesWin,
   formatGoalLabel,
   getActiveNextAction,
+  getCalendarNextAction,
   getCurrentGoalKey,
   getSalesGoalKeys,
   groupSalesClientsByNextAction,
@@ -184,6 +187,30 @@ function parseDetails(details: Record<string, unknown> | undefined) {
   };
 }
 
+// proff.no company URLs carry the 9-digit org number as a path segment
+// (`/selskap/<slug>/<sted>/<bransje>/<orgnr>` or `/organisasjon/<orgnr>`), so the
+// Kontraktdata block can be pre-filled straight from the link the rep already pasted.
+function extractOrgNumberFromProffUrl(value = '') {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let parsed: URL;
+  try {
+    parsed = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+  } catch {
+    return '';
+  }
+  if (!parsed.host.toLowerCase().includes('proff.no')) return '';
+  const segments = parsed.pathname
+    .split('/')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    if (/^\d{9}$/.test(segments[i])) return segments[i];
+  }
+  const queryOrg = String(parsed.searchParams.get('orgnr') || parsed.searchParams.get('organisasjonsnummer') || '').replace(/\D+/g, '');
+  return queryOrg.length === 9 ? queryOrg : '';
+}
+
 function durationForMode(mode: 'online' | 'in-person') {
   return mode === 'in-person' ? 60 : 30;
 }
@@ -239,72 +266,6 @@ function buildRecordingProxyUrl(clientId = '') {
   const id = String(clientId || '').trim();
   if (!id) return '';
   return `${API}/admin/sales/${encodeURIComponent(id)}/recording`;
-}
-
-function normalizeClientSearchText(value = '') {
-  return String(value || '')
-    .normalize('NFKD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-const SEARCH_QUERY_NOISE_WORDS = new Set([
-  'area',
-  'omrade',
-  'omradet',
-  'region',
-  'city',
-  'by',
-  'location',
-  'sted',
-  'near',
-  'naer',
-  'i',
-  'in',
-]);
-
-const SEARCH_LOCATION_GROUPS = [
-  ['oslo', 'akershus', 'baerum', 'asker', 'lorenskog', 'ski', 'kolbotn', 'sandvika', 'fetsund', 'drammen'],
-  ['trondheim', 'malvik', 'melhus', 'stjordal', 'levanger', 'skaun', 'orkanger', 'selbu', 'skogn', 'spongdal', 'sjetnmarka', 'svorkmo', 'lian'],
-  ['bergen', 'fana', 'arna', 'askoy', 'os'],
-  ['stavanger', 'sandnes', 'sola', 'randaberg', 'bryne', 'klepp'],
-] as const;
-
-function buildClientSearchTokens(value = '') {
-  return normalizeClientSearchText(value)
-    .split(' ')
-    .map((token) => token.trim())
-    .filter((token) => token && !SEARCH_QUERY_NOISE_WORDS.has(token));
-}
-
-function extractActiveLocationSearchGroups(queryTokens: string[]) {
-  if (!queryTokens.length) return [] as string[][];
-  return SEARCH_LOCATION_GROUPS.filter((group) => group.some((token) => queryTokens.includes(token))).map((group) => [...group]);
-}
-
-function matchesClientSearchQuery(haystack = '', rawQuery = '') {
-  const normalizedHaystack = normalizeClientSearchText(haystack);
-  const normalizedQuery = normalizeClientSearchText(rawQuery);
-  if (!normalizedQuery) return true;
-  if (normalizedHaystack.includes(normalizedQuery)) return true;
-
-  const queryTokens = buildClientSearchTokens(normalizedQuery);
-  if (!queryTokens.length) return false;
-
-  const activeLocationGroups = extractActiveLocationSearchGroups(queryTokens);
-  for (const groupTokens of activeLocationGroups) {
-    if (!groupTokens.some((token) => normalizedHaystack.includes(token))) return false;
-  }
-
-  const locationTokenSet = new Set(activeLocationGroups.flat());
-  for (const token of queryTokens) {
-    if (locationTokenSet.has(token)) continue;
-    if (!normalizedHaystack.includes(token)) return false;
-  }
-  return true;
 }
 
 function pinStyleFor(pin: MeetingMapPin) {
@@ -1104,6 +1065,64 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     setBrregResults([]);
     setBrregError('');
   }
+
+  // Auto-fill Kontraktdata from the proff.no URL: the org number is part of the link, so
+  // derive it, then resolve the registered address via Brønnøysund. Only fields that are
+  // empty or that this auto-fill wrote previously are touched — manual edits are kept.
+  const proffAutoFillRef = useRef<{ orgNumber: string; businessAddress: string; url: string }>({
+    orgNumber: '',
+    businessAddress: '',
+    url: '',
+  });
+  const formRef = useRef(form);
+  formRef.current = form;
+  useEffect(() => {
+    if (!showForm) {
+      proffAutoFillRef.current = { orgNumber: '', businessAddress: '', url: '' };
+      return;
+    }
+    const url = form.proffUrl.trim();
+    const orgFromProff = extractOrgNumberFromProffUrl(url);
+    if (!orgFromProff) return;
+    const currentOrg = String(formRef.current.orgNumber || '').replace(/\D+/g, '');
+    const previousAuto = proffAutoFillRef.current;
+    if (previousAuto.url === url && previousAuto.orgNumber === orgFromProff) return;
+    // A different, manually typed org nr wins over the URL-derived one.
+    if (currentOrg && currentOrg !== orgFromProff && currentOrg !== previousAuto.orgNumber) return;
+    proffAutoFillRef.current = { ...previousAuto, url, orgNumber: orgFromProff };
+    if (currentOrg !== orgFromProff) {
+      setForm((prev) => ({ ...prev, orgNumber: orgFromProff }));
+    }
+    let active = true;
+    const timer = window.setTimeout(async () => {
+      try {
+        const data = await request(`/admin/sales/brreg-search?q=${encodeURIComponent(orgFromProff)}`) as { results?: BrregEntity[] };
+        if (!active) return;
+        const match = (Array.isArray(data.results) ? data.results : []).find(
+          (row) => String(row.organizationNumber || '').replace(/\D+/g, '') === orgFromProff
+        );
+        if (!match) return;
+        setForm((prev) => {
+          const prevAddress = prev.businessAddress.trim();
+          const canWriteAddress = !prevAddress || prevAddress === proffAutoFillRef.current.businessAddress;
+          const nextAddress = canWriteAddress && match.address ? match.address : prev.businessAddress;
+          if (canWriteAddress && match.address) proffAutoFillRef.current.businessAddress = match.address;
+          return {
+            ...prev,
+            businessName: prev.businessName.trim() || match.name,
+            businessAddress: nextAddress,
+          };
+        });
+        setBrregError('');
+      } catch {
+        // Best-effort: org nr is already filled from the URL; address can be fetched manually.
+      }
+    }, 400);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [form.proffUrl, showForm]);
 
   async function lookupBrreg() {
     const query = form.orgNumber.replace(/\D+/g, '').length === 9 ? form.orgNumber : form.businessName;
@@ -2000,6 +2019,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const sendingReminder24h = sendingEmailKey === `reminder-24h:${client.id}`;
             const sendingReminder1h = sendingEmailKey === `reminder-1h:${client.id}`;
             const nextAction = getActiveNextAction(client);
+            // Important contact point: the next action is on the sales rep's calendar
+            // (agreed meeting, "Møtet booket", or any action with add-to-calendar on).
+            const calendarAction = getCalendarNextAction(client);
             const websiteSold = Boolean(client.progression?.contractSigned);
             const canMarkSold = Boolean(client.progression?.contractSigned);
             const clientSelected = selectedClientIds.includes(client.id);
@@ -2008,7 +2030,11 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 <div
                   onClick={(event) => handleClientCardClick(event, client.id)}
                   className={`rounded-2xl bg-[#2a2a2a] border p-4 flex flex-col gap-3 cursor-pointer ${
-                    clientSelected ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40' : 'border-white/10'
+                    clientSelected
+                      ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40'
+                      : calendarAction
+                        ? 'border-sky-400/50 ring-1 ring-sky-400/20 shadow-[0_0_0_3px_rgba(56,189,248,0.06)]'
+                        : 'border-white/10'
                   }`}
                 >
                 <div className="flex items-start justify-between gap-2">
@@ -2029,9 +2055,21 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         </span>
                       ) : null}
                     </div>
-                    <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
-                      <CalendarClock size={12} className="shrink-0" />
+                    <div className={`mt-1 flex items-center gap-1.5 text-xs min-w-0 ${calendarAction ? 'text-sky-300' : 'text-gray-400'}`}>
+                      {calendarAction ? (
+                        <CalendarCheck2 size={12} className="shrink-0" aria-label="På kalenderen" />
+                      ) : (
+                        <CalendarClock size={12} className="shrink-0" />
+                      )}
                       <span className="truncate">{nextAction?.dueAt ? formatWhen(nextAction.dueAt) : 'Ingen neste handling satt'}</span>
+                      {calendarAction ? (
+                        <span
+                          className="shrink-0 px-1.5 py-px rounded border border-sky-400/30 bg-sky-400/10 text-[10px] uppercase tracking-wide text-sky-200"
+                          title="Neste handling ligger på kalenderen — viktig kontaktpunkt"
+                        >
+                          Kalender
+                        </span>
+                      ) : null}
                     </div>
                     {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
@@ -2910,6 +2948,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                     Hent fra Brønnøysund
                   </button>
                 </div>
+                <p className="text-xs text-gray-500">
+                  Org. nr og adresse fylles automatisk fra proff.no-lenken når den er lagt inn.
+                </p>
                 {brregError && <p className="text-xs text-amber-300">{brregError}</p>}
                 {brregResults.length > 1 && (
                   <div className="space-y-1">

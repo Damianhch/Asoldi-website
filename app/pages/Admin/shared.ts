@@ -174,7 +174,7 @@ export type ManageClientsView = 'clients' | 'development' | 'sales';
 
 export type SalesGoalKey = 'meetingHeld' | 'offerSent' | 'contractSigned' | 'paymentReceived';
 
-export type SalesNextActionPreset = 'meeting' | 'findMeetingTime' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
+export type SalesNextActionPreset = 'meeting' | 'meetingBooked' | 'findMeetingTime' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
 
 export type SalesNextAction = {
   id: string;
@@ -211,8 +211,16 @@ export type DevelopmentItem = {
   contactEmail: string;
   contactPhone: string;
   meetingPlace: string;
+  industry?: string;
   websiteDomain: string;
   notes: string;
+  /** Agreed meeting time (ISO) when the sales client has one. */
+  meetingAt?: string;
+  /** Active next action due time / name from the sales card. */
+  nextActionAt?: string;
+  nextActionName?: string;
+  /** Time used for ranking: next action due, else meeting time. */
+  rankAt?: string;
   makerRun: SalesMakerRunMeta | null;
   websiteImport: SalesWebsiteImportMeta | null;
   hubSite?: SalesClient['hubSite'] | null;

@@ -1897,13 +1897,19 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     if (requested) return sales.normalizeSalesProduct(requested);
     return sales.normalizeSalesProduct(existing?.product || 'asoldi');
   })();
+  const details = normalizeSalesDetailLinks(source.details, existing?.details);
+  // Kontraktdata fallback: the proff.no link carries the org number, so a client saved
+  // without an explicit org nr still gets it (the Sales UI also pre-fills it live).
+  const orgNumber =
+    sales.sanitizeOrgNumber(source.orgNumber ?? existing?.orgNumber) ||
+    extractProffOrganizationNumberFromUrl(details.proffUrl);
   const payload = {
     businessName: sanitizeText(source.businessName ?? existing?.businessName),
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
     contactPhone: sanitizeText(source.contactPhone ?? existing?.contactPhone),
     meetingPlace: meetingPlaceRaw,
-    orgNumber: sales.sanitizeOrgNumber(source.orgNumber ?? existing?.orgNumber),
+    orgNumber,
     businessAddress: sanitizeText(source.businessAddress ?? existing?.businessAddress),
     industry: sanitizeText(source.industry ?? existing?.industry),
     meetingMode: mode,
@@ -1912,7 +1918,7 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     product,
     websiteDomain:
       product === 'ssu' ? '' : sanitizeSalesWebsiteDomain(source.websiteDomain ?? existing?.websiteDomain),
-    details: normalizeSalesDetailLinks(source.details, existing?.details),
+    details,
   };
   if (Object.prototype.hasOwnProperty.call(source, 'notes')) {
     payload.notes = sales.sanitizeSalesNotes(source.notes);
@@ -7263,7 +7269,7 @@ async function syncSalesClientFromMakerRun({
   const payloadToImport = filled?.buffer?.length ? filled.buffer : payloadBuffer;
 
   const makerRunCreatedAt = sanitizeText(targetClient.makerRun?.createdAt) || new Date().toISOString();
-  const makerRunIndustry = sanitizeText(targetClient.makerRun?.industry) || sanitizeText(targetClient.industry);
+  const makerRunIndustry = sanitizeText(targetClient.industry) || sanitizeText(targetClient.makerRun?.industry);
   const existingRunId = sanitizeText(targetClient.makerRun?.runId);
   const existingDashboardUrl = sanitizeText(targetClient.makerRun?.dashboardUrl);
   const existingPreviewUrl = sanitizeText(targetClient.makerRun?.previewUrl);
@@ -7875,11 +7881,22 @@ async function maybeSyncNextActionCalendars(previousClient, nextClient, { actorA
   const patched = nextActions.map((action) => ({ ...action }));
   const patchedById = new Map(patched.map((action) => [sanitizeText(action.id), action]));
 
+  // "Møtet booket" at the agreed meeting time is already on the calendar as the meeting
+  // event itself — don't add a second reminder event on top of it.
+  const meetingEventMs = sanitizeText(nextClient?.calendar?.eventId) && nextClient?.agreedTime
+    ? new Date(nextClient?.meetingAt || '').getTime()
+    : NaN;
+  const duplicatesMeetingEvent = (action) => (
+    sanitizeText(action?.presetKey) === 'meetingBooked'
+    && Number.isFinite(meetingEventMs)
+    && Math.abs(new Date(action?.dueAt || '').getTime() - meetingEventMs) < 60 * 1000
+  );
   const shouldSyncAction = (action) => (
     Boolean(action?.addToCalendar)
     && !sanitizeText(action?.doneAt)
     && sanitizeText(action?.presetKey) !== 'meeting'
     && sanitizeText(action?.dueAt)
+    && !duplicatesMeetingEvent(action)
   );
 
   for (const previous of previousActions) {
@@ -10919,7 +10936,7 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
   const linked = buildMakerRunLinks(makerBaseUrl, nextRunId, handoff);
   const patch = {
     runId: nextRunId,
-    industry: sanitizeText(client.makerRun?.industry || client.industry),
+    industry: sanitizeText(client.industry || client.makerRun?.industry),
     createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
     statusUpdatedAt: new Date().toISOString(),
   };
@@ -13232,8 +13249,8 @@ app.post('/api/admin/sales/:id/refresh-maker-handoff', salesOrDevelopmentAuth, a
       runId,
       ...makerLinks,
       industry:
-        sanitizeText(client.makerRun?.industry) ||
         sanitizeText(client.industry) ||
+        sanitizeText(client.makerRun?.industry) ||
         sanitizeText(run?.answers?.industry),
       createdAt: sanitizeText(client.makerRun?.createdAt) || new Date().toISOString(),
     });
