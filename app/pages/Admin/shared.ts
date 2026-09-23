@@ -329,6 +329,9 @@ export type SalesMyphonerMeta = {
   latestCallStartedAt: string;
   latestCallDurationSeconds: number;
   latestCallUserEmail: string;
+  bookedByEmail?: string;
+  bookedByName?: string;
+  bookedAt?: string;
   latestCallDestinationNumber: string;
   latestRecordingUrl: string;
   latestRecordingSyncReason: string;

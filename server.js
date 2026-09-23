@@ -64,6 +64,7 @@ import {
   htmlToPlainText,
 } from './lib/sales-email.js';
 import { confirmationSendGaps } from './lib/sales-next-actions.js';
+import { extractBookingFromLead } from './lib/sales-booking-facts.js';
 import {
   buildOfferEmailForClient,
   composeEmailForClient,
@@ -5475,6 +5476,14 @@ function buildMyphonerMetaPatch({
   }
   const callUserEmail = sanitizeText(recordingMeta.userEmail);
   if (callUserEmail) patch.latestCallUserEmail = callUserEmail;
+  if (eventType === 'winner') {
+    const booking = extractBookingFromLead(source, callUserEmail ? { userEmail: callUserEmail } : null);
+    if (booking.bookedByEmail) patch.bookedByEmail = booking.bookedByEmail;
+    if (booking.bookedByName) patch.bookedByName = booking.bookedByName;
+    patch.bookedAt = booking.bookedAt || timestamp;
+    if (!patch.listName && booking.listName) patch.listName = booking.listName;
+    if (!patch.listId && booking.listId) patch.listId = booking.listId;
+  }
   const destination = sanitizeText(recordingMeta.destinationNumber);
   if (destination) patch.latestCallDestinationNumber = destination;
   const recordingUrl = sanitizeText(recordingMeta.recordingUrl);
@@ -11183,6 +11192,14 @@ app.post('/api/admin/sales/backfill-products', salesAuth, (req, res) => {
   return res.json({ ok: true, ...summary });
 });
 
+app.post('/api/admin/sales/backfill-booking-facts', salesAuth, async (req, res) => {
+  if (!req.salesUser?.isAdmin) {
+    return res.status(403).json({ message: 'Only admin can backfill booking facts.' });
+  }
+  const summary = await backfillSalesBookingFacts({ force: parseBoolean(req.body?.force, false) });
+  return res.json({ ok: true, ...summary });
+});
+
 app.get('/api/admin/sales/email-audit', salesAuth, (req, res) => {
   const all = sales.getSalesClients();
   const visible = req.salesUser.isAdmin
@@ -14536,6 +14553,87 @@ async function runStartupSalesRecordingBackfill() {
   }
 }
 
+let salesBookingBackfillRunning = false;
+
+async function backfillSalesBookingFacts({ force = false } = {}) {
+  if (salesBookingBackfillRunning) return { skipped: 'running' };
+  salesBookingBackfillRunning = true;
+  const summary = { scanned: 0, updated: 0, fetched: 0, failed: 0, stillMissing: 0 };
+  try {
+    const users = await store.getAllUsers().catch(() => []);
+    const nameByEmail = new Map();
+    for (const user of users) {
+      const email = normalizeEmail(user?.username || user?.email || user?.fromEmail);
+      const name = sanitizeText(user?.name);
+      if (email && name && !nameByEmail.has(email)) nameByEmail.set(email, name);
+    }
+    const patches = [];
+    for (const client of sales.getSalesClients()) {
+      summary.scanned += 1;
+      if (!force && client.salesMigrations?.bookingFactsV1) continue;
+      const my = client.myphoner || {};
+      let bookedByEmail = sanitizeText(my.bookedByEmail);
+      let bookedByName = sanitizeText(my.bookedByName);
+      let bookedAt = sanitizeText(my.bookedAt);
+      let listName = sanitizeText(my.listName);
+      let listId = sanitizeText(my.listId);
+      let meetingAt = sanitizeText(client.meetingAt);
+      const leadId = sanitizeText(my.leadId);
+      const missing = () => !bookedByEmail || !bookedAt || !listName || !meetingAt;
+      let fetchFailed = false;
+      if (leadId && missing() && myphonerApi.isMyPhonerConfigured()) {
+        summary.fetched += 1;
+        const leadRes = await myphonerApi.fetchMyPhonerLeadById(leadId);
+        if (!leadRes.success) {
+          fetchFailed = true;
+          summary.failed += 1;
+        } else {
+          const lead = myphonerApi.unwrapMyPhonerLead(leadRes.data);
+          const extracted = extractBookingFromLead(lead);
+          if (!bookedByEmail) bookedByEmail = sanitizeText(extracted.bookedByEmail);
+          if (!bookedByName) bookedByName = sanitizeText(extracted.bookedByName);
+          if (!bookedAt) bookedAt = sanitizeText(extracted.bookedAt);
+          if (!listName && extracted.listName) listName = sanitizeText(extracted.listName);
+          if (!listId && extracted.listId) listId = sanitizeText(extracted.listId);
+          if (!meetingAt) meetingAt = sanitizeText(parseMyphonerMeetingAt(lead, getLeadDataMap(lead)));
+          if (!bookedByEmail && sanitizeText(my.latestCallId)) {
+            const callRes = await myphonerApi.fetchMyPhonerCallById(my.latestCallId);
+            if (callRes.success) {
+              const fromCall = extractBookingFromLead({}, callRes.data);
+              if (fromCall.bookedByEmail) bookedByEmail = sanitizeText(fromCall.bookedByEmail);
+            }
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
+      }
+      if (fetchFailed) continue;
+      if (!bookedByName && bookedByEmail) bookedByName = nameByEmail.get(bookedByEmail.toLowerCase()) || '';
+      if (!bookedAt && leadId) bookedAt = sanitizeText(client.createdAt);
+      if (!bookedByEmail || !bookedAt || !listName || !meetingAt) summary.stillMissing += 1;
+      const myphonerPatch = {};
+      if (bookedByEmail && bookedByEmail !== sanitizeText(my.bookedByEmail)) myphonerPatch.bookedByEmail = bookedByEmail;
+      if (bookedByName && bookedByName !== sanitizeText(my.bookedByName)) myphonerPatch.bookedByName = bookedByName;
+      if (bookedAt && bookedAt !== sanitizeText(my.bookedAt)) myphonerPatch.bookedAt = bookedAt;
+      if (listName && listName !== sanitizeText(my.listName)) myphonerPatch.listName = listName;
+      if (listId && listId !== sanitizeText(my.listId)) myphonerPatch.listId = listId;
+      const patch = { salesMigrations: { bookingFactsV1: true } };
+      if (Object.keys(myphonerPatch).length) patch.myphoner = myphonerPatch;
+      if (!sanitizeText(client.meetingAt) && meetingAt) {
+        patch.meetingAt = meetingAt;
+        patch.agreedTime = true;
+      }
+      patches.push({ id: client.id, patch });
+    }
+    summary.updated = sales.patchSalesClientsById(patches).updated;
+    console.log(
+      `[sales booking] backfill scanned=${summary.scanned} updated=${summary.updated} fetched=${summary.fetched} failed=${summary.failed} stillMissing=${summary.stillMissing}`
+    );
+    return summary;
+  } finally {
+    salesBookingBackfillRunning = false;
+  }
+}
+
 async function runStartupSsuWinsBackfill() {
   if (!MYPHONER_WEBHOOK_RECONCILE_ENABLED) {
     console.log('[myphoner ssu-wins] startup backfill skipped: webhook reconcile disabled');
@@ -14643,6 +14741,9 @@ ensureData().then(() => {
     });
     runStartupSsuWinsBackfill().catch((error) => {
       console.error('[myphoner ssu-wins] startup backfill crashed:', sanitizeText(error?.message) || error);
+    });
+    backfillSalesBookingFacts().catch((error) => {
+      console.error('[sales booking] startup backfill crashed:', sanitizeText(error?.message) || error);
     });
   });
 }).catch((err) => {

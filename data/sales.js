@@ -311,6 +311,9 @@ function normalizeMyphoner(value = {}) {
       ? Number(input.latestCallDurationSeconds)
       : 0,
     latestCallUserEmail: sanitizeText(input.latestCallUserEmail),
+    bookedByEmail: sanitizeText(input.bookedByEmail) || sanitizeText(input.latestCallUserEmail),
+    bookedByName: sanitizeText(input.bookedByName),
+    bookedAt: sanitizeText(input.bookedAt) || sanitizeText(input.lastWinnerWebhookAt),
     latestCallDestinationNumber: sanitizeText(input.latestCallDestinationNumber),
     latestRecordingUrl: sanitizeText(input.latestRecordingUrl),
     latestRecordingSyncReason: sanitizeText(input.latestRecordingSyncReason),
@@ -550,6 +553,35 @@ export function updateSalesClient(id, updates = {}) {
   state[index] = next;
   writeState(state);
   return next;
+}
+
+/** One write for many client patches. Myphoner and migration objects are merged. */
+export function patchSalesClientsById(entries = []) {
+  const byId = new Map();
+  for (const entry of entries) {
+    const id = sanitizeText(entry?.id);
+    if (!id || !entry?.patch || typeof entry.patch !== 'object') continue;
+    byId.set(id, entry.patch);
+  }
+  if (!byId.size) return { total: 0, updated: 0 };
+  const state = readState();
+  let updated = 0;
+  const next = state.map((client) => {
+    const patch = byId.get(client.id);
+    if (!patch) return client;
+    updated += 1;
+    return normalizeSalesClient({
+      ...client,
+      ...patch,
+      myphoner: patch.myphoner ? { ...(client.myphoner || {}), ...patch.myphoner } : client.myphoner,
+      salesMigrations: patch.salesMigrations
+        ? { ...(client.salesMigrations || {}), ...patch.salesMigrations }
+        : client.salesMigrations,
+      updatedAt: client.updatedAt,
+    });
+  });
+  if (updated) writeState(next);
+  return { total: state.length, updated };
 }
 
 export function deleteSalesClient(id) {

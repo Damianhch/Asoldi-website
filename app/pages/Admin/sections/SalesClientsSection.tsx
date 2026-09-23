@@ -39,6 +39,7 @@ import {
   groupSalesClientsByNextAction,
   confirmationSendGaps,
 } from '../../../../lib/sales-next-actions.js';
+import { salesBookingFacts } from '../../../../lib/sales-booking-facts.js';
 import {
   clientHasPublicPreviewSnapshot,
   getPublicClientPreviewUrl,
@@ -237,6 +238,21 @@ function formatWhen(value = '') {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString('nb-NO');
+}
+
+function formatBookingWhen(value = '') {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('nb-NO', {
+    timeZone: 'Europe/Oslo',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
 }
 
 function formatDateTime(value = '') {
@@ -1954,6 +1970,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const canMarkSold = Boolean(client.progression?.contractSigned);
             const clientSelected = selectedClientIds.includes(client.id);
             const confirmationGaps = client.reminders?.thankYouSentAt ? [] : confirmationSendGaps(client);
+            const booking = salesBookingFacts(client);
+            const bookingRows = [
+              ['Booket av', booking.booker],
+              ['Booket', formatBookingWhen(booking.bookedAt)],
+              ['Booket for', formatBookingWhen(booking.meetingFor)],
+              ['Liste', booking.listName],
+            ];
             return (
               <React.Fragment key={client.id}>
                 <div
@@ -2247,6 +2270,19 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
                 {expanded && (
                   <div className="space-y-4 border-t border-white/10 pt-3">
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="text-sm text-white font-medium mb-2">Booking</div>
+                      <ul className="space-y-1 text-sm">
+                        {bookingRows.map(([label, value]) => (
+                          <li key={label}>
+                            <span className="text-gray-400">{label}: </span>
+                            {value
+                              ? <span className="text-gray-100">{value}</span>
+                              : <span className="text-red-300">Mangler</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
                     <div className="grid sm:grid-cols-2 gap-4 rounded-xl bg-black/20 border border-white/10 p-4">
                       <details open className="text-sm text-gray-200">
                         <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>
