@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  BellRing,
   ArchiveX,
   CalendarCheck2,
   CalendarClock,
@@ -12,9 +11,7 @@ import {
   Filter,
   Gift,
   Loader2,
-  MailPlus,
   MonitorSmartphone,
-  Send,
   Pencil,
   Phone,
   Plus,
@@ -364,8 +361,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const [meetingNotesClient, setMeetingNotesClient] = useState<SalesClient | null>(null);
   const [previewMissingToastId, setPreviewMissingToastId] = useState<string | null>(null);
-  const [sendingEmailKey, setSendingEmailKey] = useState<string | null>(null);
-  const [emailToggleBusyId, setEmailToggleBusyId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
   const meetingMapMarkerLayerRef = useRef<any>(null);
@@ -448,6 +443,18 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     )),
     [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
   );
+  const salesRepOptions = useMemo(
+    () => salesOwners.filter((owner) => String(owner.accountKey || '').startsWith('sales:')),
+    [salesOwners]
+  );
+  const awaitingRepClients = useMemo(
+    () => (isSalesAdmin ? timelineClients.filter((client) => !String(client.ownerId || '').startsWith('sales:')) : []),
+    [timelineClients, isSalesAdmin]
+  );
+  const assignedTimelineClients = useMemo(
+    () => timelineClients.filter((client) => !isSalesAdmin || String(client.ownerId || '').startsWith('sales:')),
+    [timelineClients, isSalesAdmin]
+  );
   const emailAudit = useMemo(() => {
     const rows = productClients.map((client) => {
       const email = normalizeEmail(client.contactEmail);
@@ -477,21 +484,22 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
   );
   const activeMeetingGroups = useMemo(
-    () => groupSalesClientsByNextAction(timelineClients, meetingNowMs),
-    [timelineClients, meetingNowMs]
+    () => groupSalesClientsByNextAction(assignedTimelineClients, meetingNowMs),
+    [assignedTimelineClients, meetingNowMs]
   );
   const orderedTimelineClients = useMemo(
     () => [
+      ...awaitingRepClients,
       ...(activeMeetingGroups.recentPastDue || []),
       ...activeMeetingGroups.upcoming,
       ...activeMeetingGroups.pastDue,
       ...activeMeetingGroups.noNextAction,
     ],
-    [activeMeetingGroups]
+    [awaitingRepClients, activeMeetingGroups]
   );
   const timelineRows = useMemo(() => {
     const rows: Array<
-      | { kind: 'header'; id: string; title: string; hint: string; count: number; tone: 'recent' | 'upcoming' | 'past' | 'none' }
+      | { kind: 'header'; id: string; title: string; hint: string; count: number; tone: 'assign' | 'recent' | 'upcoming' | 'past' | 'none' }
       | { kind: 'divider'; id: string }
       | { kind: 'client'; client: SalesClient }
     > = [];
@@ -500,13 +508,22 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       title: string,
       hint: string,
       clients: SalesClient[],
-      tone: 'recent' | 'upcoming' | 'past' | 'none'
+      tone: 'assign' | 'recent' | 'upcoming' | 'past' | 'none'
     ) => {
       rows.push({ kind: 'header', id, title, hint, count: clients.length, tone });
       if (!collapsedBuckets[id]) {
         for (const client of clients) rows.push({ kind: 'client', client });
       }
     };
+    if (isSalesAdmin) {
+      pushSection(
+        'awaitingRep',
+        'Tildel selger',
+        'Bekreftelse sendes først når en selger er valgt, og da fra selgerens e-post.',
+        awaitingRepClients,
+        'assign'
+      );
+    }
     pushSection(
       'recentPastDue',
       'Forfalt (siste 48 timer)',
@@ -538,7 +555,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       'none'
     );
     return rows;
-  }, [activeMeetingGroups, collapsedBuckets]);
+  }, [activeMeetingGroups, awaitingRepClients, collapsedBuckets, isSalesAdmin]);
   const visibleSelectableClients = useMemo(
     () => [...orderedTimelineClients, ...winClients, ...archivedClients],
     [orderedTimelineClients, winClients, archivedClients]
@@ -923,114 +940,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  function clientEditsEmailBeforeSend(client: SalesClient) {
-    return Boolean(client.details?.editEmailBeforeSend);
-  }
-
-  function openEmailComposer(client: SalesClient, template: string) {
-    navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=${encodeURIComponent(template)}`);
-  }
-
   function openOfferComposer(client: SalesClient) {
     navigate(`/sales/offer?clientId=${encodeURIComponent(client.id)}`);
-  }
-
-  async function toggleEditEmailBeforeSend(client: SalesClient) {
-    if (emailToggleBusyId === client.id) return;
-    const nextValue = !clientEditsEmailBeforeSend(client);
-    setEmailToggleBusyId(client.id);
-    setError('');
-    try {
-      const data = await request(`/admin/sales/${client.id}/details`, {
-        method: 'PATCH',
-        body: JSON.stringify({ editEmailBeforeSend: nextValue }),
-      });
-      const saved = data?.client as SalesClient | undefined;
-      if (saved?.id) applySavedClient(saved);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed updating email send mode');
-    } finally {
-      setEmailToggleBusyId((current) => (current === client.id ? null : current));
-    }
-  }
-
-  async function sendWelcomeEmail(client: SalesClient) {
-    if (clientEditsEmailBeforeSend(client)) {
-      openEmailComposer(client, 'thank-you');
-      return;
-    }
-    if (sendingEmailKey) return;
-    if (client.reminders?.thankYouSentAt) {
-      const invitePending = !String(client.calendar?.guestInvitedAt || '').trim();
-      const confirmed = window.confirm(
-        invitePending
-          ? 'Welcome email was already sent, but the Google invite may not have gone out. Send again? This sends the branded confirmation with a calendar invite the client can accept, plus the meeting button.'
-          : 'Welcome email was already sent. Send the confirmation again? The calendar invite is attached to the same email.'
-      );
-      if (!confirmed) return;
-    }
-    setSendingEmailKey(`welcome:${client.id}`);
-    setError('');
-    setNotice('');
-    try {
-      const data = await request(`/admin/sales/${client.id}/send-welcome-email`, { method: 'POST' });
-      const saved = data?.client as SalesClient | undefined;
-      if (saved?.id) applySavedClient(saved);
-      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
-      const meet = String(data?.meetLink || saved?.calendar?.meetLink || '').trim();
-      const from = String(data?.from || '').trim();
-      setNotice(
-        `Welcome email sent to ${client.contactEmail}`
-        + (from ? ` from ${from}.` : '.')
-        + (meet
-          ? ' The email includes a calendar invite to accept, the confirmation message, and a button to open the meeting.'
-          : ' A calendar file is attached so the client can accept the meeting.')
-      );
-      if (warnings.length) setError(warnings.join(' | '));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed sending welcome email';
-      setError(message);
-      window.alert(message);
-    } finally {
-      setSendingEmailKey((current) => (current === `welcome:${client.id}` ? null : current));
-    }
-  }
-
-  async function sendReminderEmail(client: SalesClient, kind: '3d' | '24h' | '1h' = '24h') {
-    const templateKey = kind === '1h' ? 'reminder-1h' : kind === '3d' ? 'reminder-3d' : 'reminder-24h';
-    if (clientEditsEmailBeforeSend(client)) {
-      openEmailComposer(client, templateKey);
-      return;
-    }
-    if (sendingEmailKey) return;
-    const alreadySent = kind === '1h'
-      ? client.reminders?.reminder1hSentAt
-      : kind === '3d'
-        ? client.reminders?.reminder3dSentAt
-        : client.reminders?.reminder24hSentAt;
-    if (alreadySent) {
-      const confirmed = window.confirm('Reminder was already sent. Send again?');
-      if (!confirmed) return;
-    }
-    setSendingEmailKey(`reminder-${kind}:${client.id}`);
-    setError('');
-    setNotice('');
-    try {
-      const data = await request(`/admin/sales/${client.id}/send-reminder`, {
-        method: 'POST',
-        body: JSON.stringify({ kind }),
-      });
-      const saved = data?.client as SalesClient | undefined;
-      if (saved?.id) applySavedClient(saved);
-      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
-      const label = kind === '1h' ? '1-hour' : kind === '3d' ? '3-day' : '24-hour';
-      setNotice(`${label} reminder sent to ${client.contactEmail}.`);
-      if (warnings.length) setError(warnings.join(' | '));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed sending reminder');
-    } finally {
-      setSendingEmailKey((current) => (current === `reminder-${kind}:${client.id}` ? null : current));
-    }
   }
 
   async function saveMeetingNotes(client: SalesClient, payload: { notes: string; meetingQuote?: MeetingQuoteState }) {
@@ -1417,6 +1328,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       const saved = data?.client as SalesClient | undefined;
       if (saved) applySavedClient(saved);
       else await loadSales({ clearMessages: false, showLoading: false });
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      if (data?.thankYouSent) {
+        setNotice(`Tildelt. Bekreftelse sendt${data.from ? ` fra ${data.from}` : ''}.`);
+      } else {
+        setNotice('Tildelt. Bekreftelse sendes fra selgeren når møtetid er satt.');
+      }
+      if (warnings.length) setError(warnings.join(' | '));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed assigning sales owner');
     } finally {
@@ -1478,8 +1396,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   }
 
   async function runBulkAction(
-    action: 'assign' | 'delete' | 'not-sold' | 'secondary' | 'restore' | 'send-welcome' | 'send-reminder',
-    extra: { ownerId?: string; reason?: string; kind?: '3d' | '24h' | '1h' } = {},
+    action: 'assign' | 'delete' | 'not-sold' | 'secondary' | 'restore',
+    extra: { ownerId?: string; reason?: string } = {},
   ) {
     if (!selectedClientIds.length || bulkBusy) return;
     const count = selectedClientIds.length;
@@ -1492,7 +1410,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         return;
       }
       payload.ownerId = ownerId;
-      if (!window.confirm(`Send ${count} selected client${count === 1 ? '' : 's'} to the chosen sales rep?`)) return;
+      if (!window.confirm(`Tildel ${count} valgte kunder til selgeren? Bekreftelse sendes fra selgeren hvis møtetid er satt.`)) return;
     }
     if (action === 'delete' && !window.confirm(`Permanently delete ${count} selected client${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
     if (action === 'not-sold') {
@@ -1505,9 +1423,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       if (reasonInput === null) return;
       payload.reason = reasonInput;
     }
-    if (action === 'send-welcome' && !window.confirm(`Send confirmation email to ${count} selected client${count === 1 ? '' : 's'}? Clients without email or meeting time will be skipped.`)) return;
-    if (action === 'send-reminder' && !window.confirm(`Send the ${payload.kind || '24h'} reminder to ${count} selected client${count === 1 ? '' : 's'}? Clients without email or meeting time will be skipped.`)) return;
-
     setBulkBusy(true);
     setError('');
     setNotice('');
@@ -1519,7 +1434,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
           clientIds: selectedClientIds,
           ownerId: payload.ownerId || '',
           reason: payload.reason || '',
-          kind: payload.kind || '24h',
         }),
       });
       setNotice(formatBulkResult(data as Record<string, unknown>));
@@ -1811,8 +1725,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                     onChange={(event) => setBulkAssignOwnerId(event.target.value)}
                     className="bg-transparent text-xs text-gray-200 outline-none disabled:opacity-50"
                   >
-                    <option value="">Send to sales rep…</option>
-                    {salesOwners.map((owner) => (
+                    <option value="">Velg selger…</option>
+                    {salesRepOptions.map((owner) => (
                       <option key={owner.accountKey} value={owner.accountKey}>
                         {ownerLabel(owner)}
                       </option>
@@ -1824,7 +1738,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                     onClick={() => void runBulkAction('assign', { ownerId: bulkAssignOwnerId })}
                     className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
                   >
-                    Send
+                    Tildel
                   </button>
                 </div>
               )}
@@ -1863,36 +1777,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 <Undo2 size={13} />
                 Restore
               </button>
-              <button
-                type="button"
-                disabled={bulkBusy}
-                onClick={() => void runBulkAction('send-welcome')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-              >
-                <Send size={13} />
-                Send confirmation
-              </button>
-              <select
-                disabled={bulkBusy}
-                defaultValue=""
-                onChange={(event) => {
-                  const kind = event.target.value as '3d' | '24h' | '1h' | '';
-                  event.target.value = '';
-                  if (kind) void runBulkAction('send-reminder', { kind });
-                }}
-                className="px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-              >
-                <option value="" disabled>Send reminder…</option>
-                <option value="3d">Reminder 3 days</option>
-                <option value="24h">Reminder 24h</option>
-                <option value="1h">Reminder 1h</option>
-              </select>
             </div>
           ) : (
             <p className="text-[11px] text-gray-500">
               Tick client cards to run mass actions.
               {isSalesAdmin
-                ? ' Admin can also send selected clients to another sales rep.'
+                ? ' Huk av kunder under Tildel selger, velg selger, og bekreftelsen sendes fra den selgeren.'
                 : ' Assigning clients between sales reps is admin-only.'}
             </p>
           )}
@@ -1964,6 +1854,42 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         </div>
       ) : (
         <div className="space-y-3">
+          {isSalesAdmin && (
+            <div className="rounded-xl border border-[#FF5B00]/40 bg-[#2a2a2a] p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white">Tildel selger</div>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    {awaitingRepClients.length} kunder venter. Huk av kortene i seksjonen under, velg selger, så sendes bekreftelsen fra den selgeren og møtet kobles til kalenderen deres.
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5">
+                  <Users size={14} className="text-[#FF5B00]" />
+                  <select
+                    value={bulkAssignOwnerId}
+                    disabled={bulkBusy || !salesRepOptions.length}
+                    onChange={(event) => setBulkAssignOwnerId(event.target.value)}
+                    className="bg-transparent text-xs text-gray-200 outline-none disabled:opacity-50"
+                  >
+                    <option value="">Velg selger…</option>
+                    {salesRepOptions.map((owner) => (
+                      <option key={owner.accountKey} value={owner.accountKey}>
+                        {ownerLabel(owner)}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={bulkBusy || !bulkAssignOwnerId || !selectedCount}
+                    onClick={() => void runBulkAction('assign', { ownerId: bulkAssignOwnerId })}
+                    className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                  >
+                    Tildel
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           <div className="text-xs text-gray-400">
             Sorted by next action time. Recently overdue clients stay above the main list for 48 hours, then move to <span className="text-red-300">Forfalt</span>. Click a section header to hide the cards and only see the count.
           </div>
@@ -1981,7 +1907,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             if (row.kind === 'header') {
               const collapsed = Boolean(collapsedBuckets[row.id]);
               const toneClass =
-                row.tone === 'recent'
+                row.tone === 'assign'
+                  ? 'border-orange-300 bg-orange-50 text-orange-950'
+                  : row.tone === 'recent'
                   ? 'border-amber-300 bg-amber-50 text-amber-900'
                   : row.tone === 'upcoming'
                     ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
@@ -2013,11 +1941,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const publicPreviewUrl = getPublicClientPreviewUrl(client);
             const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
             const expanded = expandedId === client.id;
-            const editBeforeSend = clientEditsEmailBeforeSend(client);
-            const sendingWelcome = sendingEmailKey === `welcome:${client.id}`;
-            const sendingReminder3d = sendingEmailKey === `reminder-3d:${client.id}`;
-            const sendingReminder24h = sendingEmailKey === `reminder-24h:${client.id}`;
-            const sendingReminder1h = sendingEmailKey === `reminder-1h:${client.id}`;
+            const meetingHeld = Boolean(client.progression?.meetingHeld);
             const nextAction = getActiveNextAction(client);
             // Important contact point: the next action is on the sales rep's calendar
             // (agreed meeting, "Møtet booket", or any action with add-to-calendar on).
@@ -2088,12 +2012,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       {client.meetingMode === 'in-person' ? 'IRL' : 'Online'}
                       {client.meetingPlace ? ` · ${client.meetingPlace}` : ''}
                     </div>
-                    {isSalesAdmin && salesOwners.length > 0 && (
+                    {isSalesAdmin && salesRepOptions.length > 0 && (
                       <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
-                        <span className="shrink-0">Owner</span>
+                        <span className="shrink-0">Selger</span>
                         <select
                           value={
-                            salesOwners.some((owner) => owner.accountKey === (client.ownerId || ''))
+                            salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || ''))
                               ? (client.ownerId || '')
                               : ''
                           }
@@ -2101,12 +2025,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           onChange={(event) => void assignClientOwner(client, event.target.value)}
                           className="min-w-0 flex-1 rounded-md bg-black/30 border border-white/10 text-gray-200 px-2 py-1 disabled:opacity-50"
                         >
-                          {!salesOwners.some((owner) => owner.accountKey === (client.ownerId || '')) && (
+                          {!salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || '')) && (
                             <option value="" disabled>
-                              Unassigned
+                              Ikke tildelt
                             </option>
                           )}
-                          {salesOwners.map((owner) => (
+                          {salesRepOptions.map((owner) => (
                             <option key={owner.accountKey} value={owner.accountKey}>
                               {ownerLabel(owner)}
                             </option>
@@ -2150,7 +2074,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   actionBusy={nextActionBusyId === client.id}
                   onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
                   onMutateAction={(body) => mutateNextAction(client, body)}
-                  onOpenOffer={clientIsSsu ? undefined : () => openOfferComposer(client)}
+                  onOpenOffer={!clientIsSsu && meetingHeld ? () => openOfferComposer(client) : undefined}
                 />
 
                 <div className="flex flex-wrap items-center gap-2">
@@ -2175,54 +2099,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       )}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => void sendWelcomeEmail(client)}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingWelcome}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={
-                      !client.agreedTime || !client.meetingAt
-                        ? 'Set agreed meeting time first'
-                        : editBeforeSend
-                          ? 'Open the confirmation email editor for this client, then send'
-                          : client.meetingMode === 'in-person'
-                            ? 'Send the branded in-person confirmation and Google Calendar invite'
-                            : 'Send the branded online confirmation and Google Calendar invite'
-                    }
-                  >
-                    {sendingWelcome ? <Loader2 size={13} className="animate-spin" /> : editBeforeSend ? <MailPlus size={13} /> : <Send size={13} />}
-                    {client.meetingMode === 'in-person' ? 'Send IRL confirmation' : 'Send confirmation'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void sendReminderEmail(client, '3d')}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder3d}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title="Send the 3-day reminder for this meeting type"
-                  >
-                    {sendingReminder3d ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
-                    Reminder 3 days
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void sendReminderEmail(client, '24h')}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder24h}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title="Send the 24-hour reminder for this meeting type"
-                  >
-                    {sendingReminder24h ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
-                    Reminder 24h
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void sendReminderEmail(client, '1h')}
-                    disabled={!client.contactEmail || !client.agreedTime || !client.meetingAt || sendingReminder1h}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    title="Send the 1-hour reminder for this meeting type"
-                  >
-                    {sendingReminder1h ? <Loader2 size={13} className="animate-spin" /> : <BellRing size={13} />}
-                    Reminder 1h
-                  </button>
                   {client.meetingMode === 'online' && client.calendar?.meetLink && (
                     <button
                       type="button"
@@ -2245,7 +2121,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
                     </button>
                   )}
-                  {!clientIsSsu && (
+                  {!clientIsSsu && meetingHeld && (
                     <button
                       type="button"
                       onClick={() => openOfferComposer(client)}
@@ -2355,33 +2231,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
                 {expanded && (
                   <div className="space-y-4 border-t border-white/10 pt-3">
-                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <div className="text-sm text-white font-medium">Edit email before send</div>
-                          <p className="text-[11px] text-gray-400 mt-1">
-                            Off by default. Confirmation and reminder buttons send the matching online or IRL template immediately, plus the Google Calendar invite on confirmation.
-                            Turn this on only if you need to edit the template for this client first.
-                          </p>
-                        </div>
-                        <button
-                          type="button"
-                          role="switch"
-                          aria-checked={editBeforeSend}
-                          disabled={emailToggleBusyId === client.id}
-                          onClick={() => void toggleEditEmailBeforeSend(client)}
-                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                            editBeforeSend ? 'bg-[#FF5B00]' : 'bg-white/20'
-                          }`}
-                        >
-                          <span
-                            className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${
-                              editBeforeSend ? 'translate-x-6' : 'translate-x-1'
-                            }`}
-                          />
-                        </button>
-                      </div>
-                    </div>
                     <div className="grid sm:grid-cols-2 gap-4 rounded-xl bg-black/20 border border-white/10 p-4">
                       <details open className="text-sm text-gray-200">
                         <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>

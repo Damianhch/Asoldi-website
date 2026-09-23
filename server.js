@@ -270,7 +270,7 @@ function adminAuth(req, res, next) {
 
 const SALES_IMPORTS_ROOT = join(getPersistentDataDir(), 'sales-site-imports');
 const SALES_REMINDER_POLL_MS = Number(process.env.SALES_REMINDER_POLL_MS || 60_000);
-const SALES_EMAIL_AUTOSEND_ENABLED = String(process.env.SALES_EMAIL_AUTOSEND || '0') === '1';
+const SALES_EMAIL_AUTOSEND_ENABLED = String(process.env.SALES_EMAIL_AUTOSEND ?? '1') !== '0';
 const DEFAULT_MAKER_LOCAL_URL = String(process.env.WEBSITE_MAKER_LOCAL_URL || 'http://192.168.68.92:3000').trim() || 'http://192.168.68.92:3000';
 const CLOUDFLARED_WINDOWS_CANDIDATES = [
   'C:\\Program Files (x86)\\cloudflared\\cloudflared.exe',
@@ -8050,6 +8050,32 @@ async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', req
   };
 }
 
+function isSalesRepAccountKey(accountKey = '') {
+  return sanitizeText(accountKey).startsWith('sales:');
+}
+
+/** Confirmation goes out only after a sales rep owns the client, and it is sent as that rep. */
+async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAssigned = false } = {}) {
+  if (!SALES_EMAIL_AUTOSEND_ENABLED) return { sent: false, reason: 'manual-only', client };
+  if (!isSalesRepAccountKey(client?.ownerId)) return { sent: false, reason: 'owner-not-assigned', client };
+  const meetingReady = Boolean(client?.agreedTime && client?.meetingAt);
+  if (!meetingReady) return { sent: false, reason: 'meeting-not-scheduled', client };
+  if (client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent', client };
+  const becameReady = !existing
+    || ownerJustAssigned
+    || !existing.agreedTime
+    || !existing.meetingAt
+    || existing.meetingAt !== client.meetingAt
+    || existing.meetingMode !== client.meetingMode
+    || existing.contactEmail !== client.contactEmail;
+  if (existing && !becameReady) return { sent: false, reason: 'unchanged', client };
+  return sendSalesThankYou(client, {
+    force: false,
+    actorAccountKey: client.ownerId,
+    salesUser: salesUserFromAccountKey(client.ownerId),
+  });
+}
+
 async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null } = {}) {
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
@@ -8201,25 +8227,30 @@ async function sendDueSalesReminders() {
   salesReminderLoopRunning = true;
   try {
     const nowMs = Date.now();
+    const catchupMs = 6 * 60 * 60 * 1000;
     const clients = sales.getSalesClients();
     for (const client of clients) {
+      if (!isSalesRepAccountKey(client.ownerId)) continue;
       if (!client.agreedTime || !client.meetingAt) continue;
       const meetingMs = new Date(client.meetingAt).getTime();
       if (!Number.isFinite(meetingMs) || meetingMs <= nowMs) continue;
 
-      const reminder3dAt = client.reminders?.reminder3dAt ? new Date(client.reminders.reminder3dAt).getTime() : 0;
-      const reminder24hAt = client.reminders?.reminder24hAt ? new Date(client.reminders.reminder24hAt).getTime() : 0;
-      const reminder1hAt = client.reminders?.reminder1hAt ? new Date(client.reminders.reminder1hAt).getTime() : 0;
+      const due = (atIso, sentAt) => {
+        const at = atIso ? new Date(atIso).getTime() : 0;
+        if (!at || sentAt) return false;
+        if (nowMs < at) return false;
+        return nowMs - at <= catchupMs;
+      };
 
-      if (reminder3dAt && nowMs >= reminder3dAt && !client.reminders?.reminder3dSentAt) {
+      if (due(client.reminders?.reminder3dAt, client.reminders?.reminder3dSentAt)) {
         await sendSalesReminderNow(client, '3d', { actorAccountKey: client.ownerId });
       }
 
-      if (reminder24hAt && nowMs >= reminder24hAt && !client.reminders?.reminder24hSentAt) {
+      if (due(client.reminders?.reminder24hAt, client.reminders?.reminder24hSentAt)) {
         await sendSalesReminderNow(client, '24h', { actorAccountKey: client.ownerId });
       }
 
-      if (reminder1hAt && nowMs >= reminder1hAt && !client.reminders?.reminder1hSentAt) {
+      if (due(client.reminders?.reminder1hAt, client.reminders?.reminder1hSentAt)) {
         await sendSalesReminderNow(client, '1h', { actorAccountKey: client.ownerId });
       }
     }
@@ -11628,7 +11659,16 @@ app.post('/api/admin/sales/bulk', salesAuth, async (req, res) => {
     }
     try {
       if (action === 'assign') {
-        if (!sales.updateSalesClient(id, { ownerId })) throw new Error('Failed assigning owner.');
+        const assigned = sales.updateSalesClient(id, { ownerId });
+        if (!assigned) throw new Error('Failed assigning owner.');
+        const synced = await maybeSyncCalendar(assigned, existing, {
+          notifyAttendees: false,
+          actorAccountKey: assigned.ownerId,
+        });
+        await autoSendThankYouFromOwner(synced.client || assigned, {
+          existing,
+          ownerJustAssigned: true,
+        });
         summary.updated += 1;
       } else if (action === 'delete') {
         const ok = await deleteSalesClientWithCleanup(existing, req.salesUser.accountKey);
@@ -11678,9 +11718,24 @@ app.post('/api/admin/sales/:id/owner', salesAuth, async (req, res) => {
   if (!ownerId) {
     return res.status(400).json({ message: 'Choose a Sales user or keep the client on admin.' });
   }
-  const client = sales.updateSalesClient(req.params.id, { ownerId });
+  let client = sales.updateSalesClient(req.params.id, { ownerId });
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
-  res.json({ client });
+  const syncResult = await maybeSyncCalendar(client, existing, {
+    notifyAttendees: false,
+    actorAccountKey: client.ownerId,
+  });
+  client = syncResult.client || client;
+  const thankYou = await autoSendThankYouFromOwner(client, {
+    existing,
+    ownerJustAssigned: true,
+  });
+  if (thankYou?.client) client = thankYou.client;
+  res.json({
+    client,
+    thankYouSent: Boolean(thankYou?.sent),
+    from: thankYou?.from || '',
+    warnings: [...(syncResult.warnings || []), ...(thankYou?.warnings || [])],
+  });
 });
 
 app.post('/api/admin/sales', salesAuth, async (req, res) => {
@@ -11694,13 +11749,7 @@ app.post('/api/admin/sales', salesAuth, async (req, res) => {
     });
     client = syncResult.client || client;
 
-    const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
-      ? await sendSalesThankYou(client, {
-        force: false,
-        actorAccountKey: req.salesUser.accountKey,
-        salesUser: req.salesUser,
-      })
-      : { sent: false, reason: 'manual-only', client };
+    const thankYou = await autoSendThankYouFromOwner(client);
     if (thankYou?.client) client = thankYou.client;
 
     res.status(201).json({
@@ -11732,17 +11781,11 @@ app.put('/api/admin/sales/:id', salesAuth, async (req, res) => {
 
     const syncResult = await maybeSyncCalendar(client, existing, {
       notifyAttendees: Boolean(existing?.reminders?.thankYouSentAt) && meetingChanged,
-      actorAccountKey: req.salesUser.accountKey,
+      actorAccountKey: isSalesRepAccountKey(client.ownerId) ? client.ownerId : req.salesUser.accountKey,
     });
     client = syncResult.client || client;
 
-    const thankYou = SALES_EMAIL_AUTOSEND_ENABLED
-      ? await sendSalesThankYou(client, {
-        force: false,
-        actorAccountKey: req.salesUser.accountKey,
-        salesUser: req.salesUser,
-      })
-      : { sent: false, reason: 'manual-only', client };
+    const thankYou = await autoSendThankYouFromOwner(client, { existing });
     if (thankYou?.client) client = thankYou.client;
 
     res.json({
