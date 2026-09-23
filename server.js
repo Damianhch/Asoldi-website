@@ -11045,7 +11045,8 @@ app.post('/api/admin/sales/preview-send-emails', salesAuth, async (req, res) => 
     return res.status(400).json({ message: 'A valid preview recipient is required.' });
   }
   const sender = await resolveSalesSenderForAccount(req.salesUser);
-  const variants = [
+  const requested = Array.isArray(req.body?.variants) ? req.body.variants : null;
+  const allVariants = [
     { kind: 'thank-you', mode: 'online' },
     { kind: 'thank-you', mode: 'in-person' },
     { kind: 'reminder-3d', mode: 'online' },
@@ -11055,6 +11056,16 @@ app.post('/api/admin/sales/preview-send-emails', salesAuth, async (req, res) => 
     { kind: 'reminder-1h', mode: 'online' },
     { kind: 'reminder-1h', mode: 'in-person' },
   ];
+  const variants = requested
+    ? allVariants.filter((variant) => requested.some((item) => {
+      const kind = sanitizeText(typeof item === 'string' ? item : item?.kind);
+      const mode = sanitizeText(typeof item === 'string' ? '' : item?.mode);
+      return kind === variant.kind && (!mode || mode === variant.mode);
+    }))
+    : allVariants;
+  if (!variants.length) {
+    return res.status(400).json({ message: 'No preview variants selected.' });
+  }
   const sent = [];
   try {
     for (const variant of variants) {
