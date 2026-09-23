@@ -95,7 +95,7 @@ export function EmailVisualEditor({
       assetManager: {
         embedAsBase64: false,
         assets: [
-          '/email/sales/hero-desktop.jpg',
+          '/email/sales/hero-banner.jpg',
           '/email/sales/hero-mobile.jpg',
           '/email/sales/envelope.png',
           '/email/sales/logo-mark.png',

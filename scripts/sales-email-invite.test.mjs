@@ -45,7 +45,7 @@ test('sales images stay in the HTML and are not file attachments', () => {
     <img src="https://asoldi.com/email/sales/icon-facebook.png" />
   `);
   const embedded = embedInlineEmailAssets('<img src="/email/sales/hero-desktop.jpg" />');
-  assert.match(html, /https:\/\/asoldi\.com\/email\/sales\/hero-desktop\.jpg/);
+  assert.match(html, /https:\/\/asoldi\.com\/email\/sales\/hero-banner\.jpg/);
   assert.match(html, /https:\/\/asoldi\.com\/email\/sales\/envelope\.png/);
   assert.match(html, /https:\/\/asoldi\.com\/email\/sales\/icon-facebook\.png/);
   assert.equal(html.includes('cid:'), false);
@@ -80,7 +80,7 @@ test('3-day reminder copy follows the meeting type', () => {
 
 test('composed welcome mail has hosted images and an ICS invite', () => {
   const message = composeEmailForClient(getSalesEmailPreviewClient(), 'thank-you').message;
-  assert.match(message.html, /https:\/\/asoldi\.com\/email\/sales\/hero-desktop\.jpg/);
+  assert.match(message.html, /https:\/\/asoldi\.com\/email\/sales\/hero-banner\.jpg/);
   assert.equal(message.html.includes('cid:'), false);
   assert.deepEqual(message.attachments, []);
   assert.equal(message.icalEvent?.filename, 'asoldi-online-mote.ics');
