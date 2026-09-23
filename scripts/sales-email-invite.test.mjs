@@ -76,9 +76,19 @@ test('3-day reminder copy follows the meeting type', () => {
   const online = composeEmailForClient(getSalesEmailPreviewClient(), 'reminder-3d').message;
   const irl = composeEmailForClient(getSalesEmailPreviewClient({ meetingMode: 'in-person' }), 'reminder-3d').message;
   assert.match(online.subject, /om 3 dager/);
-  assert.match(online.html, /online-møtet/);
+  assert.match(online.html, /Vennlig påminnelse: møtet vårt starter om 3 dager\. 16\.09\.26 kl 14:00\./);
+  assert.equal(online.html.includes('online-møtet'), false);
   assert.match(irl.subject, /Fysisk møte/);
-  assert.match(irl.html, /Åpne i Kart/);
+  assert.match(irl.html, /Vennlig påminnelse: møtet vårt starter om 3 dager\. 16\.09\.26 kl 14:00\./);
+  assert.equal(irl.html.includes('Åpne i Kart'), false);
+  assert.equal(irl.html.includes('Trykk på knappen under for å åpne adressen'), false);
+  const day = composeEmailForClient(getSalesEmailPreviewClient(), 'reminder-24h').message;
+  const dayIrl = composeEmailForClient(getSalesEmailPreviewClient({ meetingMode: 'in-person' }), 'reminder-24h').message;
+  assert.match(day.html, /Gleder oss til møtet/);
+  assert.match(day.html, /Vennlig påminnelse: møtet vårt starter om 24 timer\. 16\.09\.26 kl 14:00\./);
+  assert.equal(day.html.includes('Online møte i morgen'), false);
+  assert.match(dayIrl.html, /Gleder oss til møtet/);
+  assert.equal(dayIrl.html.includes('Åpne i Kart'), false);
   assert.equal(online.icalEvent, undefined);
 });
 
