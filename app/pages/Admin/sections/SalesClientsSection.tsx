@@ -37,6 +37,7 @@ import {
   getCurrentGoalKey,
   getSalesGoalKeys,
   groupSalesClientsByNextAction,
+  confirmationSendGaps,
 } from '../../../../lib/sales-next-actions.js';
 import {
   clientHasPublicPreviewSnapshot,
@@ -1328,11 +1329,14 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       const saved = data?.client as SalesClient | undefined;
       if (saved) applySavedClient(saved);
       else await loadSales({ clearMessages: false, showLoading: false });
+      const gaps = Array.isArray(data?.confirmationGaps) ? data.confirmationGaps.filter(Boolean) : [];
       const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
       if (data?.thankYouSent) {
         setNotice(`Tildelt. Bekreftelse sendt${data.from ? ` fra ${data.from}` : ''}.`);
+      } else if (gaps.length) {
+        setError(`Tildelt, men bekreftelse ble ikke sendt. Mangler ${gaps.join(', ')}.`);
       } else {
-        setNotice('Tildelt. Bekreftelse sendes fra selgeren når møtetid er satt.');
+        setNotice('Tildelt. Bekreftelse sendes fra selgeren når alle møtefeltene er fylt inn.');
       }
       if (warnings.length) setError(warnings.join(' | '));
     } catch (err) {
@@ -1949,6 +1953,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const websiteSold = Boolean(client.progression?.contractSigned);
             const canMarkSold = Boolean(client.progression?.contractSigned);
             const clientSelected = selectedClientIds.includes(client.id);
+            const confirmationGaps = client.reminders?.thankYouSentAt ? [] : confirmationSendGaps(client);
             return (
               <React.Fragment key={client.id}>
                 <div
@@ -1956,7 +1961,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   className={`rounded-2xl bg-[#2a2a2a] border p-4 flex flex-col gap-3 cursor-pointer ${
                     clientSelected
                       ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40'
-                      : calendarAction
+                      : confirmationGaps.length
+                        ? 'border-red-500/70 ring-1 ring-red-500/30'
+                        : calendarAction
                         ? 'border-sky-400/50 ring-1 ring-sky-400/20 shadow-[0_0_0_3px_rgba(56,189,248,0.06)]'
                         : 'border-white/10'
                   }`}
@@ -1973,7 +1980,11 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
                       />
                       <h3 className="text-white font-semibold truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</h3>
-                      {nextAction?.name ? (
+                      {confirmationGaps.length > 0 ? (
+                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-red-500/15 border border-red-500/40 text-red-200 truncate" title={`Mangler ${confirmationGaps.join(', ')}`}>
+                          Bekreftelse stoppet
+                        </span>
+                      ) : nextAction?.name ? (
                         <span className="shrink-0 max-w-[40%] px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-200 truncate">
                           {nextAction.name}
                         </span>
@@ -1995,6 +2006,11 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         </span>
                       ) : null}
                     </div>
+                    {confirmationGaps.length > 0 && (
+                      <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-red-200">
+                        Bekreftelse sendes ikke. Mangler {confirmationGaps.join(', ')}.
+                      </div>
+                    )}
                     {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                         <UserRound size={12} className="shrink-0" />

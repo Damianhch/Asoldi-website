@@ -63,6 +63,7 @@ import {
   renderSalesUnsubscribePage,
   htmlToPlainText,
 } from './lib/sales-email.js';
+import { confirmationSendGaps } from './lib/sales-next-actions.js';
 import {
   buildOfferEmailForClient,
   composeEmailForClient,
@@ -8058,16 +8059,19 @@ function isSalesRepAccountKey(accountKey = '') {
 async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAssigned = false } = {}) {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return { sent: false, reason: 'manual-only', client };
   if (!isSalesRepAccountKey(client?.ownerId)) return { sent: false, reason: 'owner-not-assigned', client };
-  const meetingReady = Boolean(client?.agreedTime && client?.meetingAt);
-  if (!meetingReady) return { sent: false, reason: 'meeting-not-scheduled', client };
+  const gaps = confirmationSendGaps(client);
+  if (gaps.length) return { sent: false, reason: 'missing-fields', client, gaps };
   if (client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent', client };
   const becameReady = !existing
     || ownerJustAssigned
+    || confirmationSendGaps(existing).length > 0
     || !existing.agreedTime
     || !existing.meetingAt
     || existing.meetingAt !== client.meetingAt
     || existing.meetingMode !== client.meetingMode
-    || existing.contactEmail !== client.contactEmail;
+    || existing.contactEmail !== client.contactEmail
+    || existing.contactPerson !== client.contactPerson
+    || existing.businessName !== client.businessName;
   if (existing && !becameReady) return { sent: false, reason: 'unchanged', client };
   return sendSalesThankYou(client, {
     force: false,
@@ -8077,6 +8081,8 @@ async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAss
 }
 
 async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null } = {}) {
+  const gaps = confirmationSendGaps(client);
+  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps };
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
@@ -8128,6 +8134,8 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
 }
 
 async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, actorAccountKey = '' } = {}) {
+  const gaps = confirmationSendGaps(client);
+  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps };
   if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
   if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
@@ -11733,6 +11741,8 @@ app.post('/api/admin/sales/:id/owner', salesAuth, async (req, res) => {
   res.json({
     client,
     thankYouSent: Boolean(thankYou?.sent),
+    thankYouReason: thankYou?.reason || '',
+    confirmationGaps: thankYou?.gaps || confirmationSendGaps(client),
     from: thankYou?.from || '',
     warnings: [...(syncResult.warnings || []), ...(thankYou?.warnings || [])],
   });
