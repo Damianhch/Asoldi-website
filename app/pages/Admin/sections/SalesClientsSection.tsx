@@ -211,8 +211,8 @@ function extractOrgNumberFromProffUrl(value = '') {
   return queryOrg.length === 9 ? queryOrg : '';
 }
 
-function durationForMode(mode: 'online' | 'in-person') {
-  return mode === 'in-person' ? 60 : 30;
+function durationForMode(_mode: 'online' | 'in-person') {
+  return 30;
 }
 
 function toDateTimeLocal(value = '') {
@@ -3000,7 +3000,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white"
                 >
                   <option value="online">Online (30 min)</option>
-                  <option value="in-person">In person (60 min)</option>
+                  <option value="in-person">In person (30 min)</option>
                 </select>
               </div>
 

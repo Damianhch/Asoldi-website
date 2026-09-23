@@ -11073,7 +11073,7 @@ app.post('/api/admin/sales/preview-send-emails', salesAuth, async (req, res) => 
         meetingMode: variant.mode,
         contactEmail: to,
         contactPerson: 'Damian',
-        businessName: variant.mode === 'in-person' ? 'Asoldi (fysisk møte)' : 'Asoldi (online møte)',
+        businessName: 'Asoldi',
       });
       const composed = composeEmailForClient(client, variant.kind, null, {
         sender,

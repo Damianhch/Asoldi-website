@@ -52,12 +52,16 @@ test('sales images stay in the HTML and are not file attachments', () => {
   assert.deepEqual(embedded.attachments, []);
 });
 
-test('in-person confirmation uses the maps CTA, not Google Meet', () => {
-  const client = getSalesEmailPreviewClient({ meetingMode: 'in-person' });
+test('in-person confirmation states the address and a 30-minute call-ahead, without a maps button', () => {
+  const client = getSalesEmailPreviewClient({ meetingMode: 'in-person', businessName: 'Asoldi' });
   const message = composeEmailForClient(client, 'thank-you').message;
   assert.match(message.subject, /fysisk møte/i);
-  assert.match(message.html, /Åpne i Kart/);
   assert.match(message.html, /Østre berg 10/);
+  assert.match(message.html, /ca\. 30 minutter/);
+  assert.match(message.html, /ringer deg litt i forkant/);
+  assert.equal(message.html.includes('(fysisk møte)'), false);
+  assert.equal(message.html.includes('Åpne i Kart'), false);
+  assert.equal(message.html.includes('60 minutter'), false);
   assert.equal(message.html.includes('Åpne Google Meet'), false);
   assert.equal(message.icalEvent?.filename, 'asoldi-fysisk-mote.ics');
 });
