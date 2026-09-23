@@ -192,6 +192,24 @@ test('generic admin From is replaced by the connected Google name', () => {
   assert.equal(sender.from, 'Damian fra Asoldi <damian@asoldi.com>');
 });
 
+test('confirmation uses first names and leaves the business name unbolded', () => {
+  const sender = buildSalesSender({
+    name: 'Alexander Berg',
+    fromEmail: 'alexander@asoldi.com',
+  });
+  const message = composeEmailForClient(getSalesEmailPreviewClient({
+    contactPerson: 'Kari Nordmann',
+    businessName: 'Bakeriet',
+  }), 'thank-you', null, { sender }).message;
+  assert.match(message.html, /Hei Kari,/);
+  assert.match(message.html, /Mvh Alexander fra/);
+  assert.match(message.html, /nettsiden til Bakeriet,/);
+  assert.equal(message.html.includes('Alexander Berg'), false);
+  assert.equal(message.html.includes('Kari Nordmann'), false);
+  assert.equal(message.html.includes('<strong>Bakeriet</strong>'), false);
+  assert.equal(message.from, 'Alexander fra Asoldi <alexander@asoldi.com>');
+});
+
 test('welcome merge fills the salesperson name in the body and From line', () => {
   const sender = buildSalesSender({
     name: 'Alexander',
