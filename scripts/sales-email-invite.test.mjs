@@ -117,7 +117,7 @@ test('ICS organizer matches the salesperson From address', () => {
   assert.match(invite.content, /ORGANIZER;.*mailto:damian@asoldi.com/);
 });
 
-test('sent email is one 600px hybrid layout, not two swapped templates', () => {
+test('sent email is one fluid layout with an 800px content column', () => {
   const html = renderResponsiveSalesEmailHtml({
     title: 'Møtet bekreftet',
     bodyHtml: '<p>Hei</p>',
@@ -133,7 +133,11 @@ test('sent email is one 600px hybrid layout, not two swapped templates', () => {
   });
   assert.equal(html.includes('email-only-mobile'), false);
   assert.equal(html.includes('email-only-desktop'), false);
-  assert.match(html, /max-width:600px/);
+  assert.equal(html.includes('max-width:600px'), false);
+  assert.match(html, /max-width:800px/);
+  assert.match(html, /customers-badge/);
+  assert.match(html, /width:320px/);
+  assert.match(html, /#FFE8DA/);
   assert.match(html, /Åpne Google Meet/);
   assert.match(html, /Møtet bekreftet/);
 });
