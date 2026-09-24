@@ -17,6 +17,7 @@ interface ClientData {
     label: string;
   }[];
   websiteUrl: string;
+  logoContain?: boolean;
 }
 
 const clients: ClientData[] = [
@@ -32,7 +33,7 @@ const clients: ClientData[] = [
       { value: '9600', label: 'besøkende / mnd' },
       { value: '3%+', label: 'konversjon' }
     ],
-    websiteUrl: '#'
+    websiteUrl: 'https://superheroinvest.no'
   },
   {
     id: 'svelstad-gardsbruk',
@@ -46,7 +47,7 @@ const clients: ClientData[] = [
       { value: '4', label: 'bestillinger etter 1 uke' },
       { value: '20', label: 'nye kunde emails' }
     ],
-    websiteUrl: '#'
+    websiteUrl: 'https://svelstad.no'
   },
   {
     id: 'vaernes-bar',
@@ -60,7 +61,7 @@ const clients: ClientData[] = [
       { value: '#1', label: 'ranking på google' },
       { value: '800', label: 'besøkende første mnd' }
     ],
-    websiteUrl: '#'
+    websiteUrl: 'https://værnesbar.no'
   },
   {
     id: 'mong-sushi',
@@ -74,7 +75,7 @@ const clients: ClientData[] = [
       { value: '8%+', label: 'konversjonsrate' },
       { value: '1200', label: 'besøkende / mnd' }
     ],
-    websiteUrl: '#'
+    websiteUrl: 'https://mongsushi.no'
   },
   {
     id: 'swich-restaurant',
@@ -88,7 +89,22 @@ const clients: ClientData[] = [
       { value: '#3', label: 'ranking på google' },
       { value: '1400', label: 'besøkende / mnd' }
     ],
-    websiteUrl: '#'
+    websiteUrl: 'https://swich.no/'
+  },
+  {
+    id: 'byneset-bydelskafe',
+    name: 'BYNESET\nBYDELSKAFE',
+    logoUrl: '/media/byneset-logo.png',
+    serviceProvided: 'Nettside utvikling',
+    backgroundImageUrl: '/media/byneset-bydelskafe.jpg',
+    description: 'NETTSIDE FOR NABOLAGSKAFEEN PÅ BYNESET, MED MENY, ÅPNINGSTIDER OG EN ENKEL MÅTE Å TA KONTAKT. SIDEN GJØR DET LETT Å SE HVA SOM SERVERES OG FINNE VEIEN INN.',
+    dashboardImageUrl: '/media/byneset-bydelskafe.jpg',
+    stats: [
+      { value: 'Meny', label: 'synlig på nett' },
+      { value: 'Kontakt', label: 'rett fra siden' }
+    ],
+    websiteUrl: 'https://bynesetcafe.no',
+    logoContain: true
   }
 ];
 
@@ -108,7 +124,7 @@ export const Clients = () => {
     <div className="bg-[#050505] min-h-screen">
       <SEO
         title={`Kundecaser – ${BUSINESS.shortName} | Suksesshistorier fra våre kunder`}
-        description="Se hvordan vi har hjulpet Superhero Burger, Svelstad, Mong Sushi og andre med nettsider og markedsføring. Kundecaser fra Asoldi."
+        description="Se hvordan vi har hjulpet Superhero Burger, Svelstad, Mong Sushi, Byneset Bydelskafe og andre med nettsider. Kundecaser fra Asoldi."
         path="/clients"
       />
       {/* Hero Section */}
@@ -198,8 +214,8 @@ export const Clients = () => {
             >
               {/* Top Row: Logo & Service */}
               <div className="flex items-center gap-4 mb-6">
-                <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-white/20 bg-black/50 flex items-center justify-center shrink-0">
-                  <img src={client.logoUrl} alt={`${client.name} logo`} className="w-full h-full object-cover" />
+                <div className={`w-16 h-16 rounded-full overflow-hidden border-2 border-white/20 flex items-center justify-center shrink-0 ${client.logoContain ? 'bg-white p-1' : 'bg-black/50'}`}>
+                  <img src={client.logoUrl} alt={`${client.name} logo`} className={`w-full h-full ${client.logoContain ? 'object-contain' : 'object-cover'}`} />
                 </div>
                 <div className="flex items-center gap-3 text-lg md:text-xl font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-white shrink-0" />

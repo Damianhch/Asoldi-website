@@ -1,293 +1,248 @@
-import React, { useRef } from 'react';
-import { motion, useScroll, useTransform } from 'motion/react';
+import React from 'react';
+import { motion } from 'motion/react';
+import { Link } from 'react-router-dom';
+import { ArrowUpRight } from 'lucide-react';
 import { SalesCTA } from '../components/SalesCTA';
 import { FAQ } from '../components/FAQ';
 import { SEO } from '../components/SEO';
 import { getAboutPageSchema } from '../structuredData';
 import { BUSINESS, SITE_URL } from '../config';
 
+const fadeUp = {
+  hidden: { opacity: 0, y: 28 },
+  show: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.22, 1, 0.36, 1] as const } },
+};
+
+const services = [
+  {
+    title: 'Nettsideutvikling',
+    text: 'Raske, tydelige nettsider som gjør det enkelt for kundene å finne dere, bestille og ta kontakt.',
+    href: '/services/web-development',
+  },
+  {
+    title: 'Sosiale medier',
+    text: 'Innhold og tilstedeværelse der målgruppen allerede er, med en stemme som høres ut som bedriften.',
+    href: '/services/social-media',
+  },
+  {
+    title: 'Digital strategi',
+    text: 'Færre løse tiltak, mer sammenheng. Vi velger det som faktisk flytter merkevaren, ikke alt på en gang.',
+    href: '/pricing',
+  },
+];
+
+const clients = ['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Byneset Bydelskafe', 'Arman V', 'Asoldi'];
+
 export const AboutUs = () => {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const { scrollYProgress } = useScroll({
-    target: containerRef,
-    offset: ["start start", "end end"]
-  });
-
-  // The container is 1000vh tall to accommodate 5 distinct sections smoothly.
-  
-  // 1. Image & Velkommen
-  const imageOpacity = useTransform(scrollYProgress, [0, 0.1, 0.15], [1, 1, 0]);
-  const imageScale = useTransform(scrollYProgress, [0, 0.15], [1, 1.05]);
-  const overlayOpacity = useTransform(scrollYProgress, [0, 0.1, 0.15], [0, 0.8, 1]);
-  
-  const text1Opacity = useTransform(scrollYProgress, [0, 0.1, 0.15], [1, 1, 0]);
-  const text1Y = useTransform(scrollYProgress, [0, 0.1, 0.15], [0, 0, -50]);
-  const text1Scale = useTransform(scrollYProgress, [0, 0.1, 0.15], [1, 1, 1.05]);
-
-  // 2. We help businesses grow
-  const section2Opacity = useTransform(scrollYProgress, [0.1, 0.15, 0.3, 0.35], [0, 1, 1, 0]);
-  const section2Y = useTransform(scrollYProgress, [0.1, 0.15, 0.3, 0.35], [50, 0, 0, -50]);
-
-  // 3. Founded in 2023
-  const section3Opacity = useTransform(scrollYProgress, [0.3, 0.35, 0.5, 0.55], [0, 1, 1, 0]);
-  const section3Y = useTransform(scrollYProgress, [0.3, 0.35, 0.5, 0.55], [50, 0, 0, -50]);
-
-  // 4. Services blocks & text
-  const section4BlocksOpacity = useTransform(scrollYProgress, [0.5, 0.55, 0.95, 1], [0, 1, 1, 0]);
-  const section4BlocksY = useTransform(scrollYProgress, [0.5, 0.55, 0.95, 1], [50, 0, 0, -50]);
-  
-  const section4TextOpacity = useTransform(scrollYProgress, [0.5, 0.55, 0.65, 0.7], [0, 1, 1, 0]);
-  const section4TextY = useTransform(scrollYProgress, [0.5, 0.55, 0.65, 0.7], [50, 0, 0, 50]);
-
-  // 5. Lines drawing
-  const linesProgress = useTransform(scrollYProgress, [0.65, 0.75], [0, 1]);
-  const linesOpacity = useTransform(scrollYProgress, [0.65, 0.7, 0.95, 1], [0, 1, 1, 0]);
-
-  // 6. A more cohesive brand
-  const section5Opacity = useTransform(scrollYProgress, [0.75, 0.8, 0.95, 1], [0, 1, 1, 0]);
-  const section5Y = useTransform(scrollYProgress, [0.75, 0.8, 0.95, 1], [50, 0, 0, -50]);
-  
-  const glassHighlight = useTransform(scrollYProgress, [0.75, 0.85], [0, 1]);
-
   return (
-    <div className="bg-[#050505] min-h-screen">
+    <div className="bg-[#050505] text-white">
       <SEO
         title={`Om oss – ${BUSINESS.shortName} | Studentdrevet byrå i Trondheim`}
         description="Asoldi er et studentdrevet digitalt byrå i Trondheim. Vi tilbyr premium markedsføringstjenester og hjelper bedrifter med å vokse på nett."
         path="/about"
         structuredData={getAboutPageSchema('Om Asoldi', BUSINESS.description, SITE_URL + '/about')}
       />
-      {/* Scroll Sequence Container */}
-      <div ref={containerRef} className="h-[1000vh] relative scroll-contain">
-        {/* Sticky Container */}
-        <div className="sticky top-0 h-screen w-full overflow-hidden flex items-center justify-center scroll-contain">
-          
-          {/* Background Image Container */}
-          <motion.div 
-            style={{ opacity: imageOpacity, scale: imageScale }}
-            className="absolute inset-0 pt-20 pb-2 px-2 md:pt-24 md:pb-4 md:px-4 flex items-center justify-center"
-          >
-            <div className="w-full h-full rounded-[20px] md:rounded-[40px] overflow-hidden relative">
-              <img 
-                src="/media/DSC02166-scaled.webp" 
-                alt="Asoldi team" 
-                className="w-full h-full object-cover"
-              />
-            </div>
-          </motion.div>
 
-          {/* Dark Overlay (covers the whole screen eventually) */}
-          <motion.div 
-            style={{ opacity: overlayOpacity }}
-            className="absolute inset-0 bg-[#050505]"
+      <section className="px-2 pt-20 md:px-4 md:pt-24">
+        <div className="relative min-h-[calc(100svh-5.5rem)] overflow-hidden rounded-[24px] md:rounded-[40px]">
+          <motion.img
+            src="/media/DSC02166-scaled.webp"
+            alt="Asoldi-teamet"
+            className="absolute inset-0 h-full w-full object-cover"
+            initial={{ scale: 1.08 }}
+            animate={{ scale: 1 }}
+            transition={{ duration: 1.4, ease: [0.22, 1, 0.36, 1] }}
           />
-
-          {/* Text 1: Velkommen til Asoldi */}
-          <motion.div 
-            style={{ opacity: text1Opacity, y: text1Y, scale: text1Scale }}
-            className="absolute inset-0 flex items-center justify-center pointer-events-none"
-          >
-            <h1 className="text-5xl md:text-7xl lg:text-9xl font-medium text-white tracking-tight text-center px-4">
+          <div className="absolute inset-0 bg-gradient-to-t from-[#050505] via-[#050505]/45 to-[#050505]/15" />
+          <div className="relative z-10 flex min-h-[calc(100svh-5.5rem)] flex-col justify-end p-6 md:p-14 lg:p-16">
+            <motion.p
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15, duration: 0.6 }}
+              className="mb-4 text-xs font-medium uppercase tracking-[0.28em] text-[#FF5B00] md:text-sm"
+            >
+              Studentdrevet byrå · Trondheim
+            </motion.p>
+            <motion.h1
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.25, duration: 0.7 }}
+              className="max-w-5xl text-5xl font-medium tracking-tight md:text-7xl lg:text-8xl"
+            >
               Dette er Asoldi
-            </h1>
-          </motion.div>
-
-          {/* Section 2: We help businesses grow */}
-          <motion.div 
-            style={{ opacity: section2Opacity, y: section2Y }}
-            className="absolute inset-0 flex items-center justify-center pointer-events-none px-6 md:px-20"
-          >
-            <div className="max-w-7xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-20 items-center">
-              <div className="rounded-[20px] md:rounded-[40px] overflow-hidden aspect-video md:aspect-[4/5] relative">
-                <img 
-                  src="/media/asoldi%20capture%202.PNG" 
-                  alt="Vekst for bedrifter" 
-                  className="w-full h-full object-cover"
-                />
-              </div>
-              <div className="text-center md:text-left">
-                <h2 className="text-3xl md:text-6xl lg:text-7xl font-medium text-white mb-4 md:mb-6 tracking-tight leading-[1.1]">
-                  Vi hjelper bedrifter å vokse.
-                </h2>
-                <p className="text-base md:text-xl text-white/60 font-light leading-relaxed">
-                  Gjennom strategisk design og moderne teknologi forvandler vi ideer til digitale opplevelser som skaper ekte resultater. Vår tilnærming er rotet i å forstå dine unike utfordringer og skape skreddersydde løsninger som løfter din merkevare.
-                </p>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Section 3: Founded in 2023 */}
-          <motion.div 
-            style={{ opacity: section3Opacity, y: section3Y }}
-            className="absolute inset-0 flex items-center justify-center pointer-events-none px-6 md:px-20"
-          >
-            <div className="max-w-7xl w-full grid grid-cols-1 md:grid-cols-2 gap-8 md:gap-20 items-center">
-              <div className="order-2 md:order-1 text-center md:text-left">
-                <div className="inline-block px-4 py-2 rounded-full border border-white/10 bg-white/5 text-white/80 text-xs md:text-sm font-medium mb-4 md:mb-6">
-                  Vår Historie
-                </div>
-                <h2 className="text-3xl md:text-6xl lg:text-7xl font-medium text-white mb-4 md:mb-6 tracking-tight leading-[1.1]">
-                  Studentdrevet innovasjon
-                </h2>
-                <p className="text-base md:text-xl text-white/60 font-light leading-relaxed">
-                  Asoldi startet som en visjon om å tilby premium markedsføringstjenester til en rettferdig pris. Som et studentdrevet byrå i Trondheim, bringer vi med oss en unik energi, oppdatert kunnskap og en brennende lidenskap for å skape vekst for våre kunder.
-                </p>
-              </div>
-              <div className="order-1 md:order-2 relative">
-                <div className="aspect-video md:aspect-square relative w-full max-w-md mx-auto">
-                  <div className="absolute inset-0 bg-gradient-to-tr from-[#FF5B00]/20 to-transparent rounded-2xl transform translate-x-2 translate-y-2 md:translate-x-4 md:translate-y-4"></div>
-                  <img 
-                    src="/media/employee1.webp" 
-                    alt="Studentdrevet team" 
-                    className="w-full h-full object-cover rounded-2xl relative z-10 grayscale hover:grayscale-0 transition-all duration-500"
-                  />
-                </div>
-              </div>
-            </div>
-          </motion.div>
-
-          {/* Section 4, Lines, and Section 5 Container */}
-          <motion.div 
-            style={{ opacity: section4BlocksOpacity, y: section4BlocksY }}
-            className="absolute inset-0 flex flex-col items-center justify-start pt-[10vh] md:pt-[15vh] pointer-events-none px-6"
-          >
-            {/* 3 Blocks */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-6 w-full max-w-5xl relative z-20">
-              {['Nettsideutvikling', 'Sosiale Medier', 'Digital Strategi'].map((service, i) => (
-                <div key={i} className="bg-[#111] border border-white/10 p-3 md:p-8 rounded-2xl flex flex-col items-center text-center relative">
-                  <h3 className="text-base md:text-xl font-medium text-white mb-1 md:mb-2">{service}</h3>
-                  <p className="text-xs md:text-sm text-white/50">Digital ekspertise</p>
-                </div>
-              ))}
-            </div>
-
-            {/* Text that fades out early */}
-            <motion.div 
-              style={{ opacity: section4TextOpacity, y: section4TextY }} 
-              className="absolute top-[50vh] md:top-[40vh] text-center max-w-3xl px-6"
+            </motion.h1>
+            <motion.p
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.4, duration: 0.7 }}
+              className="mt-5 max-w-xl text-base font-light leading-relaxed text-white/80 md:text-xl"
             >
-              <h2 className="text-2xl md:text-5xl font-medium text-white mb-2 md:mb-4 tracking-tight">
-                Våre Kjerntjenester
-              </h2>
-              <p className="text-sm md:text-lg text-white/60 font-light">
-                Vi fokuserer på utvalgte tjenester for å sikre at vi leverer eksepsjonell kvalitet og målbare resultater for hver eneste kunde vi samarbeider med.
-              </p>
-            </motion.div>
-
-            {/* Lines (Desktop) */}
-            <div className="hidden md:block w-full max-w-5xl h-[15vh] relative z-10 -mt-2">
-              <svg viewBox="0 0 1024 200" className="w-full h-full" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="line-gradient" x1="0" y1="0" x2="0" y2="200" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stopColor="rgba(255,91,0,0.2)" />
-                    <stop offset="100%" stopColor="rgba(255,91,0,1)" />
-                  </linearGradient>
-                </defs>
-                <motion.path 
-                  d="M 170 0 C 170 100, 512 100, 512 200" 
-                  stroke="url(#line-gradient)" 
-                  strokeWidth="4" 
-                  fill="none" 
-                  style={{ pathLength: linesProgress, opacity: linesOpacity }} 
-                />
-                <motion.path 
-                  d="M 512 0 L 512 200" 
-                  stroke="url(#line-gradient)" 
-                  strokeWidth="4" 
-                  fill="none" 
-                  style={{ pathLength: linesProgress, opacity: linesOpacity }} 
-                />
-                <motion.path 
-                  d="M 854 0 C 854 100, 512 100, 512 200" 
-                  stroke="url(#line-gradient)" 
-                  strokeWidth="4" 
-                  fill="none" 
-                  style={{ pathLength: linesProgress, opacity: linesOpacity }} 
-                />
-              </svg>
-            </div>
-
-            {/* Lines (Mobile) */}
-            <div className="md:hidden w-full h-[8vh] relative flex justify-center z-10 -mt-1">
-              <svg viewBox="0 0 2 150" className="w-[2px] h-full" preserveAspectRatio="none">
-                <defs>
-                  <linearGradient id="line-gradient-mobile" x1="0" y1="0" x2="0" y2="150" gradientUnits="userSpaceOnUse">
-                    <stop offset="0%" stopColor="rgba(255,91,0,0.2)" />
-                    <stop offset="100%" stopColor="rgba(255,91,0,1)" />
-                  </linearGradient>
-                </defs>
-                <motion.path 
-                  d="M 1 0 L 1 150" 
-                  stroke="url(#line-gradient-mobile)" 
-                  strokeWidth="4" 
-                  fill="none" 
-                  style={{ pathLength: linesProgress, opacity: linesOpacity }} 
-                />
-              </svg>
-            </div>
-
-            {/* Section 5: A more cohesive brand */}
-            <motion.div 
-              style={{ opacity: section5Opacity, y: section5Y }}
-              className="w-full max-w-4xl relative z-20 -mt-1 md:-mt-2"
-            >
-              <motion.div 
-                style={{ 
-                  backgroundColor: useTransform(glassHighlight, [0, 1], ['rgba(255,91,0,0)', 'rgba(255,91,0,0.15)']),
-                  borderColor: useTransform(glassHighlight, [0, 1], ['rgba(255,91,0,0)', 'rgba(255,91,0,0.4)']),
-                  backdropFilter: useTransform(glassHighlight, [0, 1], ['blur(0px)', 'blur(16px)']),
-                  boxShadow: useTransform(glassHighlight, [0, 1], ['0 0 0px rgba(255,91,0,0)', '0 20px 40px rgba(255,91,0,0.2)'])
-                }}
-                className="text-center p-5 md:p-12 rounded-[24px] md:rounded-[40px] border"
-              >
-                <h2 className="text-2xl md:text-6xl lg:text-7xl font-medium text-white mb-3 md:mb-6 tracking-tight">
-                  En helhetlig merkevare
-                </h2>
-                <p className="text-sm md:text-2xl text-white/60 font-light leading-relaxed">
-                  Vær der kundene dine er. Vi har valgt ut disse tjenestene fordi de danner grunnlaget for en moderne og robust merkevare. Det handler ikke om å selge deg alt, men om å bygge det som faktisk betyr noe for din vekst.
-                </p>
-              </motion.div>
-            </motion.div>
-          </motion.div>
-
-        </div>
-      </div>
-
-      {/* Logos Section */}
-      <section className="py-32 bg-[#050505] relative z-10 overflow-hidden">
-        <div className="max-w-7xl mx-auto px-6 md:px-10 mb-20 text-center">
-          <h2 className="text-5xl md:text-7xl lg:text-8xl font-medium text-white mb-6 tracking-tight">
-            Uttrykk din merkevare
-          </h2>
-          <p className="text-xl text-white/50 max-w-2xl mx-auto font-light">
-            Bli en del av listen over fremtidsrettede bedrifter som har stolt på oss for å løfte sin digitale tilstedeværelse og skape meningsfull vekst.
-          </p>
-        </div>
-        
-        {/* Ticker for logos */}
-        <div className="opacity-40 grayscale flex w-full">
-          <div className="flex animate-marquee gap-16 flex-shrink-0 items-center pr-16">
-            {['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Arman V', 'Asoldi', 'Vekst'].map((name, i) => (
-              <div key={`logo-1-${i}`} className="text-4xl md:text-5xl font-bold text-white tracking-tighter uppercase">
-                {name}
-              </div>
-            ))}
-          </div>
-          <div className="flex animate-marquee gap-16 flex-shrink-0 items-center pr-16" aria-hidden="true">
-            {['Svelstad', 'Swich', 'Mong Sushi', 'Superhero Invest', 'Værnes Bar', 'Arman V', 'Asoldi', 'Vekst'].map((name, i) => (
-              <div key={`logo-2-${i}`} className="text-4xl md:text-5xl font-bold text-white tracking-tighter uppercase">
-                {name}
-              </div>
-            ))}
+              Vi hjelper bedrifter å vokse med design og teknologi som ser bra ut, og som kundene faktisk bruker.
+            </motion.p>
           </div>
         </div>
       </section>
 
-      {/* CTA, FAQ */}
-      <div className="relative z-10 bg-[#050505]">
-        <SalesCTA />
-        <FAQ />
-      </div>
+      <section className="mx-auto grid max-w-[1440px] gap-10 px-6 py-24 md:px-10 lg:grid-cols-2 lg:items-center lg:gap-20 lg:py-32">
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: '-80px' }}
+          className="overflow-hidden rounded-[28px] md:rounded-[40px]"
+        >
+          <img
+            src="/media/asoldi%20capture%202.PNG"
+            alt="Arbeid fra Asoldi"
+            className="aspect-[4/5] w-full object-cover md:aspect-[4/5]"
+          />
+        </motion.div>
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: '-80px' }}
+        >
+          <p className="mb-4 text-xs font-medium uppercase tracking-[0.22em] text-[#FF5B00]">Hva vi gjør</p>
+          <h2 className="text-4xl font-medium tracking-tight leading-[1.05] md:text-6xl">
+            Vi hjelper bedrifter å vokse.
+          </h2>
+          <p className="mt-6 max-w-xl text-base font-light leading-relaxed text-white/65 md:text-xl">
+            Gjennom strategisk design og moderne teknologi forvandler vi ideer til digitale opplevelser som skaper ekte resultater. Vi starter med utfordringen deres, og bygger løsningen rundt den.
+          </p>
+          <div className="mt-10 grid grid-cols-3 gap-4 border-t border-white/10 pt-8">
+            {[
+              ['Trondheim', 'Der vi holder til'],
+              ['Studentdrevet', 'Oppdatert og tett på'],
+              ['Premium', 'Til en rettferdig pris'],
+            ].map(([title, label]) => (
+              <div key={title}>
+                <p className="text-sm font-medium text-white md:text-base">{title}</p>
+                <p className="mt-1 text-xs text-white/45 md:text-sm">{label}</p>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      </section>
+
+      <section className="border-y border-white/10 bg-[#0a0a0a]">
+        <div className="mx-auto grid max-w-[1440px] items-center gap-12 px-6 py-24 md:px-10 lg:grid-cols-2 lg:gap-20 lg:py-32">
+          <motion.div
+            variants={fadeUp}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, margin: '-80px' }}
+            className="order-2 lg:order-1"
+          >
+            <div className="mb-6 inline-flex rounded-full border border-white/10 bg-white/5 px-4 py-2 text-xs font-medium text-white/80 md:text-sm">
+              Vår historie
+            </div>
+            <h2 className="text-4xl font-medium tracking-tight leading-[1.05] md:text-6xl">
+              Studentdrevet innovasjon
+            </h2>
+            <p className="mt-6 max-w-xl text-base font-light leading-relaxed text-white/65 md:text-xl">
+              Asoldi startet som en visjon om å tilby premium markedsføringstjenester til en rettferdig pris. Som et studentdrevet byrå i Trondheim tar vi med oss energi, oppdatert kunnskap og en ekte interesse for veksten til kundene våre.
+            </p>
+          </motion.div>
+          <motion.div
+            variants={fadeUp}
+            initial="hidden"
+            whileInView="show"
+            viewport={{ once: true, margin: '-80px' }}
+            className="order-1 lg:order-2"
+          >
+            <div className="relative mx-auto max-w-md">
+              <div className="absolute inset-0 translate-x-3 translate-y-3 rounded-[28px] bg-gradient-to-tr from-[#FF5B00]/30 to-transparent md:translate-x-4 md:translate-y-4" />
+              <img
+                src="/media/employee1.webp"
+                alt="En fra Asoldi-teamet"
+                className="relative z-10 aspect-square w-full rounded-[28px] object-cover"
+              />
+            </div>
+          </motion.div>
+        </div>
+      </section>
+
+      <section className="mx-auto max-w-[1440px] px-6 py-24 md:px-10 lg:py-32">
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: '-80px' }}
+          className="mb-12 max-w-3xl"
+        >
+          <p className="mb-4 text-xs font-medium uppercase tracking-[0.22em] text-[#FF5B00]">Tjenester</p>
+          <h2 className="text-4xl font-medium tracking-tight md:text-6xl">Våre kjerntjenester</h2>
+          <p className="mt-5 text-base font-light leading-relaxed text-white/60 md:text-xl">
+            Vi holder oss til noen få ting, slik at hvert samarbeid får kvalitet og resultater som kan måles.
+          </p>
+        </motion.div>
+        <div className="grid gap-4 md:grid-cols-3">
+          {services.map((service, index) => (
+            <motion.div
+              key={service.title}
+              variants={fadeUp}
+              initial="hidden"
+              whileInView="show"
+              viewport={{ once: true, margin: '-60px' }}
+              transition={{ delay: index * 0.08 }}
+            >
+              <Link
+                to={service.href}
+                className="group flex h-full flex-col justify-between rounded-[28px] border border-white/10 bg-[#111] p-7 transition-colors hover:border-[#FF5B00]/50 md:p-8"
+              >
+                <div>
+                  <p className="text-sm text-white/35">0{index + 1}</p>
+                  <h3 className="mt-6 text-2xl font-medium tracking-tight">{service.title}</h3>
+                  <p className="mt-4 text-sm font-light leading-relaxed text-white/60 md:text-base">{service.text}</p>
+                </div>
+                <span className="mt-10 inline-flex items-center gap-2 text-sm text-[#FF5B00]">
+                  Les mer
+                  <ArrowUpRight size={16} className="transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+                </span>
+              </Link>
+            </motion.div>
+          ))}
+        </div>
+      </section>
+
+      <section className="px-6 pb-8 md:px-10">
+        <motion.div
+          variants={fadeUp}
+          initial="hidden"
+          whileInView="show"
+          viewport={{ once: true, margin: '-80px' }}
+          className="mx-auto max-w-4xl rounded-[32px] border border-[#FF5B00]/30 bg-[#FF5B00]/10 px-6 py-12 text-center backdrop-blur-md md:rounded-[40px] md:px-16 md:py-16"
+        >
+          <h2 className="text-3xl font-medium tracking-tight md:text-6xl">En helhetlig merkevare</h2>
+          <p className="mx-auto mt-5 max-w-2xl text-base font-light leading-relaxed text-white/70 md:text-2xl">
+            Vær der kundene dine er. Disse tjenestene er grunnlaget for en moderne merkevare. Det handler om å bygge det som betyr noe for veksten, ikke å selge alt.
+          </p>
+        </motion.div>
+      </section>
+
+      <section className="overflow-hidden py-28">
+        <div className="mx-auto mb-16 max-w-7xl px-6 text-center md:px-10">
+          <h2 className="text-4xl font-medium tracking-tight md:text-7xl">Uttrykk din merkevare</h2>
+          <p className="mx-auto mt-5 max-w-2xl text-lg font-light text-white/50">
+            Bedrifter som har brukt oss for å løfte den digitale tilstedeværelsen sin.
+          </p>
+        </div>
+        <div className="flex w-full opacity-70">
+          {[0, 1].map((copy) => (
+            <div key={copy} className="flex flex-shrink-0 animate-marquee items-center gap-16 pr-16" aria-hidden={copy === 1}>
+              {clients.map((name) => (
+                <div key={`${copy}-${name}`} className="text-3xl font-bold uppercase tracking-tighter text-white md:text-5xl">
+                  {name}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <SalesCTA />
+      <FAQ />
     </div>
   );
 };
