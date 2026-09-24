@@ -336,7 +336,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkAssignOwnerId, setBulkAssignOwnerId] = useState('');
-  const [emailDrafts, setEmailDrafts] = useState<Record<string, string>>({});
   const [sendingMailKey, setSendingMailKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -467,10 +466,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const salesRepOptions = useMemo(
     () => salesOwners.filter((owner) => String(owner.accountKey || '').startsWith('sales:')),
     [salesOwners]
-  );
-  const assignedUnsentClients = useMemo(
-    () => timelineClients.filter((client) => clientNeedsConfirmationSend(client)),
-    [timelineClients]
   );
   const awaitingRepClients = useMemo(
     () => (isSalesAdmin ? timelineClients.filter((client) => !String(client.ownerId || '').startsWith('sales:')) : []),
@@ -1370,11 +1365,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  function clientEmailDraft(client: SalesClient) {
-    if (Object.prototype.hasOwnProperty.call(emailDrafts, client.id)) return emailDrafts[client.id];
-    return String(client.contactEmail || '');
-  }
-
   function salesMailTemplate(client: SalesClient, kind: 'thank-you' | '3d' | '24h' | '1h') {
     const irl = client.meetingMode === 'in-person';
     if (kind === 'thank-you') return irl ? 'thank-you-in-person' : 'thank-you';
@@ -1388,9 +1378,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   }
 
   async function sendClientMail(client: SalesClient, kind: 'thank-you' | '3d' | '24h' | '1h') {
-    const to = clientEmailDraft(client).trim();
+    const to = String(client.contactEmail || '').trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
-      setError('Skriv inn en gyldig mottaker-e-post først. Du kan endre den her om den har byttet.');
+      setError('Client contact email is missing or invalid. Edit the client or use Rediger først.');
       return;
     }
     if (kind === 'thank-you' && client.reminders?.thankYouSentAt) {
@@ -1412,11 +1402,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       const saved = data?.client as SalesClient | undefined;
       if (saved) applySavedClient(saved);
       else await loadSales({ clearMessages: false, showLoading: false });
-      setEmailDrafts((prev) => {
-        const next = { ...prev };
-        delete next[client.id];
-        return next;
-      });
       const label = kind === 'thank-you' ? 'Bekreftelse' : kind === '3d' ? 'Påminnelse 3 dager' : kind === '1h' ? 'Påminnelse 1 time' : 'Påminnelse 24 timer';
       setNotice(`${label} sendt til ${to}${data?.from ? ` fra ${data.from}` : ''}.`);
       const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
@@ -1960,41 +1945,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         </div>
       ) : (
         <div className="space-y-3">
-          {assignedUnsentClients.length > 0 && (
-            <div className="rounded-xl border border-sky-400/40 bg-[#2a2a2a] p-3">
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="text-sm font-semibold text-white">Send bekreftelse</div>
-                  <p className="text-[11px] text-gray-400 mt-0.5">
-                    {assignedUnsentClients.length} tildelte kunder har ikke fått bekreftelse. Den sendes fra selgerens e-post, også om de ble tildelt før auto-utsending.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    disabled={bulkBusy}
-                    onClick={() => {
-                      setSelectedClientIds(assignedUnsentClients.map((client) => client.id));
-                    }}
-                    className="px-2 py-1 rounded-md bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
-                  >
-                    Huk av alle som mangler
-                  </button>
-                  <button
-                    type="button"
-                    disabled={bulkBusy}
-                    onClick={() => void runBulkAction('send-welcome', {
-                      clientIds: assignedUnsentClients.map((client) => client.id),
-                    })}
-                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
-                  >
-                    {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
-                    Send til alle som mangler
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
           {isSalesAdmin && (
             <div className="rounded-xl border border-[#FF5B00]/40 bg-[#2a2a2a] p-3">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2160,64 +2110,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         Bekreftelse sendes ikke. Mangler {confirmationGaps.join(', ')}.
                       </div>
                     )}
-                    {needsConfirmation && confirmationGaps.length === 0 && (
-                      <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-amber-100">
-                        Selger er tildelt, men bekreftelsen ble ikke sendt automatisk. Send den i e-postfeltet under.
-                      </div>
-                    )}
-                    <div
-                      className="mt-3 rounded-xl border border-[#FF5B00]/50 bg-black/30 p-3 space-y-2"
-                      onClick={(event) => event.stopPropagation()}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="text-xs font-semibold text-white">Send e-post når du vil</div>
-                        <span className="text-[10px] text-gray-500">Endre mottaker om e-posten har byttet</span>
-                      </div>
-                      <label className="block text-[11px] text-gray-400">
-                        Mottaker
-                        <input
-                          type="email"
-                          value={clientEmailDraft(client)}
-                          onChange={(event) => setEmailDrafts((prev) => ({ ...prev, [client.id]: event.target.value }))}
-                          placeholder="kunde@epost.no"
-                          className="mt-1 w-full rounded-md bg-black/40 border border-white/15 px-2 py-1.5 text-sm text-white"
-                        />
-                      </label>
-                      <div className="flex flex-wrap gap-1.5">
-                        {([
-                          ['thank-you', client.reminders?.thankYouSentAt ? 'Bekreftelse på nytt' : 'Bekreftelse'],
-                          ['3d', '3 dager'],
-                          ['24h', '24 timer'],
-                          ['1h', '1 time'],
-                        ] as const).map(([kind, label]) => {
-                          const busy = sendingMailKey === `${client.id}:${kind}`;
-                          return (
-                            <button
-                              key={kind}
-                              type="button"
-                              onClick={() => void sendClientMail(client, kind)}
-                              disabled={Boolean(sendingMailKey)}
-                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] disabled:opacity-50 ${
-                                kind === 'thank-you' && needsConfirmation
-                                  ? 'bg-[#FF5B00] text-white hover:bg-[#e55200]'
-                                  : 'bg-white/10 text-white hover:bg-white/15'
-                              }`}
-                            >
-                              {busy ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
-                              {label}
-                            </button>
-                          );
-                        })}
-                        <button
-                          type="button"
-                          onClick={() => openMailComposer(client, 'thank-you')}
-                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[11px] hover:bg-white/15"
-                          title="Åpne malen, bytt mottaker og send"
-                        >
-                          Rediger først
-                        </button>
-                      </div>
-                    </div>
                     {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                         <UserRound size={12} className="shrink-0" />
@@ -2344,6 +2236,31 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
                     </button>
                   )}
+                  {([
+                    ['thank-you', 'Bekreftelse'],
+                    ['3d', '3 dager'],
+                    ['24h', '24 timer'],
+                    ['1h', '1 time'],
+                  ] as const).map(([kind, label]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => void sendClientMail(client, kind)}
+                      disabled={Boolean(sendingMailKey)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    >
+                      {sendingMailKey === `${client.id}:${kind}` ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+                      {label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => openMailComposer(client, 'thank-you')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                    title="Åpne malen, bytt mottaker og send"
+                  >
+                    Rediger først
+                  </button>
                   {!clientIsSsu && meetingHeld && (
                     <button
                       type="button"
