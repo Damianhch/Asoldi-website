@@ -116,6 +116,7 @@ function DevelopmentCard({
   setWebsiteMakerBaseUrl,
   onToggleStep,
   onReload,
+  onClientUpdated,
   onError,
   onNotice,
 }: {
@@ -126,6 +127,7 @@ function DevelopmentCard({
   setWebsiteMakerBaseUrl: (value: string) => void;
   onToggleStep: (item: DevelopmentItem, key: keyof DevelopmentItem['development']) => void;
   onReload: () => Promise<void> | void;
+  onClientUpdated?: (client: Record<string, unknown> | null | undefined) => void;
   onError: (message: string) => void;
   onNotice?: (message: string) => void;
 }) {
@@ -201,6 +203,7 @@ function DevelopmentCard({
           setWebsiteMakerBaseUrl={setWebsiteMakerBaseUrl}
           authHeaders={developmentAuthHeaders()}
           onReload={onReload}
+          onClientUpdated={onClientUpdated}
           onError={onError}
           onNotice={onNotice}
           allowCreate
@@ -334,6 +337,7 @@ export function DevelopmentClientsSection({ hideHeader = false }: Props) {
                         setWebsiteMakerBaseUrl={setWebsiteMakerBaseUrl}
                         onToggleStep={(entry, stepKey) => void toggleStep(entry, stepKey)}
                         onReload={loadItems}
+                        onClientUpdated={patchDevelopmentClient}
                         onError={setError}
                         onNotice={setNotice}
                       />
@@ -347,6 +351,22 @@ export function DevelopmentClientsSection({ hideHeader = false }: Props) {
       </div>
     );
   }
+
+  const patchDevelopmentClient = useCallback((client) => {
+    const salesClientId = String(client?.id || '').trim();
+    if (!salesClientId) return;
+    const apply = (items) => items.map((item) => (
+      String(item.salesClientId || '') === salesClientId
+        ? {
+            ...item,
+            makerRun: client.makerRun ?? item.makerRun,
+            websiteImport: client.websiteImport ?? item.websiteImport,
+          }
+        : item
+    ));
+    setPreviewItems(apply);
+    setDeploymentItems(apply);
+  }, []);
 
   const loadItems = useCallback(async () => {
     setError('');

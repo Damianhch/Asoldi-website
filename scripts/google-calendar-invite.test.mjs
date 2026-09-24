@@ -5,6 +5,7 @@ import {
   buildGoogleCalendarInvitationSubject,
   buildMeetingAttendees,
   calendarInviteLeadMs,
+  firefliesNotetakerEmail,
 } from '../lib/google-calendar.js';
 
 const client = {
@@ -24,6 +25,17 @@ test('invite send includes the guest as needsAction', () => {
   assert.equal(attendees.length, 1);
   assert.equal(attendees[0].email, 'daracha777@gmail.com');
   assert.equal(attendees[0].responseStatus, 'needsAction');
+});
+
+test('Fireflies is added only when the sales meeting asks for it', () => {
+  const plain = buildMeetingAttendees(client, { includeAttendees: true, includeFireflies: false });
+  assert.equal(plain.some((entry) => entry.email.endsWith('@fireflies.ai')), false);
+  const withBot = buildMeetingAttendees(client, { includeAttendees: true, includeFireflies: true });
+  assert.equal(withBot.length, 2);
+  assert.equal(withBot[1].email, firefliesNotetakerEmail());
+  const botOnly = buildMeetingAttendees(client, { includeAttendees: false, includeFireflies: true });
+  assert.equal(botOnly.length, 1);
+  assert.equal(botOnly[0].email, firefliesNotetakerEmail());
 });
 
 test('Google invitation subject matches Gmail’s invite prefix', () => {

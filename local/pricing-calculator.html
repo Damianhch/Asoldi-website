@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+<meta charset="UTF-8">
+<title>Asoldi - Pris-kalkulator (LOCAL TEST)</title>
+<style>
+  /* Deliberately plain - this is a local testing tool, not the live UI */
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; margin: 0; padding: 16px; color: #111; }
+  .workspace {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 380px;
+    gap: 24px;
+    max-width: 1440px;
+    margin: 0 auto;
+    align-items: start;
+  }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .note { color: #666; font-size: 13px; margin-bottom: 24px; }
+  fieldset { margin-bottom: 20px; padding: 12px; }
+  legend { font-weight: bold; }
+  label { display: block; margin: 4px 0; cursor: pointer; }
+  input[type=number] { width: 60px; padding: 2px 4px; }
+  table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; font-size: 14px; }
+  th { background: #f2f2f2; }
+  .included { color: #1a7a1a; }
+  .excluded { color: #aaa; text-decoration: line-through; }
+  .scaled { color: #a15c00; font-weight: bold; }
+  .total-box { border: 2px solid #111; padding: 14px; margin-top: 20px; font-size: 16px; }
+  .total-box .big { font-size: 28px; font-weight: bold; }
+  .editable-note { background: #fff8dc; border: 1px solid #d4c37f; padding: 8px; font-size: 13px; margin-bottom: 20px; }
+  .custom-banner { background: #eef6ff; border: 1px solid #8eb4d8; padding: 8px; font-size: 13px; margin: 0 0 12px; display: none; }
+  code { background: #eee; padding: 1px 4px; }
+  .svc-check { margin-right: 8px; }
+  .svc-check:disabled { cursor: not-allowed; }
+
+  .notes-col {
+    position: sticky;
+    top: 16px;
+    height: calc(100vh - 32px);
+    display: flex;
+    flex-direction: column;
+    border: 1px solid #bbb;
+    background: #f7f7f7;
+  }
+  .notes-head {
+    padding: 12px 14px 10px;
+    border-bottom: 1px solid #ddd;
+    background: #eee;
+  }
+  .notes-head h2 { margin: 0 0 4px; font-size: 16px; }
+  .notes-head p { margin: 0; font-size: 12px; color: #666; }
+  .notes-body { flex: 1; overflow-y: auto; padding: 12px 14px; }
+  .notes-field { margin-bottom: 14px; }
+  .notes-field > span, .notes-field > legend { display: block; font-weight: bold; font-size: 13px; margin-bottom: 6px; }
+  .notes-field textarea, .notes-field input[type=date], .notes-field input[type=text] {
+    width: 100%;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 13px;
+  }
+  .notes-field textarea { min-height: 72px; resize: vertical; }
+  .notes-check { font-weight: normal; font-size: 13px; }
+  .validate-callout {
+    background: #fff3cd;
+    border: 2px solid #e0a800;
+    padding: 10px 12px;
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  .validate-callout strong { display: block; font-size: 13px; margin-bottom: 6px; }
+  .validate-callout ul { margin: 0; padding-left: 18px; }
+  .notes-foot {
+    padding: 12px 14px;
+    border-top: 1px solid #ddd;
+    background: #eee;
+  }
+  .send-offer {
+    width: 100%;
+    padding: 12px;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+    background: #111;
+    color: #fff;
+    border: 0;
+  }
+  .send-offer:hover { background: #333; }
+  .offer-status { margin-top: 8px; font-size: 12px; color: #1a7a1a; min-height: 16px; }
+
+  @media (max-width: 1100px) {
+    .workspace { grid-template-columns: 1fr; }
+    .notes-col { position: static; height: auto; max-height: none; }
+    .notes-body { max-height: none; overflow: visible; }
+  }
+</style>
+</head>
+<body>
+<div class="workspace">
+<div class="calc-col">
+
+<h1>Asoldi - Website Pricing Calculator (local test build)</h1>
+<p class="note">Website services only (no marketing tier yet). Not styled for production - for testing price logic before going live.</p>
+
+<div class="editable-note">
+  <strong>How this works now:</strong> Starter / SEO / Nettbutikk are <strong>fixed packages</strong> (999 / 1 499 / 1 999 at 5 pages).
+  Taking a service out of a named package does <strong>not</strong> lower the price. Add-ons on top of a package use Skreddersydd unit prices.
+  Skreddersydd is à la carte at those custom prices (nettbutikk-funksjonalitet 900 kr, ubegrenset redigering 1 000 kr, blogg 400 kr, …).
+  Blogg-integrasjon is included in every named package (package price stays 999 / 1 499 / 1 999). On Skreddersydd it is 400 kr if ticked.
+  Layout/webdesign is always on and free. Floor on Skreddersydd is still <strong>999 kr/mnd</strong>.
+  Page scaling is +10% of that service’s own base per page beyond 5, for hosting, SEO, flerspråklig and dedicated server.
+  Ubegrenset innholdsendringer is 1 000 kr/mnd; on one-time payment it covers the <strong>first 6 months only</strong> (×6, not ×9).
+  Edit the <code>DATA</code> object at the top of the &lt;script&gt; tag to change numbers.
+</div>
+
+<fieldset>
+  <legend>1. Antall sider (pages)</legend>
+  <label>
+    Sider: <input type="number" id="pagesInput" min="1" value="5">
+    <span id="pagesNote" style="font-weight:normal; color:#666;"></span>
+  </label>
+</fieldset>
+
+<fieldset>
+  <legend>2. Choose tier</legend>
+  <div id="tierOptions"></div>
+</fieldset>
+
+<fieldset>
+  <legend>3. Engangskostnader / one-time setup services (not recurring, not part of the ×9 baseline)</legend>
+  <div id="oneTimeAddOnsOptions"></div>
+</fieldset>
+
+<fieldset>
+  <legend>4. Payment structure</legend>
+  <label>
+    <input type="checkbox" id="oneTimeToggle">
+    One-time payment (baseline monthly price × 9, instead of recurring monthly)
+  </label>
+</fieldset>
+
+<h3>Included services for selected tier</h3>
+<div class="custom-banner" id="packageBanner">
+  Named package is active. The package price stays put if you untick something inside it (blogg is included in every named package). Extra services (flerspråk, ubegrenset, apper, …) add Skreddersydd unit prices on top. Page scaling still applies from the package.
+</div>
+<div class="custom-banner" id="customBanner">
+  Skreddersydd is à la carte. Each ticked service uses its own custom price (not the named-package bundle). Layout/webdesign stays included. Monthly retainer unless you toggle one-time payment. The total never goes below 999 kr/mnd (8 991 kr one-time).
+</div>
+<table id="breakdownTable">
+  <thead><tr><th>Service</th><th>Base monthly</th><th>Page scaling</th><th>Adjusted monthly</th><th>Status</th></tr></thead>
+  <tbody id="breakdownBody"></tbody>
+</table>
+
+<div class="total-box">
+  <div id="totalLabel">Monthly total</div>
+  <div class="big" id="totalPrice"></div>
+  <div id="oneTimeSubnote" style="font-size:13px; color:#666; display:none;"></div>
+</div>
+
+<h3 style="margin-top:40px;">Full service price reference (base page count, regardless of tier)</h3>
+<table>
+  <thead><tr><th>Service</th><th>Monthly value</th><th>Per extra page</th><th>Included in</th></tr></thead>
+  <tbody id="referenceBody"></tbody>
+</table>
+
+</div>
+
+<aside class="notes-col">
+  <div class="notes-head">
+    <h2>Salgsnotater</h2>
+    <p>Blir stående mens du scroller kalkulatoren. Følger ikke med i prisberegningen.</p>
+  </div>
+  <div class="notes-body" id="notesForm">
+    <div class="notes-field">
+      <span>Custom sections</span>
+      <textarea id="noteCustomSections" placeholder="Hvilke egne seksjoner trenger de? F.eks. meny, booking, blogg, galleri…"></textarea>
+    </div>
+    <div class="notes-field">
+      <span>Start date</span>
+      <input type="date" id="noteStartDate">
+    </div>
+    <div class="notes-field">
+      <span>Deres hovedprodukt og mål med nettsiden</span>
+      <textarea id="noteProductGoal" placeholder="Hva selger de, og hva skal nettsiden oppnå?"></textarea>
+    </div>
+    <div class="notes-field">
+      <span>Har dere spesifikk identitet med farger, stil og språk vi må følge?</span>
+      <textarea id="noteIdentity" placeholder="Farger, visuell stil, tone of voice, språk…"></textarea>
+    </div>
+    <div class="notes-field">
+      <div class="validate-callout">
+        <strong>Validere at dette blir sendt</strong>
+        Media, logo, bedriftsinfo, lenker osv.
+      </div>
+    </div>
+    <div class="notes-field" style="margin-bottom: 0;">
+      <span>Notater</span>
+      <textarea id="noteAvvik" placeholder="Skriv notater her…" style="min-height:56px;"></textarea>
+    </div>
+  </div>
+  <div class="notes-foot">
+    <button type="button" class="send-offer" id="sendOfferBtn">Send tilbud</button>
+    <div class="offer-status" id="offerStatus"></div>
+  </div>
+</aside>
+</div>
+
+<script>
+// ---------------------------------------------------------------
+// EDIT THESE NUMBERS to match real internal pricing once you have it.
+// ---------------------------------------------------------------
+const DATA = {
+  oneTimeMultiplier: 9,
+  minMonthly: 999,        // Skreddersydd floor; named packages already sit on 999 / 1499 / 1999
+
+  pageScaling: {
+    includedPages: 5,     // pages covered before any extra-page surcharge kicks in
+    ratePercent: 0.10     // each scaling service costs +10% of its own base monthly price, per extra page
+  },
+
+  // Named-tier sticker prices at 5 pages. Unticking a package line does not discount these.
+  packagePrices: {
+    starter: 999,
+    seo: 1499,
+    nettbutikk: 1999
+  },
+
+  // Locked on every plan, 0 kr.
+  alwaysOn: [
+    { id: "webdesign", name: "Layout, responsivitet og generell webdesign", price: 0 }
+  ],
+
+  // On by default. On named tiers, turning them off does not change the package price.
+  defaultOn: [
+    { id: "meeting", name: "Veilednings- og gjennomgangsmøte", price: 0 },
+    { id: "domain",  name: "Koble til domene",                price: 0 }
+  ],
+
+  // Included in every named package. On Skreddersydd these start checked, priced à la carte.
+  base: [
+    { id: "hosting", name: "Hosting & vedlikehold",                      price: 600, scalesWithPages: true },
+    { id: "contact",  name: "Kontaktskjema & standard seksjoner",         price: 200 },
+    { id: "changes",  name: "Innholdsendringer (opptil 4/mnd)",           price: 199 }
+  ],
+
+  tiers: [
+    { id: "starter",    label: "Starter",     delivery: "2 uker",       includes: ["blog"] },
+    { id: "seo",        label: "SEO",         delivery: "2 uker",       includes: ["seo","social","email","blog"] },
+    { id: "nettbutikk", label: "Nettbutikk",  delivery: "3 uker",       includes: ["seo","social","email","ecom","dashboard","blog"] },
+    { id: "custom",     label: "Skreddersydd", delivery: "Etter avtale", includes: [] }
+  ],
+
+  // `price` = Skreddersydd / addon unit price. Named packages do not sum these.
+  addOns: [
+    { id: "seo",       name: "SEO optimalisering",                     price: 300, scalesWithPages: true },
+    { id: "social",    name: "Anmeldelser & sosiale medier synk",      price: 100 },
+    { id: "email",     name: "E-postliste innsamling",                 price: 100 },
+    { id: "ecom",      name: "Nettbutikk-funksjonalitet",              price: 900 },
+    { id: "dashboard", name: "Analyse-dashbord",                       price: 150 },
+    { id: "blog",      name: "Blogg-integrasjon",                     price: 400 },
+    { id: "unlimited", name: "Ubegrenset innholdsendringer (oppgradering fra 4/mnd)", price: 1000, oneTimeMonths: 6 },
+    { id: "customapp", name: "Skreddersydde web-applikasjoner",        price: 2000 },
+    { id: "api",       name: "Avanserte API-integrasjoner",            price: 1500 },
+    { id: "server",    name: "Dedikert server & prioritert support",   price: 800, scalesWithPages: true }
+  ],
+
+  multilingual: {
+    id: "multilingual",
+    name: "Flerspråklig funksjonalitet",
+    price: 690,
+    scalesWithPages: true
+  },
+
+  oneTimeAddOns: [
+    { id: "pos", name: "Koble opp til kassasystem", price: 6000 },
+    { id: "thirdpartyhost", name: "Koble til tredjeparts host og domene", price: 2500 }
+  ]
+};
+// ---------------------------------------------------------------
+
+const NAMED_TIERS = DATA.tiers.filter(t => t.id !== "custom");
+
+const state = {
+  tierId: "starter",
+  customMode: false,
+  oneTime: false,
+  pages: DATA.pageScaling.includedPages,
+  selected: new Set(),
+  oneTimeAddOns: new Set()
+};
+
+function fmt(n) {
+  return Math.round(n).toLocaleString("nb-NO") + " kr";
+}
+
+function getTier(id) {
+  return DATA.tiers.find(t => t.id === id);
+}
+
+function allPaidRecurringServices() {
+  return [...DATA.defaultOn, ...DATA.base, ...DATA.addOns, DATA.multilingual];
+}
+
+function extraPages() {
+  return Math.max(0, state.pages - DATA.pageScaling.includedPages);
+}
+
+function adjustedPrice(item) {
+  const perPage = item.scalesWithPages ? item.price * DATA.pageScaling.ratePercent : 0;
+  const scale = perPage * extraPages();
+  return { base: item.price, perPage, scale, total: item.price + scale };
+}
+
+function presetIds(tier) {
+  const ids = new Set([
+    ...DATA.defaultOn.map(s => s.id),
+    ...DATA.base.map(b => b.id)
+  ]);
+  (tier.includes || []).forEach(id => ids.add(id));
+  return ids;
+}
+
+function customBaselineIds() {
+  return new Set([
+    ...DATA.defaultOn.map(s => s.id),
+    ...DATA.base.map(b => b.id)
+  ]);
+}
+
+function applyNamedTier(tierId) {
+  const tier = getTier(tierId);
+  state.tierId = tierId;
+  state.customMode = false;
+  state.selected = presetIds(tier);
+}
+
+function applyCustomBaseline() {
+  state.tierId = "custom";
+  state.customMode = true;
+  state.selected = customBaselineIds();
+}
+
+function isTimeCapped(item) {
+  return !!(item.oneTimeMonths && state.oneTime);
+}
+
+function packageIds(tierId) {
+  if (!tierId || tierId === "custom") return new Set();
+  return presetIds(getTier(tierId));
+}
+
+function isPackageService(itemId) {
+  if (state.customMode) return false;
+  if (DATA.alwaysOn.some(s => s.id === itemId)) return true;
+  return packageIds(state.tierId).has(itemId);
+}
+
+function packagePageScale(tierId) {
+  const ids = packageIds(tierId);
+  let scale = 0;
+  allPaidRecurringServices().forEach(item => {
+    if (ids.has(item.id)) scale += adjustedPrice(item).scale;
+  });
+  return scale;
+}
+
+function recurringUnit(item) {
+  if (isTimeCapped(item)) return 0;
+  return adjustedPrice(item).total;
+}
+
+function customRawMonthly(ids) {
+  let monthly = 0;
+  allPaidRecurringServices().forEach(item => {
+    if (ids.has(item.id)) monthly += recurringUnit(item);
+  });
+  return monthly;
+}
+
+function customQuotedMonthly(ids) {
+  return Math.max(DATA.minMonthly, customRawMonthly(ids));
+}
+
+function addonRecurringTotal(ids, tierId) {
+  const pkg = packageIds(tierId);
+  let sum = 0;
+  allPaidRecurringServices().forEach(item => {
+    if (!ids.has(item.id) || pkg.has(item.id)) return;
+    sum += recurringUnit(item);
+  });
+  return sum;
+}
+
+function namedQuotedMonthly(tierId, ids) {
+  return DATA.packagePrices[tierId] + packagePageScale(tierId) + addonRecurringTotal(ids, tierId);
+}
+
+function quotedMonthly() {
+  return state.customMode
+    ? customQuotedMonthly(state.selected)
+    : namedQuotedMonthly(state.tierId, state.selected);
+}
+
+function minOneTime() {
+  return DATA.minMonthly * DATA.oneTimeMultiplier;
+}
+
+function setupCost() {
+  return DATA.oneTimeAddOns
+    .filter(o => state.oneTimeAddOns.has(o.id))
+    .reduce((sum, o) => sum + o.price, 0);
+}
+
+function cappedOneTimeCharge() {
+  let sum = 0;
+  allPaidRecurringServices().forEach(item => {
+    if (!item.oneTimeMonths || !state.oneTime || !state.selected.has(item.id)) return;
+    sum += item.price * item.oneTimeMonths;
+  });
+  return sum;
+}
+
+function renderTierOptions() {
+  const el = document.getElementById("tierOptions");
+  el.innerHTML = "";
+  DATA.tiers.forEach(t => {
+    const total = t.id === "custom"
+      ? customQuotedMonthly(state.customMode ? state.selected : customBaselineIds())
+      : DATA.packagePrices[t.id] + packagePageScale(t.id);
+    const extra = t.id === "custom"
+      ? " — à la carte, egne priser (nettbutikk 900 kr, osv.)"
+      : " — fast pakkepris";
+    const lbl = document.createElement("label");
+    lbl.innerHTML = `<input type="radio" name="tier" value="${t.id}" ${t.id === state.tierId ? "checked" : ""}>
+      ${t.label} - ${fmt(total)}/mnd - levering: ${t.delivery}${extra}`;
+    el.appendChild(lbl);
+  });
+  el.querySelectorAll("input[name=tier]").forEach(input => {
+    input.addEventListener("change", e => {
+      if (e.target.value === "custom") applyCustomBaseline();
+      else applyNamedTier(e.target.value);
+      render();
+    });
+  });
+}
+
+function scalingLabel(item, checked) {
+  if (!item.scalesWithPages) return "-";
+  const perPage = item.price * DATA.pageScaling.ratePercent;
+  const extra = extraPages();
+  if (!checked || extra === 0) return `${fmt(perPage)}/ekstra side`;
+  return `+${fmt(perPage * extra)} (${extra} ekstra sider × ${fmt(perPage)})`;
+}
+
+function renderOneTimeAddOnOptions() {
+  const el = document.getElementById("oneTimeAddOnsOptions");
+  el.innerHTML = "";
+  DATA.oneTimeAddOns.forEach(o => {
+    const lbl = document.createElement("label");
+    lbl.innerHTML = `<input type="checkbox" data-id="${o.id}" ${state.oneTimeAddOns.has(o.id) ? "checked" : ""}>
+      ${o.name} - ${fmt(o.price)} engangsbeløp (betales én gang, ikke per måned)`;
+    el.appendChild(lbl);
+  });
+  el.querySelectorAll("input[type=checkbox]").forEach(input => {
+    input.addEventListener("change", e => {
+      const id = e.target.getAttribute("data-id");
+      if (e.target.checked) state.oneTimeAddOns.add(id);
+      else state.oneTimeAddOns.delete(id);
+      render();
+    });
+  });
+}
+
+function serviceDisplayName(item) {
+  if (!item.oneTimeMonths) return item.name;
+  return `${item.name} — ved engangsbetaling kun første ${item.oneTimeMonths} mnd`;
+}
+
+function serviceRow(item, opts = {}) {
+  const locked = !!opts.locked;
+  const checked = locked || state.selected.has(item.id);
+  const p = adjustedPrice(item);
+  const inPackage = !locked && isPackageService(item.id);
+  const row = document.createElement("tr");
+  let nameClass, statusClass, status, valueCell, scaledCell, adjCell, adjClass, scaleClass;
+
+  if (locked) {
+    nameClass = "";
+    statusClass = "included";
+    status = "Always included (free)";
+    valueCell = "0 kr";
+    scaledCell = "-";
+    adjCell = "0 kr";
+    adjClass = "";
+    scaleClass = "";
+  } else if (inPackage) {
+    const tierLabel = getTier(state.tierId).label;
+    nameClass = checked ? "" : "excluded";
+    statusClass = checked ? "included" : "excluded";
+    status = checked
+      ? `Inkludert i ${tierLabel}-pakken`
+      : "Ikke levert (pakkepris uendret)";
+    valueCell = "Inkl. i pakke";
+    scaledCell = scalingLabel(item, true);
+    adjCell = p.scale > 0 ? `+${fmt(p.scale)} på pakkeprisen` : "Inkl. i pakke";
+    adjClass = checked ? "" : "excluded";
+    scaleClass = p.scale > 0 ? "scaled" : "";
+  } else {
+    const capped = isTimeCapped(item) && checked;
+    nameClass = checked ? "" : "excluded";
+    statusClass = checked ? "included" : "excluded";
+    status = checked
+      ? (item.oneTimeMonths
+          ? (state.oneTime
+              ? `Tillegg: ${item.oneTimeMonths} mnd (engangs, ikke ×9)`
+              : "Tillegg (løpende)")
+          : (state.customMode ? "Valgt (à la carte)" : "Tillegg utenfor pakken"))
+      : "Not selected";
+    valueCell = fmt(p.base);
+    scaledCell = scalingLabel(item, checked);
+    if (capped) adjCell = `${fmt(item.price * item.oneTimeMonths)} (${item.oneTimeMonths} mnd)`;
+    else adjCell = checked ? fmt(p.total) : "-";
+    adjClass = checked ? "" : "excluded";
+    scaleClass = checked && p.scale > 0 ? "scaled" : "";
+  }
+
+  row.innerHTML = `<td>
+      <label style="margin:0;">
+        <input class="svc-check" type="checkbox" ${locked ? "disabled" : `data-svc="${item.id}"`} ${checked ? "checked" : ""}>
+        <span class="${nameClass}">${serviceDisplayName(item)}</span>
+      </label>
+    </td>
+    <td>${valueCell}</td>
+    <td class="${scaleClass}">${scaledCell}</td>
+    <td class="${adjClass}">${adjCell}</td>
+    <td class="${statusClass}">${status}</td>`;
+  return row;
+}
+
+function render() {
+  renderTierOptions();
+  renderOneTimeAddOnOptions();
+
+  const extra = extraPages();
+  document.getElementById("pagesNote").textContent =
+    `${DATA.pageScaling.includedPages} sider inkludert i alle tiers. ${extra > 0 ? extra + " ekstra sider valgt." : "Ingen ekstra sider."}`;
+
+  document.getElementById("customBanner").style.display = state.customMode ? "block" : "none";
+  document.getElementById("packageBanner").style.display = state.customMode ? "none" : "block";
+
+  const body = document.getElementById("breakdownBody");
+  body.innerHTML = "";
+  DATA.alwaysOn.forEach(item => body.appendChild(serviceRow(item, { locked: true })));
+  allPaidRecurringServices().forEach(item => body.appendChild(serviceRow(item)));
+
+  const monthly = quotedMonthly();
+  const rawCustom = customRawMonthly(state.selected);
+  if (state.customMode && monthly > rawCustom) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>Minimum pris (dekker webdesign uansett funksjonsvalg)</td>
+      <td>${fmt(DATA.minMonthly)}</td>
+      <td>-</td>
+      <td class="scaled">+${fmt(monthly - rawCustom)}</td>
+      <td class="included">Floor applied</td>`;
+    body.appendChild(row);
+  }
+
+  body.querySelectorAll("input[data-svc]").forEach(input => {
+    input.addEventListener("change", e => {
+      const id = e.target.getAttribute("data-svc");
+      if (e.target.checked) state.selected.add(id);
+      else state.selected.delete(id);
+      render();
+    });
+  });
+
+  const setup = setupCost();
+  const capped = cappedOneTimeCharge();
+  const tier = getTier(state.tierId);
+  const totalLabel = document.getElementById("totalLabel");
+  const totalPrice = document.getElementById("totalPrice");
+  const subnote = document.getElementById("oneTimeSubnote");
+
+  if (state.oneTime) {
+    const recurringOneTime = monthly * DATA.oneTimeMultiplier;
+    const grandTotal = recurringOneTime + setup + capped;
+    totalLabel.textContent = `One-time payment (${tier.label}, ${state.pages} sider)`;
+    totalPrice.textContent = fmt(grandTotal);
+    subnote.style.display = "block";
+    const parts = [`${fmt(monthly)}/mnd × ${DATA.oneTimeMultiplier}`];
+    if (state.customMode && rawCustom < DATA.minMonthly) {
+      parts[0] = `Minimum ${fmt(minOneTime())} (999 kr/mnd × ${DATA.oneTimeMultiplier})`;
+    }
+    if (capped > 0) parts.push(`${fmt(capped)} ubegrenset (6 mnd, ikke ×9)`);
+    if (setup > 0) parts.push(`${fmt(setup)} engangs oppsett`);
+    subnote.textContent = "= " + parts.join(" + ");
+  } else {
+    totalLabel.textContent = `Monthly total (${tier.label}, ${state.pages} sider)`;
+    totalPrice.textContent = fmt(monthly) + " / mnd";
+    const notes = [];
+    if (!state.customMode) notes.push(`Pakkepris ${fmt(DATA.packagePrices[state.tierId])} + sideskalering og eventuelle tillegg`);
+    if (state.customMode && rawCustom < DATA.minMonthly) notes.push(`Minimum ${fmt(DATA.minMonthly)}/mnd applies (covers webdesign even if extras are cheaper)`);
+    if (setup > 0) notes.push(`+ ${fmt(setup)} engangskostnad for oppsett (kommer i tillegg, ikke inkludert i månedlig pris)`);
+    subnote.style.display = notes.length ? "block" : "none";
+    subnote.textContent = notes.join(" · ");
+  }
+
+  const refBody = document.getElementById("referenceBody");
+  refBody.innerHTML = "";
+  function perPageStr(item) {
+    return item.scalesWithPages ? "+" + fmt(item.price * DATA.pageScaling.ratePercent) : "-";
+  }
+  DATA.alwaysOn.forEach(a => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${a.name}</td><td>0 kr</td><td>-</td><td>All plans, always included (free)</td>`;
+    refBody.appendChild(row);
+  });
+  DATA.defaultOn.forEach(a => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${a.name}</td><td>0 kr</td><td>-</td><td>On by default (free). Named package price unchanged if turned off</td>`;
+    refBody.appendChild(row);
+  });
+  DATA.base.forEach(b => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${b.name}</td><td>${fmt(b.price)}</td><td>${perPageStr(b)}</td><td>Inkl. i named packages. Skreddersydd uses this unit price</td>`;
+    refBody.appendChild(row);
+  });
+  DATA.addOns.forEach(a => {
+    const inTiers = NAMED_TIERS.filter(t => t.includes.includes(a.id)).map(t => t.label).join(", ");
+    const cap = a.oneTimeMonths ? ` · engangs: ${a.oneTimeMonths} mnd × ${fmt(a.price)} (ikke ×9)` : "";
+    const where = inTiers
+      ? `Inkl. i ${inTiers} package. Addon/Skreddersydd: ${fmt(a.price)}${cap}`
+      : `Not in named packages — addon/Skreddersydd only (${fmt(a.price)})${cap}`;
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${a.name}</td><td>${fmt(a.price)}</td><td>${perPageStr(a)}</td><td>${where}</td>`;
+    refBody.appendChild(row);
+  });
+  const refMl = document.createElement("tr");
+  refMl.innerHTML = `<td>${DATA.multilingual.name}</td><td>${fmt(DATA.multilingual.price)}</td><td>${perPageStr(DATA.multilingual)}</td><td>Addon on every tier (does not leave the named package)</td>`;
+  refBody.appendChild(refMl);
+  DATA.oneTimeAddOns.forEach(o => {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td>${o.name}</td><td>${fmt(o.price)} (engangsbeløp, ikke mnd)</td><td>-</td><td>Optional, any tier</td>`;
+    refBody.appendChild(row);
+  });
+}
+
+document.getElementById("oneTimeToggle").addEventListener("change", e => {
+  state.oneTime = e.target.checked;
+  render();
+});
+document.getElementById("pagesInput").addEventListener("input", e => {
+  const v = parseInt(e.target.value, 10);
+  state.pages = isNaN(v) || v < 1 ? 1 : v;
+  render();
+});
+
+applyNamedTier("starter");
+render();
+
+const NOTES_KEY = "asoldi-calc-notes";
+const NOTE_FIELDS = [
+  "noteCustomSections",
+  "noteStartDate",
+  "noteProductGoal",
+  "noteIdentity",
+  "noteAvvik"
+];
+
+function readNotes() {
+  const notes = {};
+  NOTE_FIELDS.forEach(id => { notes[id] = document.getElementById(id).value; });
+  return notes;
+}
+
+function saveNotes() {
+  try { localStorage.setItem(NOTES_KEY, JSON.stringify(readNotes())); } catch (e) { /* ignore */ }
+}
+
+function loadNotes() {
+  try {
+    const raw = localStorage.getItem(NOTES_KEY);
+    if (!raw) return;
+    const notes = JSON.parse(raw);
+    NOTE_FIELDS.forEach(id => {
+      if (notes[id] != null && document.getElementById(id)) document.getElementById(id).value = notes[id];
+    });
+  } catch (e) { /* ignore */ }
+}
+
+function selectedServiceLines() {
+  const lines = [];
+  const tier = getTier(state.tierId);
+  DATA.alwaysOn.forEach(item => lines.push(`- ${item.name} (alltid inkludert, 0 kr)`));
+  if (!state.customMode) {
+    lines.push(`- Pakke: ${tier.label} (${fmt(DATA.packagePrices[state.tierId])}/mnd ved 5 sider)`);
+  }
+  allPaidRecurringServices().forEach(item => {
+    const inPackage = isPackageService(item.id);
+    if (inPackage) {
+      const delivered = state.selected.has(item.id);
+      lines.push(`- ${item.name}: ${delivered ? "leveres i pakken" : "ikke levert (pakkepris uendret)"}`);
+      return;
+    }
+    if (!state.selected.has(item.id)) return;
+    if (item.oneTimeMonths && state.oneTime) {
+      lines.push(`- ${item.name}: ${fmt(item.price * item.oneTimeMonths)} engangs (${item.oneTimeMonths} mnd, ikke ×9)`);
+      return;
+    }
+    const p = adjustedPrice(item);
+    lines.push(`- ${item.name}: ${fmt(p.total)}${p.scale > 0 ? " (inkl. sideskalering)" : ""}`);
+  });
+  DATA.oneTimeAddOns.forEach(o => {
+    if (state.oneTimeAddOns.has(o.id)) lines.push(`- ${o.name}: ${fmt(o.price)} engangs`);
+  });
+  return lines;
+}
+
+function buildOfferText() {
+  const notes = readNotes();
+  const monthly = quotedMonthly();
+  const setup = setupCost();
+  const capped = cappedOneTimeCharge();
+  const tier = getTier(state.tierId);
+  const priceLine = state.oneTime
+    ? `Engangssum: ${fmt(monthly * DATA.oneTimeMultiplier + setup + capped)} (${fmt(monthly)}/mnd × ${DATA.oneTimeMultiplier}${capped ? ` + ${fmt(capped)} ubegrenset 6 mnd` : ""}${setup ? ` + ${fmt(setup)} oppsett` : ""})`
+    : `Månedlig: ${fmt(monthly)}/mnd${setup ? ` + ${fmt(setup)} engangs oppsett` : ""}`;
+  return [
+    "ASOLDI – TILBUD (nettside)",
+    `Dato: ${new Date().toLocaleDateString("nb-NO")}`,
+    notes.noteStartDate ? `Oppstart: ${notes.noteStartDate}` : "Oppstart: (ikke satt)",
+    "",
+    "PRIS OG OMFANG",
+    `Plan: ${tier.label}${state.customMode ? " (à la carte)" : " (fast pakke)"}`,
+    `Sider: ${state.pages}`,
+    priceLine,
+    "",
+    "TJENESTER",
+    ...selectedServiceLines(),
+    "",
+    "CUSTOM SECTIONS",
+    notes.noteCustomSections.trim() || "(ingen)",
+    "",
+    "HOVEDPRODUKT OG MÅL MED NETTSIDEN",
+    notes.noteProductGoal.trim() || "(ikke fylt inn)",
+    "",
+    "IDENTITET (farger, stil, språk)",
+    notes.noteIdentity.trim() || "(ikke fylt inn)",
+    "",
+    "VALIDERE AT DETTE BLIR SENDT",
+    "Media, logo, bedriftsinfo, lenker osv.",
+    notes.noteAvvik.trim() ? `Notater: ${notes.noteAvvik.trim()}` : "Notater: (ingen)",
+    ""
+  ].join("\n");
+}
+
+document.getElementById("notesForm").addEventListener("input", saveNotes);
+document.getElementById("notesForm").addEventListener("change", saveNotes);
+
+document.getElementById("sendOfferBtn").addEventListener("click", async () => {
+  const text = buildOfferText();
+  const status = document.getElementById("offerStatus");
+  try {
+    await navigator.clipboard.writeText(text);
+    status.textContent = "Tilbudet er kopiert. Lim det inn i e-post eller CRM.";
+  } catch (e) {
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "asoldi-tilbud.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+    status.textContent = "Kunne ikke kopiere. Tilbudet ble lastet ned som fil i stedet.";
+  }
+});
+
+loadNotes();
+</script>
+
+</body>
+</html>

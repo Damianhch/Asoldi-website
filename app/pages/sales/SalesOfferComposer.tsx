@@ -1,11 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Eye, FileText, Loader2, Paperclip, RefreshCw, Send, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, ExternalLink, Eye, FileText, Loader2, Paperclip, RefreshCw, Send, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { EmailVisualEditor } from './EmailVisualEditor';
 import {
   approveClientOfferPreview,
   fillClientOffer,
+  useClientOfferMeeting,
   getClientOffer,
   openAuthedPdf,
   previewClientOffer,
@@ -31,7 +32,18 @@ type OfferClient = {
   meetingPlace: string;
 };
 
-type MeetingInfo = { meetingId: string; title: string; when: string; hasTranscript: boolean; hasSummary: boolean } | null;
+type MeetingInfo = {
+  meetingId: string;
+  title: string;
+  when: string;
+  hasTranscript: boolean;
+  hasSummary: boolean;
+  tooThin?: boolean;
+  manual?: boolean;
+  firefliesUrl?: string;
+} | null;
+
+type MeetingMatch = { meetingId: string; title: string; when: string };
 
 type PreviewState = {
   preview: OfferPreview;
@@ -47,7 +59,7 @@ export function SalesOfferComposer() {
   const clientId = params.get('clientId') || '';
 
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState<'' | 'tier' | 'mva' | 'review-toggle' | 'fill' | 'review' | 'send' | 'contract' | 'new' | 'save' | 'preview' | 'approve'>('');
+  const [busy, setBusy] = useState<'' | 'tier' | 'mva' | 'review-toggle' | 'fill' | 'review' | 'send' | 'contract' | 'new' | 'save' | 'preview' | 'approve' | 'meeting'>('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [offer, setOffer] = useState<SalesOffer | null>(null);
@@ -56,6 +68,8 @@ export function SalesOfferComposer() {
   const [tiers, setTiers] = useState<OfferTier[]>([]);
   const [mergeFields, setMergeFields] = useState<MergeField[]>([]);
   const [meeting, setMeeting] = useState<MeetingInfo>(null);
+  const [meetingQuery, setMeetingQuery] = useState('');
+  const [meetingMatches, setMeetingMatches] = useState<MeetingMatch[]>([]);
   const [sender, setSender] = useState<SalesSender | null>(null);
   const [deepseek, setDeepseek] = useState(false);
   const [canSendEmail, setCanSendEmail] = useState(true);
@@ -231,6 +245,33 @@ export function SalesOfferComposer() {
     }
   }
 
+  async function handlePickMeeting(payload: { title?: string; meetingId?: string; clear?: boolean }) {
+    setBusy('meeting');
+    setError('');
+    setNotice('');
+    try {
+      const data = await useClientOfferMeeting(clientId, payload) as {
+        offer?: SalesOffer;
+        meeting?: MeetingInfo;
+        matches?: MeetingMatch[];
+      };
+      if (Array.isArray(data.matches) && data.matches.length > 1) {
+        setMeetingMatches(data.matches);
+        setNotice('Flere møter matcher. Velg det riktige.');
+        return;
+      }
+      setMeetingMatches([]);
+      setMeetingQuery('');
+      if (data.meeting) setMeeting(data.meeting);
+      if (data.offer) applyOffer(data.offer);
+      setNotice(payload.clear ? 'Bruker det bookede salgsmøtet igjen.' : 'Møtet er valgt som grunnlag for tilbudet.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunne ikke hente møtet');
+    } finally {
+      setBusy('');
+    }
+  }
+
   async function handleFill() {
     setBusy('fill');
     setError('');
@@ -343,6 +384,7 @@ export function SalesOfferComposer() {
     if (!deepseek) return 'AI-utfylling er ikke aktivert på serveren enda (DeepSeek-nøkkel mangler). Du kan fylle ut feltene manuelt i editoren.';
     if (!meeting) return 'Ingen Fireflies-møte er koblet til kunden enda.';
     if (!meeting.hasTranscript && !meeting.hasSummary) return 'Møtet mangler transkript/sammendrag.';
+    if (meeting.tooThin) return 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.';
     return '';
   }, [deepseek, meeting]);
 
@@ -483,8 +525,30 @@ export function SalesOfferComposer() {
                       Fyll ut med kundedetaljer
                     </button>
                     {fillDisabledReason && <span className="text-xs text-gray-500 max-w-[360px]">{fillDisabledReason}</span>}
-                    {meeting && !fillDisabledReason && (
-                      <span className="text-xs text-gray-500">Møte: {meeting.title}{meeting.when ? ` · ${meeting.when}` : ''}</span>
+                    {meeting && (
+                      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                        <span>Møte: {meeting.title || 'Uten tittel'}{meeting.when ? ` · ${meeting.when}` : ''}{meeting.manual ? ' · valgt manuelt' : ''}</span>
+                        <a
+                          href={meeting.firefliesUrl || 'https://app.fireflies.ai/'}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[#FF5B00] hover:underline"
+                        >
+                          <ExternalLink size={12} />
+                          Åpne i Fireflies
+                        </a>
+                      </span>
+                    )}
+                    {!meeting && (
+                      <a
+                        href="https://app.fireflies.ai/"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="inline-flex items-center gap-1 text-xs text-[#FF5B00] hover:underline"
+                      >
+                        <ExternalLink size={12} />
+                        Åpne i Fireflies
+                      </a>
                     )}
                     <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
                       <label
@@ -513,6 +577,54 @@ export function SalesOfferComposer() {
                       </label>
                     </div>
                   </div>
+
+                  {!locked && (
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="text-xs text-gray-400 flex-1 min-w-[220px]">
+                        Møtenavn fra Fireflies
+                        <input
+                          value={meetingQuery}
+                          onChange={(event) => setMeetingQuery(event.target.value)}
+                          placeholder="Lim inn møtenavnet"
+                          className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm"
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        disabled={busy === 'meeting' || meetingQuery.trim().length < 3}
+                        onClick={() => void handlePickMeeting({ title: meetingQuery.trim() })}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15 disabled:opacity-50"
+                      >
+                        {busy === 'meeting' ? <Loader2 size={14} className="animate-spin" /> : null}
+                        Hent møte
+                      </button>
+                      {meeting?.manual && (
+                        <button
+                          type="button"
+                          disabled={busy === 'meeting'}
+                          onClick={() => void handlePickMeeting({ clear: true })}
+                          className="px-3 py-2 rounded-lg text-xs text-gray-400 hover:text-white"
+                        >
+                          Bruk booket møte
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {meetingMatches.length > 1 && (
+                    <div className="flex flex-wrap gap-2">
+                      {meetingMatches.map((match) => (
+                        <button
+                          key={match.meetingId}
+                          type="button"
+                          disabled={busy === 'meeting'}
+                          onClick={() => void handlePickMeeting({ meetingId: match.meetingId })}
+                          className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-white hover:bg-white/15"
+                        >
+                          {match.title || 'Uten tittel'}{match.when ? ` · ${match.when}` : ''}
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
                   {placeholders.length > 0 && status !== 'sent' && (
                     <div className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">

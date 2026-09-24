@@ -103,6 +103,10 @@ export function startNewClientOffer(clientId: string) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/new`, { method: 'POST', body: '{}' });
 }
 
+export function useClientOfferMeeting(clientId: string, payload: { title?: string; meetingId?: string; clear?: boolean }) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/use-meeting`, { method: 'POST', body: JSON.stringify(payload) });
+}
+
 export function fillClientOffer(clientId: string, payload: Record<string, unknown>) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/fill`, { method: 'POST', body: JSON.stringify(payload) });
 }

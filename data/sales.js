@@ -225,6 +225,9 @@ function normalizeCalendar(value = {}) {
     accountKey: sanitizeText(input.accountKey),
     syncedAt: sanitizeText(input.syncedAt),
     guestInvitedAt: sanitizeText(input.guestInvitedAt),
+    inviteSequence: Number.isFinite(Number(input.inviteSequence)) && Number(input.inviteSequence) > 0
+      ? Math.trunc(Number(input.inviteSequence))
+      : 0,
   };
 }
 
@@ -347,6 +350,7 @@ function normalizeMeetings(list) {
       hasTranscript: Boolean(raw.hasTranscript),
       linkedAt: sanitizeText(raw.linkedAt) || nowIso(),
       linkedBy: sanitizeText(raw.linkedBy) || 'auto',
+      forSalesMeeting: Boolean(raw.forSalesMeeting),
     });
   }
   return out
@@ -806,6 +810,7 @@ export function clearSalesMeetingScheduling(id) {
       accountKey: '',
       syncedAt: '',
       guestInvitedAt: '',
+      inviteSequence: 0,
     },
   });
 }

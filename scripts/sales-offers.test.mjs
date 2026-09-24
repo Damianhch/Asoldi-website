@@ -74,6 +74,54 @@ test('offer email: attribute reordering from the visual editor does not break sl
   assert.doesNotMatch(replaced, /<b>x<\/b>/);
 });
 
+test('offer email: meeting copy fills open slots and leaves text the rep already wrote', () => {
+  const html = offerEmail.buildOfferEmail({ client: CLIENT, products: [], mergeTags: true }).html;
+  assert.equal(offerEmail.offerSlotIsOpen(html, 'need'), true);
+  assert.equal(offerEmail.offerSlotIsOpen(html, 'project'), true);
+  const filled = offerEmail.fillOfferSlots(html, {
+    need: 'ny nettside for kafeen',
+    project: ['Vi lager en ny side for meny og booking.'],
+    terms: 'Dere sender logo og bilder.',
+    benefits: 'Gjestene finner menyen før de kommer.',
+  }, { onlyOpen: true });
+  assert.match(filled, /data-offer-slot="need"[^>]*>ny nettside for kafeen</);
+  assert.match(filled, /data-offer-slot="project"[^>]*>[\s\S]*meny og booking/);
+  assert.match(filled, /Kundebetingelser:<\/strong> Dere sender logo og bilder\./);
+  assert.equal(offerEmail.offerSlotIsOpen(filled, 'project'), false);
+  const again = offerEmail.fillOfferSlots(filled, {
+    project: ['Dette skal ikke overskrive.'],
+    terms: 'Heller ikke dette.',
+  }, { onlyOpen: true });
+  assert.match(again, /meny og booking/);
+  assert.doesNotMatch(again, /Dette skal ikke overskrive/);
+});
+
+test('offer AI skips a noise transcript under 10 lines and keeps a real conversation', () => {
+  const noise = Array.from({ length: 4 }, (_, i) => `Ukjent: lyd ${i}`).join('\n');
+  assert.equal(offerAi.meetingContextIsTooThin({ transcript: noise, summary: 'Kort støy.' }), true);
+  assert.equal(offerAi.meetingContextIsTooThin({ transcript: '', summary: 'Ingen snakket.' }), true);
+  const talk = Array.from({ length: 12 }, (_, i) => `Kari: setning nummer ${i} om nettsiden.`).join('\n');
+  assert.equal(offerAi.meetingContextIsTooThin({ transcript: talk }), false);
+});
+
+test('pasted Fireflies title finds the stored meeting', async () => {
+  const hooks = await import('../lib/fireflies-webhook.js');
+  const rows = [
+    { meetingId: 'aaa', title: 'Asoldi x Byneset Bydelskafé' },
+    { meetingId: 'bbb', title: 'Internt standup' },
+  ];
+  const hit = hooks.rankMeetingsByTitle(rows, 'Byneset Bydelskafé');
+  assert.equal(hit[0].meetingId, 'aaa');
+  assert.equal(hooks.rankMeetingsByTitle(rows, 'ab').length, 0);
+});
+
+test('fireflies matcher: only the booked sales meeting counts, not a later calendar reminder', () => {
+  const client = { ...CLIENT, agreedTime: true, meetingAt: '2026-09-18T10:00:00.000Z' };
+  assert.equal(matcher.recordingMatchesSalesMeeting(client, { startedAt: '2026-09-18T10:12:00.000Z' }), true);
+  assert.equal(matcher.recordingMatchesSalesMeeting(client, { startedAt: '2026-09-25T10:00:00.000Z' }), false);
+  assert.equal(matcher.recordingMatchesSalesMeeting({ ...client, agreedTime: false }, { startedAt: '2026-09-18T10:12:00.000Z' }), false);
+});
+
 test('offer readiness: contract fields must be on the client card', () => {
   assert.deepEqual(readiness.offerMissingFields(CLIENT), []);
   const missing = readiness.offerMissingFields({ ...CLIENT, orgNumber: '123', contactEmail: 'nope' });

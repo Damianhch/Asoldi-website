@@ -27,6 +27,30 @@ test('calendar invite organizer matches the branded From address', () => {
   assert.match(invite.content, /ATTENDEE;.*mailto:daracha777@gmail.com/);
   assert.match(invite.content, /LOCATION:https:\/\/meet\.google\.com\/aaa-bbbb-ccc/);
   assert.match(invite.content, /PARTSTAT=NEEDS-ACTION/);
+  assert.match(invite.content, /SEQUENCE:0/);
+});
+
+test('a resent confirmation keeps the same Meet link and bumps the invite sequence', () => {
+  const invite = buildSalesCalendarInvite(getSalesEmailPreviewClient(), {
+    meetLink: 'https://meet.google.com/aaa-bbbb-ccc',
+    htmlLink: 'https://calendar.google.com/event?eid=test',
+    eventId: 'evt-1',
+    inviteSequence: 2,
+  });
+  assert.match(invite.content, /SEQUENCE:2/);
+  assert.match(invite.content, /X-GOOGLE-CONFERENCE:https:\/\/meet\.google\.com\/aaa-bbbb-ccc/);
+});
+
+test('in-person invite ignores a leftover Meet link', () => {
+  const client = getSalesEmailPreviewClient({ meetingMode: 'in-person' });
+  const invite = buildSalesCalendarInvite(client, {
+    meetLink: 'https://meet.google.com/aaa-bbbb-ccc',
+    eventId: 'evt-irl',
+    inviteSequence: 1,
+  });
+  assert.equal(invite.content.includes('meet.google.com'), false);
+  assert.equal(invite.content.includes('X-GOOGLE-CONFERENCE'), false);
+  assert.match(invite.content, /SEQUENCE:1/);
 });
 
 test('online ICS is still built when the Meet link is missing', () => {

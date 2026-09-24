@@ -257,6 +257,7 @@ export type SalesCalendarMeta = {
   accountKey: string;
   syncedAt: string;
   guestInvitedAt?: string;
+  inviteSequence?: number;
 };
 
 export type SalesWebsiteImportMeta = {
@@ -394,6 +395,7 @@ export type SalesOffer = {
   products: OfferProduct[];
   contract: { summary: OfferContractSummary | null; generatedAt: string; pdfPath: string };
   meetingId: string;
+  meetingSource?: '' | 'manual';
   adminNote: string;
   history: { at: string; by: string; action: string; note: string }[];
   reviewRequestedAt: string;

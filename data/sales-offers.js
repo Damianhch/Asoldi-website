@@ -150,6 +150,7 @@ export function normalizeSalesOffer(raw = {}) {
       pdfPath: sanitizeText(contract.pdfPath),
     },
     meetingId: sanitizeText(raw.meetingId),
+    meetingSource: sanitizeText(raw.meetingSource) === 'manual' ? 'manual' : '',
     adminNote: sanitizeText(raw.adminNote).slice(0, 2000),
     history: normalizeHistory(raw.history),
     reviewRequestedAt: sanitizeText(raw.reviewRequestedAt),

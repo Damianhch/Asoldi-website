@@ -212,6 +212,14 @@ function extractOrgNumberFromProffUrl(value = '') {
   return queryOrg.length === 9 ? queryOrg : '';
 }
 
+function salesMeetLink(client: { meetingMode?: string; calendar?: { meetLink?: string } | null }) {
+  if (client?.meetingMode !== 'online') return '';
+  const link = String(client?.calendar?.meetLink || '').trim();
+  if (!/^https:\/\/meet\.google\.com\/[a-z0-9]{3}-[a-z0-9]{4}-[a-z0-9]{3}/i.test(link)
+    && !/^https:\/\/meet\.google\.com\/[a-z0-9-]{10,}/i.test(link)) return '';
+  return link;
+}
+
 function durationForMode(_mode: 'online' | 'in-person') {
   return 30;
 }
@@ -2214,10 +2222,10 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       )}
                     </div>
                   )}
-                  {client.meetingMode === 'online' && client.calendar?.meetLink && (
+                  {salesMeetLink(client) && (
                     <button
                       type="button"
-                      onClick={() => window.open(client.calendar.meetLink, '_blank')}
+                      onClick={() => window.open(salesMeetLink(client), '_blank')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
                     >
                       <ExternalLink size={13} />
@@ -2406,7 +2414,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           {!clientIsSsu && <li>Public preview: {publicPreviewUrl || '—'}</li>}
                           <li>Calendar event: {client.calendar?.eventId || '—'}</li>
                           <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
-                          <li>Meet link: {client.calendar?.meetLink || '—'}</li>
+                          <li>Meet link: {salesMeetLink(client) || '—'}</li>
                           <li>
                             Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}
                             <button

@@ -28,6 +28,7 @@ type Props = {
   setWebsiteMakerBaseUrl: (value: string) => void;
   authHeaders: Record<string, string>;
   onReload: () => Promise<void> | void;
+  onClientUpdated?: (client: Record<string, unknown> | null | undefined) => void;
   onError: (message: string) => void;
   onNotice?: (message: string) => void;
   allowCreate?: boolean;
@@ -62,6 +63,7 @@ export function MakerRunTools({
   setWebsiteMakerBaseUrl,
   authHeaders,
   onReload,
+  onClientUpdated,
   onError,
   onNotice,
   allowCreate = true,
@@ -126,7 +128,8 @@ export function MakerRunTools({
       }
       const resolvedBase = normalizeHttpBaseUrl(String(data?.websiteMakerBaseUrl || '')) || makerBase;
       if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
-      await onReload();
+      if (data?.client && onClientUpdated) onClientUpdated(data.client as Record<string, unknown>);
+      else await onReload();
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed creating website run');
     } finally {
@@ -139,36 +142,27 @@ export function MakerRunTools({
       onError('No Website Maker run is linked to this client yet.');
       return;
     }
-    setOpening(true);
     onError('');
     const fallbackUrl = makerDashboardUrl || buildMakerRunUrl(websiteMakerBaseUrl, makerRunId, 'dashboard');
+    if (!fallbackUrl) {
+      onError('Could not resolve Website Maker URL for this client.');
+      return;
+    }
+    // Open first. Refreshing the handoff asks Maker for the full run, and that
+    // waits behind whatever step is already running.
+    window.open(fallbackUrl, '_blank');
+    setOpening(true);
     try {
-      const makerBase = healStaleLocalMakerBase(websiteMakerBaseUrl) || normalizeHttpBaseUrl(websiteMakerBaseUrl);
-      if (makerBase) {
-        await fetch(`${makerBase.replace(/\/+$/, '')}/api/runs/${encodeURIComponent(makerRunId)}`, {
-          cache: 'no-store',
-        }).catch(() => null);
-      }
       const data = await makerRequest(`/admin/sales/${salesClientId}/refresh-maker-handoff`, {
         method: 'POST',
         body: JSON.stringify({ websiteMakerBaseUrl, runId: makerRunId }),
       }, authHeaders);
       const resolvedBase = normalizeHttpBaseUrl(String(data?.websiteMakerBaseUrl || ''));
       if (resolvedBase) setWebsiteMakerBaseUrl(resolvedBase);
-      const refreshedUrl = resolveOpenInMakerUrl({
-        baseUrl: resolvedBase || websiteMakerBaseUrl,
-        runId: makerRunId,
-        storedDashboardUrl: normalizeMakerDashboardDraftUrl(String(data?.dashboardUrl || data?.client?.makerRun?.dashboardUrl || '').trim()),
-        intakeStatus: String(data?.intakeStatus || data?.client?.makerRun?.intakeStatus || ''),
-        latestReadyStep: String(data?.client?.makerRun?.latestReadyStep || client.makerRun?.latestReadyStep || ''),
-      });
-      const target = refreshedUrl || fallbackUrl;
-      if (!target) throw new Error('Could not resolve Website Maker URL for this client.');
-      window.open(target, '_blank');
-      await onReload();
+      if (data?.client && onClientUpdated) onClientUpdated(data.client as Record<string, unknown>);
+      else await onReload();
     } catch (err) {
-      if (fallbackUrl) window.open(fallbackUrl, '_blank');
-      onError(err instanceof Error ? err.message : 'Failed opening Website Maker');
+      onError(err instanceof Error ? err.message : 'Opened Maker, but the stored link could not be refreshed.');
     } finally {
       setOpening(false);
     }
@@ -183,12 +177,13 @@ export function MakerRunTools({
     setLinking(true);
     onError('');
     try {
-      await makerRequest(`/admin/sales/${salesClientId}/link-maker-run`, {
+      const data = await makerRequest(`/admin/sales/${salesClientId}/link-maker-run`, {
         method: 'POST',
         body: JSON.stringify({ runId, websiteMakerBaseUrl }),
       }, authHeaders);
       setRunIdDraft('');
-      await onReload();
+      if (data?.client && onClientUpdated) onClientUpdated(data.client as Record<string, unknown>);
+      else await onReload();
     } catch (err) {
       onError(err instanceof Error ? err.message : 'Failed linking Website Maker run');
     } finally {
