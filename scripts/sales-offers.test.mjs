@@ -68,7 +68,8 @@ test('offer email: tier block shows package, "opp til N sider", ex/incl mva per 
 test('offer email: attribute reordering from the visual editor does not break slot replacement', () => {
   const html = '<p style="x" data-offer-slot="terms">old</p><div style="a" id="offer-products"><b>x</b><div style="b" id="offer-products-end"></div></div>';
   const filled = offerEmail.fillOfferSlots(html, { terms: 'Vi trenger logo og bilder.' });
-  assert.match(filled, /Kundebetingelser:<\/strong> Vi trenger logo og bilder\./);
+  assert.match(filled, /Kundebetingelser: Vi trenger logo og bilder\./);
+  assert.equal(filled.includes('<strong>Kundebetingelser'), false);
   const replaced = offerEmail.replaceOfferProducts(filled, offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[0].id));
   assert.match(replaced, /Opp til 5 sider/);
   assert.doesNotMatch(replaced, /<b>x<\/b>/);
@@ -86,7 +87,8 @@ test('offer email: meeting copy fills open slots and leaves text the rep already
   }, { onlyOpen: true });
   assert.match(filled, /data-offer-slot="need"[^>]*>ny nettside for kafeen</);
   assert.match(filled, /data-offer-slot="project"[^>]*>[\s\S]*meny og booking/);
-  assert.match(filled, /Kundebetingelser:<\/strong> Dere sender logo og bilder\./);
+  assert.match(filled, /Kundebetingelser: Dere sender logo og bilder\./);
+  assert.equal(filled.includes('<strong>Kundebetingelser'), false);
   assert.equal(offerEmail.offerSlotIsOpen(filled, 'project'), false);
   const again = offerEmail.fillOfferSlots(filled, {
     project: ['Dette skal ikke overskrive.'],
@@ -129,6 +131,33 @@ test('fireflies matcher: only the booked sales meeting counts, not a later calen
   assert.equal(matcher.recordingMatchesSalesMeeting(client, { startedAt: '2026-09-18T10:12:00.000Z' }), true);
   assert.equal(matcher.recordingMatchesSalesMeeting(client, { startedAt: '2026-09-25T10:00:00.000Z' }), false);
   assert.equal(matcher.recordingMatchesSalesMeeting({ ...client, agreedTime: false }, { startedAt: '2026-09-18T10:12:00.000Z' }), false);
+});
+
+test('offer draft shows the client and the editing rep instead of identity merge tags', async () => {
+  const templates = await import('../lib/email-templates-store.js');
+  const email = templates.buildOfferEmailForClient(CLIENT, {}, {
+    sender: { name: 'Alexander', fromEmail: 'alexander@asoldi.com', phone: '+47 923 31 098' },
+  });
+  const html = offerEmail.resolveOfferIdentityTags(email.html, {
+    firstName: 'Kari',
+    fullName: 'Kari Nordmann',
+    businessName: 'Byneset Bydelskafé AS',
+    signerName: 'Alexander',
+    signerEmail: 'alexander@asoldi.com',
+    signerPhone: '+47 923 31 098',
+  });
+  const subject = offerEmail.resolveOfferIdentityTags(email.subject, {
+    businessName: 'Byneset Bydelskafé AS',
+  }, { escape: false });
+  assert.match(html, /Hei Kari,/);
+  assert.match(html, /Alexander fra Asoldi/);
+  assert.match(html, /alexander@asoldi.com/);
+  assert.match(html, /\+47 923 31 098/);
+  assert.match(html, /\{\{need\}\}/);
+  assert.equal(subject, 'Tilbud til Byneset Bydelskafé AS fra Asoldi');
+  const old = offerEmail.refreshOfferShell('<p><strong>Kundebetingelser:</strong> Dere sender logo.</p>');
+  assert.equal(old.includes('<strong>Kundebetingelser'), false);
+  assert.match(old, /Kundebetingelser: Dere sender logo/);
 });
 
 test('offer readiness: contract fields must be on the client card', () => {
@@ -213,6 +242,12 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   });
   assert.equal(filled.need, 'ny nettside for kafeen');
   assert.ok(Array.isArray(filled.project) && filled.project.length === 1);
+  const fillCall = seen[0];
+  assert.match(fillCall.system, /bare én seksjon/i);
+  assert.match(fillCall.system, /ikke gjenta/i);
+  assert.doesNotMatch(fillCall.user, /SEO optimization/i);
+  assert.match(fillCall.user, /opp til 7 sider/i);
+  assert.doesNotMatch(fillCall.system, /enkelt CMS/i);
 
   const products = offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[1].id);
   const summary = await offerAi.reflectContractFromEmail({ emailHtml: '<p>Tilbud</p>', products, deps: { chat } });

@@ -62,6 +62,7 @@ import {
   normalizeSalesReminderKind,
   renderSalesUnsubscribePage,
   htmlToPlainText,
+  salesEmailMergeMap,
 } from './lib/sales-email.js';
 import { confirmationSendGaps } from './lib/sales-next-actions.js';
 import { extractBookingFromLead } from './lib/sales-booking-facts.js';
@@ -87,6 +88,7 @@ import {
   offerSlotIsOpen,
   productsWithTier,
   refreshOfferShell,
+  resolveOfferIdentityTags,
   summarizeOfferProducts,
 } from './lib/offer-email.js';
 import { offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
@@ -12245,11 +12247,35 @@ function presentMeetingForOffer(meeting, offer) {
   };
 }
 
+async function offerIdentityValues(client, req) {
+  const sender = await resolveSalesSenderForAccount(req.salesUser);
+  return salesEmailMergeMap(client, client?.calendar || {}, sender);
+}
+
+function withResolvedOfferIdentity(email = {}, values = {}) {
+  return {
+    ...email,
+    subject: resolveOfferIdentityTags(email.subject || '', values, { escape: false }),
+    html: resolveOfferIdentityTags(email.html || '', values),
+  };
+}
+
 async function ensureOfferDraft(client, req) {
   const existing = salesOffers.getOfferForClient(client.id);
-  if (existing) return refreshStoredOfferShell(existing, req);
+  if (existing) {
+    const refreshed = refreshStoredOfferShell(existing, req);
+    const values = await offerIdentityValues(client, req);
+    const email = withResolvedOfferIdentity(refreshed?.email || {}, values);
+    if (email.subject === (refreshed?.email?.subject || '') && email.html === (refreshed?.email?.html || '')) {
+      return refreshed;
+    }
+    return salesOffers.updateSalesOffer(refreshed.id, { email }, { actor: offerActor(req), action: '' }) || refreshed;
+  }
   const sender = await resolveSalesSenderForAccount(req.salesUser);
-  const email = buildOfferEmailForClient(client, {}, { sender });
+  const email = withResolvedOfferIdentity(
+    buildOfferEmailForClient(client, {}, { sender }),
+    salesEmailMergeMap(client, client?.calendar || {}, sender)
+  );
   return salesOffers.createSalesOffer({
     salesClientId: client.id,
     ownerId: sanitizeText(client.ownerId) || sanitizeText(req.salesUser?.accountKey),
@@ -12454,7 +12480,10 @@ app.post('/api/admin/sales/:id/offer/new', salesAuth, async (req, res) => {
   const current = salesOffers.getOfferForClient(client.id);
   if (current && current.status !== 'sent') return res.json({ offer: presentOffer(current) });
   const sender = await resolveSalesSenderForAccount(req.salesUser);
-  const email = buildOfferEmailForClient(client, {}, { sender });
+  const email = withResolvedOfferIdentity(
+    buildOfferEmailForClient(client, {}, { sender }),
+    salesEmailMergeMap(client, client?.calendar || {}, sender)
+  );
   const created = salesOffers.createSalesOffer({
     salesClientId: client.id,
     ownerId: sanitizeText(client.ownerId) || sanitizeText(req.salesUser?.accountKey),
