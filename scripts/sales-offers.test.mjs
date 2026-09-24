@@ -249,8 +249,9 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   assert.match(fillCall.system, /Kunden vil at/i);
   assert.match(fillCall.system, /Vi kommer til å fokusere på/i);
   assert.match(fillCall.user, /Takk for samtalen om \{\{need\}\}/);
-  assert.match(fillCall.user, /eget CMS/);
-  assert.match(fillCall.system, /Ikke nevn CMS/i);
+  assert.match(fillCall.system, /Ikke lov funksjoner vi ikke ble enige om/i);
+  assert.match(fillCall.user, /hjelper bedriften å rangere/);
+  assert.doesNotMatch(offerEmail.offerLetterAlreadyWritten(), /Shopify/i);
   assert.match(fillCall.system, /allerede står/i);
   assert.doesNotMatch(fillCall.system, /Aldri start med/i);
   assert.doesNotMatch(fillCall.system, /I samtalen la dere/i);
