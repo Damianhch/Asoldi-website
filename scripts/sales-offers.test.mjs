@@ -68,8 +68,8 @@ test('offer email: tier block shows package, "opp til N sider", ex/incl mva per 
 test('offer email: attribute reordering from the visual editor does not break slot replacement', () => {
   const html = '<p style="x" data-offer-slot="terms">old</p><div style="a" id="offer-products"><b>x</b><div style="b" id="offer-products-end"></div></div>';
   const filled = offerEmail.fillOfferSlots(html, { terms: 'Vi trenger logo og bilder.' });
-  assert.match(filled, /Kundebetingelser: Vi trenger logo og bilder\./);
-  assert.equal(filled.includes('<strong>Kundebetingelser'), false);
+  assert.match(filled, /Vi trenger logo og bilder\./);
+  assert.equal(filled.includes('Kundebetingelser'), false);
   const replaced = offerEmail.replaceOfferProducts(filled, offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[0].id));
   assert.match(replaced, /Opp til 5 sider/);
   assert.doesNotMatch(replaced, /<b>x<\/b>/);
@@ -87,8 +87,8 @@ test('offer email: meeting copy fills open slots and leaves text the rep already
   }, { onlyOpen: true });
   assert.match(filled, /data-offer-slot="need"[^>]*>ny nettside for kafeen</);
   assert.match(filled, /data-offer-slot="project"[^>]*>[\s\S]*meny og booking/);
-  assert.match(filled, /Kundebetingelser: Dere sender logo og bilder\./);
-  assert.equal(filled.includes('<strong>Kundebetingelser'), false);
+  assert.match(filled, /Dere sender logo og bilder\./);
+  assert.equal(filled.includes('Kundebetingelser'), false);
   assert.equal(offerEmail.offerSlotIsOpen(filled, 'project'), false);
   const again = offerEmail.fillOfferSlots(filled, {
     project: ['Dette skal ikke overskrive.'],
@@ -155,9 +155,10 @@ test('offer draft shows the client and the editing rep instead of identity merge
   assert.match(html, /\+47 923 31 098/);
   assert.match(html, /\{\{need\}\}/);
   assert.equal(subject, 'Tilbud til Byneset Bydelskafé AS fra Asoldi');
-  const old = offerEmail.refreshOfferShell('<p><strong>Kundebetingelser:</strong> Dere sender logo.</p>');
-  assert.equal(old.includes('<strong>Kundebetingelser'), false);
-  assert.match(old, /Kundebetingelser: Dere sender logo/);
+  const old = offerEmail.refreshOfferShell('<p><strong>Kundebetingelser:</strong> Dere sender logo.</p><h2>Hva som skjer fremover</h2><p>Etterpå avtaler vi oppstart.</p><p>Vedlagt ligger kontrakten for valgt pakke. Den signeres først når dere har bestemt dere – ingenting betales før nettsiden er levert.</p>');
+  assert.equal(old.includes('Kundebetingelser'), false);
+  assert.match(old, /Dere sender logo/);
+  assert.match(old, /Hva som skjer fremover[\s\S]*Vedlagt ligger kontrakten/);
 });
 
 test('offer readiness: contract fields must be on the client card', () => {
@@ -245,9 +246,11 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   const fillCall = seen[0];
   assert.match(fillCall.system, /bare én seksjon/i);
   assert.match(fillCall.system, /ikke gjenta/i);
+  assert.match(fillCall.system, /nøyaktig 3 avsnitt/i);
   assert.doesNotMatch(fillCall.user, /SEO optimization/i);
-  assert.match(fillCall.user, /opp til 7 sider/i);
+  assert.doesNotMatch(fillCall.user, /opp til 7 sider/i);
   assert.doesNotMatch(fillCall.system, /enkelt CMS/i);
+  assert.match(fillCall.system, /uten ordene "kundebetingelser"/i);
 
   const products = offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[1].id);
   const summary = await offerAi.reflectContractFromEmail({ emailHtml: '<p>Tilbud</p>', products, deps: { chat } });
