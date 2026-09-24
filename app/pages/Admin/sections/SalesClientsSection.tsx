@@ -11,6 +11,7 @@ import {
   Filter,
   Gift,
   Loader2,
+  Mail,
   MonitorSmartphone,
   Pencil,
   Phone,
@@ -38,6 +39,7 @@ import {
   getSalesGoalKeys,
   groupSalesClientsByNextAction,
   confirmationSendGaps,
+  clientNeedsConfirmationSend,
 } from '../../../../lib/sales-next-actions.js';
 import { salesBookingFacts } from '../../../../lib/sales-booking-facts.js';
 import {
@@ -334,6 +336,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkAssignOwnerId, setBulkAssignOwnerId] = useState('');
+  const [emailDrafts, setEmailDrafts] = useState<Record<string, string>>({});
+  const [sendingMailKey, setSendingMailKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -463,6 +467,10 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const salesRepOptions = useMemo(
     () => salesOwners.filter((owner) => String(owner.accountKey || '').startsWith('sales:')),
     [salesOwners]
+  );
+  const assignedUnsentClients = useMemo(
+    () => timelineClients.filter((client) => clientNeedsConfirmationSend(client)),
+    [timelineClients]
   );
   const awaitingRepClients = useMemo(
     () => (isSalesAdmin ? timelineClients.filter((client) => !String(client.ownerId || '').startsWith('sales:')) : []),
@@ -1362,6 +1370,64 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
+  function clientEmailDraft(client: SalesClient) {
+    if (Object.prototype.hasOwnProperty.call(emailDrafts, client.id)) return emailDrafts[client.id];
+    return String(client.contactEmail || '');
+  }
+
+  function salesMailTemplate(client: SalesClient, kind: 'thank-you' | '3d' | '24h' | '1h') {
+    const irl = client.meetingMode === 'in-person';
+    if (kind === 'thank-you') return irl ? 'thank-you-in-person' : 'thank-you';
+    if (kind === '3d') return irl ? 'reminder-3d-in-person' : 'reminder-3d';
+    if (kind === '24h') return irl ? 'reminder-24h-in-person' : 'reminder-24h';
+    return irl ? 'reminder-1h-in-person' : 'reminder-1h';
+  }
+
+  function openMailComposer(client: SalesClient, kind: 'thank-you' | '3d' | '24h' | '1h' = 'thank-you') {
+    navigate(`/sales/email?clientId=${encodeURIComponent(client.id)}&template=${encodeURIComponent(salesMailTemplate(client, kind))}`);
+  }
+
+  async function sendClientMail(client: SalesClient, kind: 'thank-you' | '3d' | '24h' | '1h') {
+    const to = clientEmailDraft(client).trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      setError('Skriv inn en gyldig mottaker-e-post først. Du kan endre den her om den har byttet.');
+      return;
+    }
+    if (kind === 'thank-you' && client.reminders?.thankYouSentAt) {
+      if (!window.confirm(`${client.businessName || 'Kunden'} har allerede fått bekreftelse. Send på nytt til ${to}?`)) return;
+    }
+    const mailKey = `${client.id}:${kind}`;
+    setSendingMailKey(mailKey);
+    setError('');
+    try {
+      const data = kind === 'thank-you'
+        ? await request(`/admin/sales/${client.id}/send-welcome-email`, {
+            method: 'POST',
+            body: JSON.stringify({ to }),
+          })
+        : await request(`/admin/sales/${client.id}/send-reminder`, {
+            method: 'POST',
+            body: JSON.stringify({ to, kind }),
+          });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved) applySavedClient(saved);
+      else await loadSales({ clearMessages: false, showLoading: false });
+      setEmailDrafts((prev) => {
+        const next = { ...prev };
+        delete next[client.id];
+        return next;
+      });
+      const label = kind === 'thank-you' ? 'Bekreftelse' : kind === '3d' ? 'Påminnelse 3 dager' : kind === '1h' ? 'Påminnelse 1 time' : 'Påminnelse 24 timer';
+      setNotice(`${label} sendt til ${to}${data?.from ? ` fra ${data.from}` : ''}.`);
+      const warnings = Array.isArray(data?.warnings) ? data.warnings.filter(Boolean) : [];
+      if (warnings.length) setError(warnings.join(' | '));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not send email');
+    } finally {
+      setSendingMailKey(null);
+    }
+  }
+
   function ownerLabel(owner: SalesOwnerOption) {
     if (owner.name && owner.username) return `${owner.name} · ${owner.username}`;
     return owner.name || owner.username || owner.accountKey;
@@ -1402,11 +1468,18 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     });
   }
 
-  function formatBulkResult(data: Record<string, unknown>) {
+  function formatBulkResult(data: Record<string, unknown>, action = '') {
     const updated = Number(data.updated) || 0;
     const deleted = Number(data.deleted) || 0;
     const skipped = Number(data.skipped) || 0;
     const failed = Number(data.failed) || 0;
+    if (action === 'send-welcome') {
+      const parts = [];
+      if (updated) parts.push(`${updated} bekreftelse${updated === 1 ? '' : 'r'} sendt`);
+      if (skipped) parts.push(`${skipped} hoppet over`);
+      if (failed) parts.push(`${failed} feilet`);
+      return parts.length ? `${parts.join(', ')}.` : 'Ingen bekreftelse sendt.';
+    }
     const parts = [];
     if (updated) parts.push(`${updated} updated`);
     if (deleted) parts.push(`${deleted} deleted`);
@@ -1416,11 +1489,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   }
 
   async function runBulkAction(
-    action: 'assign' | 'delete' | 'not-sold' | 'secondary' | 'restore',
-    extra: { ownerId?: string; reason?: string } = {},
+    action: 'assign' | 'delete' | 'not-sold' | 'secondary' | 'restore' | 'send-welcome',
+    extra: { ownerId?: string; reason?: string; clientIds?: string[] } = {},
   ) {
-    if (!selectedClientIds.length || bulkBusy) return;
-    const count = selectedClientIds.length;
+    const clientIds = extra.clientIds?.length ? extra.clientIds : selectedClientIds;
+    if (!clientIds.length || bulkBusy) return;
+    const count = clientIds.length;
     const payload = { ...extra };
     if (action === 'assign') {
       if (!isSalesAdmin) return;
@@ -1431,6 +1505,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       }
       payload.ownerId = ownerId;
       if (!window.confirm(`Tildel ${count} valgte kunder til selgeren? Bekreftelse sendes fra selgeren hvis møtetid er satt.`)) return;
+    }
+    if (action === 'send-welcome') {
+      if (!window.confirm(`Send bekreftelse til ${count} kund${count === 1 ? 'e' : 'er'}? Den sendes fra selgeren som er tildelt.`)) return;
     }
     if (action === 'delete' && !window.confirm(`Permanently delete ${count} selected client${count === 1 ? '' : 's'}? This cannot be undone.`)) return;
     if (action === 'not-sold') {
@@ -1451,12 +1528,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         method: 'POST',
         body: JSON.stringify({
           action,
-          clientIds: selectedClientIds,
+          clientIds,
           ownerId: payload.ownerId || '',
           reason: payload.reason || '',
         }),
       });
-      setNotice(formatBulkResult(data as Record<string, unknown>));
+      setNotice(formatBulkResult(data as Record<string, unknown>, action));
       setSelectedClientIds([]);
       setBulkAssignOwnerId('');
       await loadSales({ clearMessages: false });
@@ -1797,6 +1874,15 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 <Undo2 size={13} />
                 Restore
               </button>
+              <button
+                type="button"
+                disabled={bulkBusy}
+                onClick={() => void runBulkAction('send-welcome')}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+              >
+                {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+                Send bekreftelse
+              </button>
             </div>
           ) : (
             <p className="text-[11px] text-gray-500">
@@ -1874,6 +1960,41 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         </div>
       ) : (
         <div className="space-y-3">
+          {assignedUnsentClients.length > 0 && (
+            <div className="rounded-xl border border-sky-400/40 bg-[#2a2a2a] p-3">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <div className="text-sm font-semibold text-white">Send bekreftelse</div>
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    {assignedUnsentClients.length} tildelte kunder har ikke fått bekreftelse. Den sendes fra selgerens e-post, også om de ble tildelt før auto-utsending.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={bulkBusy}
+                    onClick={() => {
+                      setSelectedClientIds(assignedUnsentClients.map((client) => client.id));
+                    }}
+                    className="px-2 py-1 rounded-md bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                  >
+                    Huk av alle som mangler
+                  </button>
+                  <button
+                    type="button"
+                    disabled={bulkBusy}
+                    onClick={() => void runBulkAction('send-welcome', {
+                      clientIds: assignedUnsentClients.map((client) => client.id),
+                    })}
+                    className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
+                  >
+                    {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+                    Send til alle som mangler
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
           {isSalesAdmin && (
             <div className="rounded-xl border border-[#FF5B00]/40 bg-[#2a2a2a] p-3">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1970,6 +2091,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             const canMarkSold = Boolean(client.progression?.contractSigned);
             const clientSelected = selectedClientIds.includes(client.id);
             const confirmationGaps = client.reminders?.thankYouSentAt ? [] : confirmationSendGaps(client);
+            const needsConfirmation = clientNeedsConfirmationSend(client);
             const booking = salesBookingFacts(client);
             const bookingRows = [
               ['Booket av', booking.booker],
@@ -2007,6 +2129,10 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-red-500/15 border border-red-500/40 text-red-200 truncate" title={`Mangler ${confirmationGaps.join(', ')}`}>
                           Bekreftelse stoppet
                         </span>
+                      ) : needsConfirmation ? (
+                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-amber-500/15 border border-amber-500/40 text-amber-200 truncate">
+                          Bekreftelse ikke sendt
+                        </span>
                       ) : nextAction?.name ? (
                         <span className="shrink-0 max-w-[40%] px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-200 truncate">
                           {nextAction.name}
@@ -2034,6 +2160,64 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         Bekreftelse sendes ikke. Mangler {confirmationGaps.join(', ')}.
                       </div>
                     )}
+                    {needsConfirmation && confirmationGaps.length === 0 && (
+                      <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-amber-100">
+                        Selger er tildelt, men bekreftelsen ble ikke sendt automatisk. Send den i e-postfeltet under.
+                      </div>
+                    )}
+                    <div
+                      className="mt-3 rounded-xl border border-[#FF5B00]/50 bg-black/30 p-3 space-y-2"
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-semibold text-white">Send e-post når du vil</div>
+                        <span className="text-[10px] text-gray-500">Endre mottaker om e-posten har byttet</span>
+                      </div>
+                      <label className="block text-[11px] text-gray-400">
+                        Mottaker
+                        <input
+                          type="email"
+                          value={clientEmailDraft(client)}
+                          onChange={(event) => setEmailDrafts((prev) => ({ ...prev, [client.id]: event.target.value }))}
+                          placeholder="kunde@epost.no"
+                          className="mt-1 w-full rounded-md bg-black/40 border border-white/15 px-2 py-1.5 text-sm text-white"
+                        />
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {([
+                          ['thank-you', client.reminders?.thankYouSentAt ? 'Bekreftelse på nytt' : 'Bekreftelse'],
+                          ['3d', '3 dager'],
+                          ['24h', '24 timer'],
+                          ['1h', '1 time'],
+                        ] as const).map(([kind, label]) => {
+                          const busy = sendingMailKey === `${client.id}:${kind}`;
+                          return (
+                            <button
+                              key={kind}
+                              type="button"
+                              onClick={() => void sendClientMail(client, kind)}
+                              disabled={Boolean(sendingMailKey)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[11px] disabled:opacity-50 ${
+                                kind === 'thank-you' && needsConfirmation
+                                  ? 'bg-[#FF5B00] text-white hover:bg-[#e55200]'
+                                  : 'bg-white/10 text-white hover:bg-white/15'
+                              }`}
+                            >
+                              {busy ? <Loader2 size={12} className="animate-spin" /> : <Mail size={12} />}
+                              {label}
+                            </button>
+                          );
+                        })}
+                        <button
+                          type="button"
+                          onClick={() => openMailComposer(client, 'thank-you')}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-white/10 text-white text-[11px] hover:bg-white/15"
+                          title="Åpne malen, bytt mottaker og send"
+                        >
+                          Rediger først
+                        </button>
+                      </div>
+                    </div>
                     {(client.contactPerson || client.contactPhone) ? (
                       <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
                         <UserRound size={12} className="shrink-0" />
@@ -2306,7 +2490,28 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           <li>Calendar event: {client.calendar?.eventId || '—'}</li>
                           <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
                           <li>Meet link: {client.calendar?.meetLink || '—'}</li>
-                          <li>Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}</li>
+                          <li>
+                            Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}
+                            <button
+                              type="button"
+                              onClick={() => void sendClientMail(client, 'thank-you')}
+                              disabled={Boolean(sendingMailKey)}
+                              className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50"
+                            >
+                              {sendingMailKey === `${client.id}:thank-you`
+                                ? 'Sender…'
+                                : client.reminders?.thankYouSentAt
+                                  ? 'Send på nytt'
+                                  : 'Send nå'}
+                            </button>
+                          </li>
+                          <li>
+                            Reminders:
+                            <button type="button" onClick={() => void sendClientMail(client, '3d')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">3 dager</button>
+                            <button type="button" onClick={() => void sendClientMail(client, '24h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">24 timer</button>
+                            <button type="button" onClick={() => void sendClientMail(client, '1h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">1 time</button>
+                            <button type="button" onClick={() => openMailComposer(client, '24h')} className="ml-2 text-gray-400 hover:underline">Rediger</button>
+                          </li>
                           <li>3-day reminder: {client.reminders?.reminder3dSentAt ? formatWhen(client.reminders.reminder3dSentAt) : 'Pending/Skipped'}</li>
                           <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>
                           <li>1h reminder: {client.reminders?.reminder1hSentAt ? formatWhen(client.reminders.reminder1hSentAt) : 'Pending/Skipped'}</li>

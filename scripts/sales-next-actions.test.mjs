@@ -16,6 +16,8 @@ import {
   getVisibleGoalKeys,
   groupSalesClientsByNextAction,
   inferMeetingHeld,
+  clientHasAssignedSalesRep,
+  clientNeedsConfirmationSend,
   salesProgressBlockedReason,
   suggestedDueAtForPreset,
 } from '../lib/sales-next-actions.js';
@@ -349,4 +351,15 @@ test('agreed meeting time counts as a calendar contact point; a plain custom act
   });
   assert.equal(custom.error, undefined);
   assert.equal(getCalendarNextAction(client({ agreedTime: false, meetingAt: '', nextActions: custom.nextActions })), null);
+});
+
+test('already-assigned clients without thank-you still need a confirmation send', () => {
+  assert.equal(clientHasAssignedSalesRep(client({ ownerId: 'sales:abc' })), true);
+  assert.equal(clientHasAssignedSalesRep(client({ ownerId: 'admin:damian' })), false);
+  assert.equal(clientNeedsConfirmationSend(client({ ownerId: 'sales:abc' })), true);
+  assert.equal(clientNeedsConfirmationSend(client({
+    ownerId: 'sales:abc',
+    reminders: { thankYouSentAt: '2026-09-20T10:00:00.000Z' },
+  })), false);
+  assert.equal(clientNeedsConfirmationSend(client({ ownerId: 'admin:damian' })), false);
 });

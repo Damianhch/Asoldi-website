@@ -8064,6 +8064,27 @@ function isSalesRepAccountKey(accountKey = '') {
   return sanitizeText(accountKey).startsWith('sales:');
 }
 
+function thankYouSendActor(client, fallbackUser = null) {
+  if (isSalesRepAccountKey(client?.ownerId)) {
+    return {
+      actorAccountKey: client.ownerId,
+      salesUser: salesUserFromAccountKey(client.ownerId),
+    };
+  }
+  return {
+    actorAccountKey: fallbackUser?.accountKey || '',
+    salesUser: fallbackUser || null,
+  };
+}
+
+function applyRecipientEmail(client, to = '') {
+  const recipient = sanitizeText(to) || sanitizeText(client?.contactEmail);
+  if (!recipient) return { client, recipient: '' };
+  if (sanitizeText(client?.contactEmail) === recipient) return { client, recipient };
+  const updated = sales.updateSalesClient(client.id, { contactEmail: recipient });
+  return { client: updated || { ...client, contactEmail: recipient }, recipient };
+}
+
 /** Confirmation goes out only after a sales rep owns the client, and it is sent as that rep. */
 async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAssigned = false } = {}) {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return { sent: false, reason: 'manual-only', client };
@@ -8089,11 +8110,14 @@ async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAss
   });
 }
 
-async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null } = {}) {
-  const gaps = confirmationSendGaps(client);
-  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps };
-  if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
-  if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
+async function sendSalesThankYou(client, { force = false, actorAccountKey = '', salesUser = null, to = '' } = {}) {
+  const applied = applyRecipientEmail(client, to);
+  client = applied.client;
+  const recipient = applied.recipient;
+  const gaps = confirmationSendGaps({ ...client, contactEmail: recipient });
+  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps, client };
+  if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled', client };
+  if (!recipient) return { sent: false, reason: 'missing-email', client };
   if (!force && client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent' };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
 
@@ -8117,13 +8141,13 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   const hostedCount = (String(composed.html || '').match(/\/email\/sales\//g) || []).length;
   console.log(
-    `[mail] thank-you to=${client.contactEmail} from=${composed.from} subject=${composed.subject} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} invite=${syncResult.calendarInviteSent ? 'yes' : 'no'}`
+    `[mail] thank-you to=${recipient} from=${composed.from} subject=${composed.subject} hostedImages=${hostedCount} ics=${composed.icalEvent ? 'yes' : 'no'} meet=${meetLink} invite=${syncResult.calendarInviteSent ? 'yes' : 'no'}`
   );
   await emailLib.sendEmail({
-    to: client.contactEmail,
+    to: recipient,
     from: composed.from,
     replyTo: composed.replyTo,
-    bcc: salesEmailCopyBcc(client.contactEmail),
+    bcc: salesEmailCopyBcc(recipient),
     subject: composed.subject,
     text: composed.text,
     html: composed.html,
@@ -8137,16 +8161,19 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
     channel: 'email',
     meetLink,
     from: composed.from,
-    copyTo: salesEmailCopyBcc(client.contactEmail),
+    copyTo: salesEmailCopyBcc(recipient),
     warnings: syncResult.warnings || [],
   };
 }
 
-async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, actorAccountKey = '' } = {}) {
-  const gaps = confirmationSendGaps(client);
-  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps };
-  if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled' };
-  if (!client?.contactEmail) return { sent: false, reason: 'missing-email' };
+async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, actorAccountKey = '', to = '' } = {}) {
+  const applied = applyRecipientEmail(client, to);
+  client = applied.client;
+  const recipient = applied.recipient;
+  const gaps = confirmationSendGaps({ ...client, contactEmail: recipient });
+  if (gaps.length) return { sent: false, reason: 'missing-fields', gaps, client };
+  if (!client?.agreedTime || !client?.meetingAt) return { sent: false, reason: 'meeting-not-scheduled', client };
+  if (!recipient) return { sent: false, reason: 'missing-email', client };
   if (!emailLib.canSendEmail()) return { sent: false, reason: 'smtp-not-configured' };
   const reminderKind = normalizeSalesReminderKind(kind);
   const templateKey = reminderKind === '1h'
@@ -8163,10 +8190,10 @@ async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, ac
   }).message;
   const meetLink = sanitizeText(client?.calendar?.meetLink);
   await emailLib.sendEmail({
-    to: client.contactEmail,
+    to: recipient,
     from: composed.from,
     replyTo: composed.replyTo,
-    bcc: salesEmailCopyBcc(client.contactEmail),
+    bcc: salesEmailCopyBcc(recipient),
     subject: composed.subject,
     text: composed.text,
     html: composed.html,
@@ -8179,7 +8206,7 @@ async function sendSalesReminderNow(client, kind = '24h', { salesUser = null, ac
     client: updated || client,
     kind: reminderKind,
     meetLink,
-    copyTo: salesEmailCopyBcc(client.contactEmail),
+    copyTo: salesEmailCopyBcc(recipient),
   };
 }
 
@@ -8207,6 +8234,9 @@ function salesEmailFailureMessage(reason = '') {
     return 'Email sending is not configured. Set RESEND_API_KEY on the server.';
   }
   if (reason === 'already-sent') return 'Email was already sent.';
+  if (reason === 'missing-fields') {
+    return 'Fill contact name, business name, meeting date, meeting type, and a valid email first.';
+  }
   if (reason === 'missing-meet-link') {
     return 'Online meeting has no real Google Meet link yet. Connect Google Calendar on Sales, then send again.';
   }
@@ -11709,17 +11739,19 @@ app.post('/api/admin/sales/bulk', salesAuth, async (req, res) => {
         if (!sales.setSalesStatus(id, 'active', {})) throw new Error('Failed restoring client.');
         summary.updated += 1;
       } else if (action === 'send-welcome') {
+        const actor = thankYouSendActor(existing, req.salesUser);
         const sentResult = await sendSalesThankYou(existing, {
           force: true,
-          actorAccountKey: req.salesUser.accountKey,
-          salesUser: req.salesUser,
+          actorAccountKey: actor.actorAccountKey,
+          salesUser: actor.salesUser,
         });
         if (sentResult?.sent) summary.updated += 1;
         else summary.skipped += 1;
       } else if (action === 'send-reminder') {
+        const actor = thankYouSendActor(existing, req.salesUser);
         const sentResult = await sendSalesReminderNow(existing, reminderKind, {
-          salesUser: req.salesUser,
-          actorAccountKey: req.salesUser.accountKey,
+          salesUser: actor.salesUser,
+          actorAccountKey: actor.actorAccountKey,
         });
         if (sentResult?.sent) summary.updated += 1;
         else summary.skipped += 1;
@@ -12048,9 +12080,13 @@ app.post('/api/admin/sales/:id/send-composed-email', salesAuth, async (req, res)
       client = syncResult.client || client;
       calendarWarnings = Array.isArray(syncResult.warnings) ? syncResult.warnings : [];
     }
-    const to = sanitizeText(req.body?.to) || client.contactEmail;
+    const applied = applyRecipientEmail(client, sanitizeText(req.body?.to));
+    client = applied.client;
+    const to = applied.recipient || sanitizeText(req.body?.to) || client.contactEmail;
     if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
-    const sender = await resolveSalesSenderForAccount(req.salesUser);
+    const sender = await resolveSalesSenderForAccount(
+      thankYouSendActor(client, req.salesUser).salesUser || req.salesUser
+    );
     const composed = composeEmailForClient(client, templateKey, {
       html: req.body?.html,
       subject: req.body?.subject,
@@ -12788,10 +12824,12 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
     if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
     console.log(`[mail] welcome request id=${client.id} to=${client.contactEmail || ''} transport=${emailLib.resolveMailTransport()}`);
 
+    const actor = thankYouSendActor(client, req.salesUser);
     const sentResult = await sendSalesThankYou(client, {
       force: true,
-      actorAccountKey: req.salesUser.accountKey,
-      salesUser: req.salesUser,
+      actorAccountKey: actor.actorAccountKey,
+      salesUser: actor.salesUser,
+      to: sanitizeText(req.body?.to),
     });
     client = sentResult.client || client;
     if (!sentResult.sent) {
@@ -12799,6 +12837,7 @@ app.post('/api/admin/sales/:id/send-welcome-email', salesAuth, async (req, res) 
       return res.status(400).json({
         message: salesEmailFailureMessage(sentResult.reason),
         reason: sentResult.reason || '',
+        confirmationGaps: sentResult.gaps || confirmationSendGaps(client),
         client,
         warnings: sentResult.warnings || [],
       });
@@ -12829,9 +12868,11 @@ app.post('/api/admin/sales/:id/send-reminder', salesAuth, async (req, res) => {
     const requestedKind = sanitizeText(req.body?.kind || '24h');
     const reminderKind = normalizeSalesReminderKind(requestedKind);
     const syncWarnings = [];
+    const actor = thankYouSendActor(client, req.salesUser);
     const sentResult = await sendSalesReminderNow(client, reminderKind, {
-      salesUser: req.salesUser,
-      actorAccountKey: req.salesUser.accountKey,
+      salesUser: actor.salesUser,
+      actorAccountKey: actor.actorAccountKey,
+      to: sanitizeText(req.body?.to),
     });
     client = sentResult.client || client;
     if (!sentResult.sent) {
