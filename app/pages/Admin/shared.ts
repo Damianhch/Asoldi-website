@@ -174,14 +174,17 @@ export type ManageClientsView = 'clients' | 'development' | 'sales';
 
 export type SalesGoalKey = 'meetingHeld' | 'offerSent' | 'contractSigned' | 'paymentReceived';
 
-export type SalesNextActionPreset = 'meeting' | 'meetingBooked' | 'findMeetingTime' | 'sms24h' | 'call2h' | 'sendOffer' | 'checkIn' | 'custom';
+export type SalesNextActionPreset = 'meeting' | 'meetingBooked' | 'findMeetingTime' | 'sms24h' | 'sms1h' | 'call2h' | 'sendOffer' | 'checkIn' | 'upsell' | 'oppgrader' | 'oppfolging' | 'custom';
+
+export type SalesActionFormat = 'email' | 'sms' | 'ring' | 'mote';
 
 export type SalesNextAction = {
   id: string;
-  goalKey: SalesGoalKey;
+  goalKey: SalesGoalKey | 'afterSale';
   presetKey: SalesNextActionPreset;
   name: string;
   note: string;
+  format: SalesActionFormat;
   dueAt: string;
   doneAt: string;
   createdAt: string;

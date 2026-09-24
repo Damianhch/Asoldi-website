@@ -2,6 +2,9 @@ import React, { useMemo, useState } from 'react';
 import { CalendarDays, CheckCircle2, ChevronsDown, ChevronsUp, FileText, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { SalesClient, SalesGoalKey, SalesNextAction, SalesNextActionPreset } from '../shared';
 import {
+  AFTER_SALE_GOAL,
+  ACTION_FORMATS,
+  formatActionFormatLabel,
   formatGoalLabel,
   formatPresetLabel,
   getCurrentGoalKey,
@@ -12,14 +15,17 @@ import {
   getVisibleGoalKeys,
   GOAL_PRESETS,
   defaultAddToCalendar,
+  defaultFormatForPreset,
   presetNeedsMeeting,
   suggestedDueAtForPreset,
 } from '../../../../lib/sales-next-actions.js';
+import type { SalesActionFormat } from '../shared';
 
 type DraftState = {
   presetKey: SalesNextActionPreset;
   name: string;
   note: string;
+  format: SalesActionFormat;
   dueAt: string;
   addToCalendar: boolean;
 };
@@ -28,6 +34,7 @@ type EditState = {
   actionId: string;
   name: string;
   note: string;
+  format: SalesActionFormat;
   dueAt: string;
   addToCalendar: boolean;
 };
@@ -40,6 +47,8 @@ type Props = {
   onMutateAction: (body: Record<string, unknown>) => Promise<void>;
   /** Opens the offer composer (tilbud + kontrakt) for this client. Shown on the "Send tilbud" action. */
   onOpenOffer?: () => void;
+  /** Sold clients: actions only, no møte/tilbud/kontrakt checkpoints. */
+  variant?: 'active' | 'win';
 };
 
 function toDateTimeLocal(value = '') {
@@ -75,21 +84,22 @@ export function SalesGoalTimeline({
   onToggleGoal,
   onMutateAction,
   onOpenOffer,
+  variant = 'active',
 }: Props) {
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
   const [showFutureGoals, setShowFutureGoals] = useState(false);
-  const currentGoal = getCurrentGoalKey(client) as SalesGoalKey | '';
+  const isWin = variant === 'win';
+  const currentGoal = (isWin ? AFTER_SALE_GOAL : getCurrentGoalKey(client)) as SalesGoalKey | 'afterSale' | '';
   const remainingCount = getRemainingGoalCount(client);
   const visibleGoals = (showFutureGoals
     ? getSalesGoalKeys(client.product)
     : getVisibleGoalKeys(client)) as SalesGoalKey[];
   const futureGoalSet = new Set(getFutureGoalKeys(client) as SalesGoalKey[]);
   const currentActions = useMemo(
-    () => (currentGoal ? getGoalActions(client, currentGoal) : []),
+    () => (currentGoal ? getGoalActions(client, currentGoal) as SalesNextAction[] : []),
     [client, currentGoal]
   );
-  const currentAction = currentActions[0] as SalesNextAction | undefined;
   const presets = currentGoal ? (GOAL_PRESETS[currentGoal] || []) : [];
   const hasMeeting = Boolean(client.agreedTime && client.meetingAt);
 
@@ -101,6 +111,7 @@ export function SalesGoalTimeline({
       presetKey,
       name: formatPresetLabel(presetKey) === 'Custom' ? '' : formatPresetLabel(presetKey),
       note: '',
+      format: defaultFormatForPreset(presetKey) as SalesActionFormat,
       dueAt: toDateTimeLocal(suggested),
       addToCalendar: defaultAddToCalendar(presetKey, client),
     });
@@ -114,6 +125,7 @@ export function SalesGoalTimeline({
       presetKey: draft.presetKey,
       name: draft.name,
       note: draft.note,
+      format: draft.format,
       dueAt: toIsoDateTime(draft.dueAt),
       addToCalendar: draft.addToCalendar,
     });
@@ -127,14 +139,53 @@ export function SalesGoalTimeline({
       id: edit.actionId,
       name: edit.name,
       note: edit.note,
+      format: edit.format,
       dueAt: toIsoDateTime(edit.dueAt),
       addToCalendar: edit.addToCalendar,
     });
     setEdit(null);
   }
 
+  function formatControls(
+    value: { format: SalesActionFormat; addToCalendar: boolean; presetKey?: string },
+    onChange: (patch: Partial<Pick<DraftState, 'format' | 'addToCalendar'>>) => void,
+  ) {
+    const calendarLocked = value.presetKey === 'meeting';
+    return (
+      <div className="sm:col-span-2 flex items-center gap-2">
+        <select
+          aria-label="Format"
+          value={value.format}
+          onChange={(event) => onChange({ format: event.target.value as SalesActionFormat })}
+          className="min-w-0 flex-1 rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5"
+        >
+          {ACTION_FORMATS.map((format) => (
+            <option key={format} value={format}>{formatActionFormatLabel(format)}</option>
+          ))}
+        </select>
+        <span title="15 min i Google Kalender" className="shrink-0 text-gray-300">
+          <CalendarDays size={15} />
+        </span>
+        <button
+          type="button"
+          role="switch"
+          aria-label="15 min i Google Kalender"
+          aria-checked={value.addToCalendar}
+          disabled={calendarLocked}
+          onClick={() => onChange({ addToCalendar: !value.addToCalendar })}
+          className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-70 ${
+            value.addToCalendar ? 'bg-[#FF5B00]' : 'bg-white/20'
+          }`}
+        >
+          <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${value.addToCalendar ? 'ml-4' : 'ml-1'}`} />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-2" onClick={(event) => event.stopPropagation()}>
+      {!isWin && (
       <div className="flex flex-wrap items-center gap-1.5">
         {visibleGoals.map((key) => {
           const done = Boolean(client.progression?.[key]);
@@ -176,16 +227,18 @@ export function SalesGoalTimeline({
           </button>
         )}
       </div>
+      )}
 
       {currentGoal ? (
         <div className="rounded-xl border border-white/10 bg-black/20 p-2.5 space-y-2">
           <div className="text-[11px] text-gray-400">
-            Neste handling i <span className="text-gray-200">{formatGoalLabel(currentGoal)}</span>
-            {currentAction ? <span className="text-gray-500"> · ny handling erstatter den forrige</span> : null}
+            {isWin ? 'Neste handling' : (
+              <>Neste handling i <span className="text-gray-200">{formatGoalLabel(currentGoal)}</span></>
+            )}
           </div>
 
-          {currentAction ? (
-            <div className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5">
+          {currentActions.map((currentAction) => (
+            <div key={currentAction.id} className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5">
               {edit?.actionId === currentAction.id ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <label className="text-[10px] text-gray-400 uppercase tracking-wide">
@@ -215,21 +268,10 @@ export function SalesGoalTimeline({
                       className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5 resize-y"
                     />
                   </label>
-                  <label className="sm:col-span-2 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
-                    <span className="text-[11px] text-gray-200">Legg til i Google Kalender</span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={edit.addToCalendar}
-                      disabled={currentAction.presetKey === 'meeting'}
-                      onClick={() => setEdit((prev) => prev ? { ...prev, addToCalendar: !prev.addToCalendar } : prev)}
-                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-70 ${
-                        edit.addToCalendar ? 'bg-[#FF5B00]' : 'bg-white/20'
-                      }`}
-                    >
-                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${edit.addToCalendar ? 'translate-x-4.5 ml-4' : 'ml-1'}`} />
-                    </button>
-                  </label>
+                  {formatControls(
+                    { format: edit.format, addToCalendar: edit.addToCalendar, presetKey: currentAction.presetKey },
+                    (patch) => setEdit((prev) => prev ? { ...prev, ...patch } : prev),
+                  )}
                   <div className="sm:col-span-2 flex gap-2">
                     <button
                       type="button"
@@ -251,7 +293,12 @@ export function SalesGoalTimeline({
               ) : (
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs text-white truncate">{currentAction.name}</div>
+                    <div className="text-xs text-white truncate">
+                      {currentAction.name}
+                      {currentAction.format ? (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide text-gray-400">{formatActionFormatLabel(currentAction.format)}</span>
+                      ) : null}
+                    </div>
                     <div className="text-[11px] text-gray-400 truncate">{formatWhen(currentAction.dueAt)}</div>
                     {currentAction.note ? (
                       <div className="mt-0.5 text-[11px] text-gray-300 whitespace-pre-wrap break-words">{currentAction.note}</div>
@@ -279,6 +326,7 @@ export function SalesGoalTimeline({
                       actionId: currentAction.id,
                       name: currentAction.name,
                       note: currentAction.note || '',
+                      format: (currentAction.format || defaultFormatForPreset(currentAction.presetKey)) as SalesActionFormat,
                       dueAt: toDateTimeLocal(currentAction.dueAt),
                       addToCalendar: Boolean(currentAction.addToCalendar) || currentAction.presetKey === 'meeting',
                     })}
@@ -286,6 +334,15 @@ export function SalesGoalTimeline({
                     title="Endre navn eller tid"
                   >
                     <Pencil size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    disabled={actionBusy}
+                    onClick={() => void onMutateAction({ op: 'complete', id: currentAction.id })}
+                    className="shrink-0 p-1 rounded text-gray-400 hover:text-green-300"
+                    title={currentAction.presetKey === 'meeting' ? 'Møtet er hatt' : 'Fullfør handling'}
+                  >
+                    <CheckCircle2 size={12} />
                   </button>
                   {currentAction.presetKey !== 'meeting' && (
                     <button
@@ -301,7 +358,7 @@ export function SalesGoalTimeline({
                 </div>
               )}
             </div>
-          ) : null}
+          ))}
 
           {draft ? (
             <div className="rounded-lg border border-white/10 bg-black/10 p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -333,25 +390,10 @@ export function SalesGoalTimeline({
                   className="mt-1 w-full rounded-md bg-[#161616] border border-white/10 text-white text-xs px-2 py-1.5 resize-y"
                 />
               </label>
-              <label className="sm:col-span-2 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-black/20 px-2 py-1.5">
-                <span className="text-[11px] text-gray-200">
-                  {draft.presetKey === 'checkIn' && defaultAddToCalendar('checkIn', client)
-                    ? 'Legg til i Google Kalender (påminnelse etter sendt tilbud)'
-                    : 'Legg til i Google Kalender'}
-                </span>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={draft.addToCalendar}
-                  disabled={draft.presetKey === 'meeting'}
-                  onClick={() => setDraft((prev) => prev ? { ...prev, addToCalendar: !prev.addToCalendar } : prev)}
-                  className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-70 ${
-                    draft.addToCalendar ? 'bg-[#FF5B00]' : 'bg-white/20'
-                  }`}
-                >
-                  <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${draft.addToCalendar ? 'ml-4' : 'ml-1'}`} />
-                </button>
-              </label>
+              {formatControls(
+                { format: draft.format, addToCalendar: draft.addToCalendar, presetKey: draft.presetKey },
+                (patch) => setDraft((prev) => prev ? { ...prev, ...patch } : prev),
+              )}
               <div className="sm:col-span-2 flex gap-2">
                 <button
                   type="button"
@@ -381,7 +423,7 @@ export function SalesGoalTimeline({
                     type="button"
                     disabled={needsMeeting || actionBusy}
                     onClick={() => startPreset(presetKey)}
-                    title={needsMeeting ? 'Sett avtalt møtetid først' : 'Setter denne som neste handling og erstatter den forrige.'}
+                    title={needsMeeting ? 'Sett avtalt møtetid først' : 'Legg til handlingen. Møtet blir stående.'}
                     className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[11px] border border-white/10 bg-white/5 text-gray-200 hover:border-white/20 disabled:opacity-40"
                   >
                     <Plus size={11} />

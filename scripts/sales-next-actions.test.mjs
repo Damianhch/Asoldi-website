@@ -247,12 +247,11 @@ test('creating a next action replaces the previous one and ranks by the new time
     now
   );
   assert.equal(replaced.error, undefined);
-  assert.equal(replaced.nextActions.length, 1);
-  assert.equal(replaced.nextActions[0].name, 'Ring');
-  assert.equal(replaced.nextActions.some((action) => action.presetKey === 'meeting'), false);
+  assert.equal(replaced.nextActions.some((action) => action.name === 'Ring' && !action.doneAt), true);
+  assert.equal(replaced.nextActions.some((action) => action.presetKey === 'meeting' && !action.doneAt), true);
   const ranked = { ...pastMeeting, nextActions: replaced.nextActions };
-  assert.equal(getActiveNextAction(ranked).name, 'Ring');
-  assert.equal(classifyNextActionBucket(ranked, now), 'upcoming');
+  assert.equal(getActiveNextAction(ranked).presetKey, 'sms1h');
+  assert.equal(classifyNextActionBucket(ranked, now), 'pastDue');
 });
 
 test('sold website clients are wins, not action-list rows', () => {
@@ -305,9 +304,9 @@ test('finn møte tidspunkt is a meetingHeld action with optional note', () => {
     dueAt: '2026-09-22T09:00:00.000Z',
   });
   assert.equal(created.error, undefined);
-  assert.equal(created.nextActions.length, 1);
-  assert.equal(created.nextActions[0].presetKey, 'findMeetingTime');
-  assert.equal(created.nextActions[0].note, 'Vil helst mandag ettermiddag');
+  const find = created.nextActions.find((action) => action.presetKey === 'findMeetingTime');
+  assert.equal(find.note, 'Vil helst mandag ettermiddag');
+  assert.equal(created.nextActions.some((action) => action.presetKey === 'meeting' && !action.doneAt), true);
 });
 
 test('møtet booket preset defaults to add-to-calendar and marks the client as a calendar contact point', () => {
@@ -324,24 +323,30 @@ test('møtet booket preset defaults to add-to-calendar and marks the client as a
     dueAt: '2026-09-23T10:00:00.000Z',
   });
   assert.equal(created.error, undefined);
-  assert.equal(created.nextActions[0].presetKey, 'meetingBooked');
-  assert.equal(created.nextActions[0].name, 'Møtet booket');
-  assert.equal(created.nextActions[0].addToCalendar, true);
+  const booked = created.nextActions.find((action) => action.presetKey === 'meetingBooked');
+  assert.equal(booked.name, 'Møtet booket');
+  assert.equal(booked.addToCalendar, true);
 
   const withAction = client({ agreedTime: false, meetingAt: '', nextActions: created.nextActions });
   assert.equal(getCalendarNextAction(withAction)?.presetKey, 'meetingBooked');
 
   const toggledOff = applyNextActionMutation(withAction, {
     op: 'update',
-    id: created.nextActions[0].id,
+    id: booked.id,
     addToCalendar: false,
   });
   assert.equal(toggledOff.error, undefined);
   assert.equal(getCalendarNextAction(client({ agreedTime: false, meetingAt: '', nextActions: toggledOff.nextActions })), null);
 });
 
-test('agreed meeting time counts as a calendar contact point; a plain custom action does not', () => {
-  assert.equal(getCalendarNextAction(client())?.presetKey, 'meeting');
+test('agreed meeting time keeps the meeting on the calendar after the SMS reminder is done', () => {
+  assert.equal(getActiveNextAction(client())?.presetKey, 'sms1h');
+  assert.equal(getCalendarNextAction(client()), null);
+  const sms = decorateNextActions(client()).find((action) => action.presetKey === 'sms1h');
+  const done = applyNextActionMutation(client(), { op: 'complete', id: sms.id });
+  const after = client({ nextActions: done.nextActions });
+  assert.equal(getActiveNextAction(after)?.presetKey, 'meeting');
+  assert.equal(getCalendarNextAction(after)?.presetKey, 'meeting');
   const custom = applyNextActionMutation(client({ agreedTime: false, meetingAt: '' }), {
     op: 'create',
     goalKey: 'meetingHeld',
@@ -362,4 +367,60 @@ test('already-assigned clients without thank-you still need a confirmation send'
     reminders: { thankYouSentAt: '2026-09-20T10:00:00.000Z' },
   })), false);
   assert.equal(clientNeedsConfirmationSend(client({ ownerId: 'admin:damian' })), false);
+});
+
+test('every booked client gets an SMS reminder one hour before the meeting', () => {
+  const actions = decorateNextActions(client());
+  const sms = actions.find((action) => action.presetKey === 'sms1h');
+  const meeting = actions.find((action) => action.presetKey === 'meeting');
+  assert.equal(sms.name, 'Påminnelse');
+  assert.equal(sms.format, 'sms');
+  assert.equal(sms.addToCalendar, false);
+  assert.equal(sms.note, 'send sms for å sjekke om kunde fortsatt kan møtes');
+  assert.equal(Date.parse(sms.dueAt), Date.parse(MEETING_AT) - HOUR_MS);
+  assert.ok(Date.parse(sms.dueAt) < Date.parse(meeting.dueAt));
+  assert.equal(getActiveNextAction(client()).presetKey, 'sms1h');
+});
+
+test('checkmark removes one action and leaves the others', () => {
+  const row = client();
+  const sms = decorateNextActions(row).find((action) => action.presetKey === 'sms1h');
+  const done = applyNextActionMutation(row, { op: 'complete', id: sms.id });
+  assert.equal(done.nextActions.some((action) => action.presetKey === 'sms1h' && !action.doneAt), false);
+  assert.equal(done.nextActions.some((action) => action.presetKey === 'meeting' && !action.doneAt), true);
+  const again = decorateNextActions({ ...row, nextActions: done.nextActions });
+  assert.equal(again.some((action) => action.presetKey === 'sms1h' && !action.doneAt), false);
+});
+
+test('checkmark on the meeting also marks møtet hatt and opens sett tilbud', () => {
+  const row = client();
+  const meeting = decorateNextActions(row).find((action) => action.presetKey === 'meeting');
+  const done = applyNextActionMutation(row, { op: 'complete', id: meeting.id });
+  assert.equal(done.error, undefined);
+  assert.equal(done.progression.meetingHeld, true);
+  const after = { ...row, progression: done.progression, nextActions: done.nextActions };
+  assert.equal(getCurrentGoalKey(after), 'offerSent');
+  assert.equal(getActiveNextAction(after), null);
+  assert.equal(done.nextActions.some((action) => action.presetKey === 'meeting' && !action.doneAt), false);
+});
+
+test('sold clients can add upsell, upgrade, and follow-up without replacing each other', () => {
+  const sold = client({
+    progression: { meetingHeld: true, offerSent: true, contractSigned: true },
+  });
+  const due = '2026-09-25T10:00:00.000Z';
+  let current = sold;
+  for (const presetKey of ['upsell', 'oppgrader', 'oppfolging']) {
+    const created = applyNextActionMutation(current, {
+      op: 'create',
+      presetKey,
+      name: presetKey,
+      dueAt: due,
+    });
+    assert.equal(created.error, undefined);
+    current = { ...sold, nextActions: created.nextActions };
+  }
+  const live = current.nextActions.filter((action) => !action.doneAt);
+  assert.deepEqual(live.map((action) => action.presetKey).sort(), ['oppfolging', 'oppgrader', 'upsell']);
+  assert.equal(live.every((action) => action.addToCalendar && action.format === 'mote'), true);
 });

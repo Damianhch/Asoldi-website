@@ -35,6 +35,7 @@ import {
   formatGoalLabel,
   getActiveNextAction,
   getCalendarNextAction,
+  getClientNextActionMs,
   getCurrentGoalKey,
   getSalesGoalKeys,
   groupSalesClientsByNextAction,
@@ -508,7 +509,16 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const winClients = useMemo(
     () => productClients
       .filter((client) => clientIsSalesWin(client) && client.status !== 'not-sold' && clientMatchesFilters(client))
-      .sort((a, b) => new Date(b.updatedAt || 0).getTime() - new Date(a.updatedAt || 0).getTime()),
+      .sort((a, b) => {
+        const aMs = getClientNextActionMs(a);
+        const bMs = getClientNextActionMs(b);
+        if (aMs == null && bMs == null) {
+          return String(a.businessName || '').localeCompare(String(b.businessName || ''), 'nb-NO', { sensitivity: 'base' });
+        }
+        if (aMs == null) return 1;
+        if (bMs == null) return -1;
+        return aMs - bMs;
+      }),
     [productClients, normalizedClientSearchQuery, ownerFilter, goalFilter]
   );
   const activeMeetingGroups = useMemo(
@@ -1582,6 +1592,722 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const showCalendarConnect = calendarStatus?.configured !== false;
   const loggedInAs = calendarStatus?.loginUsername || 'this Sales login';
 
+  function renderSalesClientCard(client: SalesClient, isWin = false) {
+            const clientIsSsu = isSsuClient(client);
+            const publicPreviewUrl = getPublicClientPreviewUrl(client);
+            const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
+            const expanded = expandedId === client.id;
+            const meetingHeld = Boolean(client.progression?.meetingHeld);
+            const nextAction = getActiveNextAction(client);
+            // Important contact point: the next action is on the sales rep's calendar
+            // (agreed meeting, "Møtet booket", or any action with add-to-calendar on).
+            const calendarAction = getCalendarNextAction(client);
+            const websiteSold = Boolean(client.progression?.contractSigned);
+            const canMarkSold = Boolean(client.progression?.contractSigned);
+            const clientSelected = selectedClientIds.includes(client.id);
+            const confirmationGaps = client.reminders?.thankYouSentAt ? [] : confirmationSendGaps(client);
+            const needsConfirmation = clientNeedsConfirmationSend(client);
+            const booking = salesBookingFacts(client);
+            const bookingRows = [
+              ['Booket av', booking.booker],
+              ['Booket', formatBookingWhen(booking.bookedAt)],
+              ['Booket for', formatBookingWhen(booking.meetingFor)],
+              ['Liste', booking.listName],
+            ];
+            return (
+              <React.Fragment key={client.id}>
+                <div
+                  onClick={(event) => handleClientCardClick(event, client.id)}
+                  className={`rounded-2xl bg-[#2a2a2a] border p-4 flex flex-col gap-3 cursor-pointer ${
+                    clientSelected
+                      ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40'
+                      : confirmationGaps.length
+                        ? 'border-red-500/70 ring-1 ring-red-500/30'
+                        : calendarAction
+                        ? 'border-sky-400/50 ring-1 ring-sky-400/20 shadow-[0_0_0_3px_rgba(56,189,248,0.06)]'
+                        : 'border-white/10'
+                  }`}
+                >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={clientSelected}
+                        onChange={() => toggleClientSelected(client.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        aria-label={`Select ${client.businessName || 'client'}`}
+                        className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
+                      />
+                      <h3 className="text-white font-semibold truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</h3>
+                      {isWin ? (
+                        <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 border border-emerald-700/40">Solgt</span>
+                      ) : null}
+                      {confirmationGaps.length > 0 ? (
+                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-red-500/15 border border-red-500/40 text-red-200 truncate" title={`Mangler ${confirmationGaps.join(', ')}`}>
+                          Bekreftelse stoppet
+                        </span>
+                      ) : needsConfirmation ? (
+                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-amber-500/15 border border-amber-500/40 text-amber-200 truncate">
+                          Bekreftelse ikke sendt
+                        </span>
+                      ) : nextAction?.name ? (
+                        <span className="shrink-0 max-w-[40%] px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-200 truncate">
+                          {nextAction.name}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className={`mt-1 flex items-center gap-1.5 text-xs min-w-0 ${calendarAction ? 'text-sky-300' : 'text-gray-400'}`}>
+                      {calendarAction ? (
+                        <CalendarCheck2 size={12} className="shrink-0" aria-label="På kalenderen" />
+                      ) : (
+                        <CalendarClock size={12} className="shrink-0" />
+                      )}
+                      <span className="truncate">{nextAction?.dueAt ? formatWhen(nextAction.dueAt) : 'Ingen neste handling satt'}</span>
+                      {calendarAction ? (
+                        <span
+                          className="shrink-0 px-1.5 py-px rounded border border-sky-400/30 bg-sky-400/10 text-[10px] uppercase tracking-wide text-sky-200"
+                          title="Neste handling ligger på kalenderen — viktig kontaktpunkt"
+                        >
+                          Kalender
+                        </span>
+                      ) : null}
+                    </div>
+                    {confirmationGaps.length > 0 && (
+                      <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-red-200">
+                        Bekreftelse sendes ikke. Mangler {confirmationGaps.join(', ')}.
+                      </div>
+                    )}
+                    {(client.contactPerson || client.contactPhone) ? (
+                      <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
+                        <UserRound size={12} className="shrink-0" />
+                        <span className="truncate">{client.contactPerson || 'No contact person'}</span>
+                        {client.contactPhone ? (
+                          <span className="shrink-0 inline-flex items-center gap-1">
+                            <span aria-hidden="true">·</span>
+                            <Phone size={11} />
+                            {client.contactPhone}
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <div className="mt-1 text-[11px] text-gray-500 truncate">
+                      {client.meetingMode === 'in-person' ? 'IRL' : 'Online'}
+                      {client.meetingPlace ? ` · ${client.meetingPlace}` : ''}
+                    </div>
+                    {isSalesAdmin && salesRepOptions.length > 0 && (
+                      <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
+                        <span className="shrink-0">Selger</span>
+                        <select
+                          value={
+                            salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || ''))
+                              ? (client.ownerId || '')
+                              : ''
+                          }
+                          disabled={assigningOwnerId === client.id}
+                          onChange={(event) => void assignClientOwner(client, event.target.value)}
+                          className="min-w-0 flex-1 rounded-md bg-black/30 border border-white/10 text-gray-200 px-2 py-1 disabled:opacity-50"
+                        >
+                          {!salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || '')) && (
+                            <option value="" disabled>
+                              Ikke tildelt
+                            </option>
+                          )}
+                          {salesRepOptions.map((owner) => (
+                            <option key={owner.accountKey} value={owner.accountKey}>
+                              {ownerLabel(owner)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => openEdit(client)}
+                    title="Edit client"
+                    aria-label="Edit client"
+                    className="shrink-0 p-2 rounded-lg bg-white/10 text-white hover:bg-white/15"
+                  >
+                    <Pencil size={14} />
+                  </button>
+                </div>
+
+                <ClientNotesField
+                  label="Notater"
+                  value={clientNoteDraft(client)}
+                  saving={savingNoteId === client.id}
+                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
+                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
+                  onSave={() => void saveClientNotes(client)}
+                  action={!clientIsSsu ? (
+                    <button
+                      type="button"
+                      onClick={() => setMeetingNotesClient(client)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/10 text-white text-[11px] hover:bg-white/15"
+                    >
+                      Møte notater
+                    </button>
+                  ) : null}
+                />
+
+                <SalesGoalTimeline
+                  client={client}
+                  progressBusyKey={progressBusyKey}
+                  actionBusy={nextActionBusyId === client.id}
+                  onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
+                  onMutateAction={(body) => mutateNextAction(client, body)}
+                  onOpenOffer={!isWin && !clientIsSsu && meetingHeld ? () => openOfferComposer(client) : undefined}
+                  variant={isWin ? 'win' : 'active'}
+                />
+
+                <div className="flex flex-wrap items-center gap-2">
+                  {!clientIsSsu && (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => openPublicPreview(client)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        title={publicPreviewUrl}
+                      >
+                        <ExternalLink size={13} />
+                        Open preview
+                      </button>
+                      {previewMissingToastId === client.id && (
+                        <div
+                          role="status"
+                          className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
+                        >
+                          Not on asoldi.com yet
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {salesMeetLink(client) && (
+                    <button
+                      type="button"
+                      onClick={() => window.open(salesMeetLink(client), '_blank')}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                    >
+                      <ExternalLink size={13} />
+                      Meet link
+                    </button>
+                  )}
+                  {client.myphoner?.latestRecordingUrl && (
+                    <button
+                      type="button"
+                      onClick={() => void toggleInlineRecording(client)}
+                      disabled={recordingLoadingClientId === client.id}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                      title="Load and play latest synced call recording inline"
+                    >
+                      {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
+                      {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
+                    </button>
+                  )}
+                  {([
+                    ['thank-you', 'Bekreftelse'],
+                    ['3d', '3 dager'],
+                    ['24h', '24 timer'],
+                    ['1h', '1 time'],
+                  ] as const).map(([kind, label]) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      onClick={() => void sendClientMail(client, kind)}
+                      disabled={Boolean(sendingMailKey)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
+                    >
+                      {sendingMailKey === `${client.id}:${kind}` ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
+                      {label}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => openMailComposer(client, 'thank-you')}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                    title="Åpne malen, bytt mottaker og send"
+                  >
+                    Rediger først
+                  </button>
+                  {!clientIsSsu && meetingHeld && (
+                    <button
+                      type="button"
+                      onClick={() => openOfferComposer(client)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                      title="Åpne tilbuds-e-posten med kontrakt (PDF) for denne kunden"
+                    >
+                      <FileText size={13} />
+                      Send tilbud
+                      {client.offerStatus ? (
+                        <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${
+                          client.offerStatus === 'sent'
+                            ? 'bg-emerald-500/20 text-emerald-200'
+                            : client.offerStatus === 'verified'
+                              ? 'bg-sky-500/20 text-sky-200'
+                              : client.offerStatus === 'review-requested'
+                                ? 'bg-amber-500/20 text-amber-200'
+                                : 'bg-white/10 text-gray-300'
+                        }`}>
+                          {client.offerStatus === 'sent' ? 'Sendt' : client.offerStatus === 'verified' ? 'Verifisert' : client.offerStatus === 'review-requested' ? 'Hos admin' : 'Utkast'}
+                        </span>
+                      ) : null}
+                    </button>
+                  )}
+                  {!clientIsSsu && clientOffers.length > 0 && (
+                    <span className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#FF5B00]/15 text-[#ff8a4d] text-[11px]">
+                      <Tag size={12} />
+                      {clientOffers.length} tilbud
+                    </span>
+                  )}
+                </div>
+
+                {recordingOpenClientId === client.id && (
+                  <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
+                    {recordingBlobUrlByClient[client.id] ? (
+                      <>
+                        <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
+                        <button
+                          type="button"
+                          onClick={() => window.open(client.myphoner?.latestRecordingUrl || '', '_blank')}
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                        >
+                          <ExternalLink size={12} />
+                          Open source URL
+                        </button>
+                      </>
+                    ) : (
+                      <div className="text-xs text-amber-300">
+                        {recordingErrorByClient[client.id] || 'Could not load audio in-app for this recording.'}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 pt-1">
+                  {!clientIsSsu && (
+                    <button
+                      type="button"
+                      disabled={!canMarkSold}
+                      onClick={() => {
+                        if (!canMarkSold) return;
+                        onMovedToDevelopment?.();
+                        setNotice(`${client.businessName || 'Kunden'} er solgt og ligger under Utvikling → Deployment.`);
+                      }}
+                      title={canMarkSold
+                        ? 'Kontrakt signert. Åpner deployment-utvikling.'
+                        : 'Solgt nettside kan bare klikkes når kontrakt er signert.'}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40 ${
+                        websiteSold
+                          ? 'bg-emerald-900/40 border border-emerald-700/40 text-emerald-200'
+                          : 'bg-white/10 text-gray-400'
+                      }`}
+                    >
+                      Solgt nettside
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => void markNotSold(client)}
+                    disabled={statusBusyId === `not-sold:${client.id}` || websiteSold}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                    title={websiteSold ? 'Angre kontrakt signert først hvis dette var et uhell' : 'Arkiver som ikke solgt'}
+                  >
+                    {statusBusyId === `not-sold:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
+                    Ikke solgt
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void markSecondary(client)}
+                    disabled={statusBusyId === `secondary:${client.id}` || websiteSold || client.status === 'secondary'}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                    title="Move to secondary / not interested in website"
+                  >
+                    {statusBusyId === `secondary:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : null}
+                    Secondary
+                  </button>
+                  {isWin && (
+                    <button
+                      type="button"
+                      onClick={() => void toggleProgress(client, 'contractSigned')}
+                      disabled={progressBusyKey === `${client.id}:contractSigned`}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                      title="Angre kontrakt signert og send kunden tilbake i handlinglisten"
+                    >
+                      Tilbake til salg
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 mt-auto pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setExpandedId((prev) => (prev === client.id ? null : client.id))}
+                    className="text-xs text-[#FF5B00] hover:underline"
+                  >
+                    {expanded ? 'Hide details' : 'Details & tools'}
+                  </button>
+                </div>
+
+                {expanded && (
+                  <div className="space-y-4 border-t border-white/10 pt-3">
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
+                      <div className="text-sm text-white font-medium mb-2">Booking</div>
+                      <ul className="space-y-1 text-sm">
+                        {bookingRows.map(([label, value]) => (
+                          <li key={label}>
+                            <span className="text-gray-400">{label}: </span>
+                            {value
+                              ? <span className="text-gray-100">{value}</span>
+                              : <span className="text-red-300">Mangler</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-4 rounded-xl bg-black/20 border border-white/10 p-4">
+                      <details open className="text-sm text-gray-200">
+                        <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>
+                        <ul className="space-y-1 text-gray-300">
+                          <li>Email: {client.contactEmail || '—'}</li>
+                          <li>Phone: {client.contactPhone || '—'}</li>
+                          <li>Meeting: {client.meetingMode === 'in-person' ? 'In person' : 'Online (Google Meet)'}</li>
+                          <li>Address: {client.meetingPlace || '—'}</li>
+                          <li>Org. nr: {client.orgNumber || '—'}</li>
+                          <li>Forretningsadresse: {client.businessAddress || (client.meetingPlace ? `${client.meetingPlace} (fra adresse)` : '—')}</li>
+                          <li>Industry: {client.industry || '—'}</li>
+                          <li>Duration: {durationForMode(client.meetingMode)} min</li>
+                          <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
+                        </ul>
+                      </details>
+                      <details open className="text-sm text-gray-200">
+                        <summary className="cursor-pointer text-white font-medium mb-2">Calendar & reminders</summary>
+                        <ul className="space-y-1 text-gray-300">
+                          {!clientIsSsu && <li>Website domain: {client.websiteDomain || '—'}</li>}
+                          {!clientIsSsu && <li>Public preview: {publicPreviewUrl || '—'}</li>}
+                          <li>Calendar event: {client.calendar?.eventId || '—'}</li>
+                          <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
+                          <li>Meet link: {salesMeetLink(client) || '—'}</li>
+                          <li>
+                            Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}
+                            <button
+                              type="button"
+                              onClick={() => void sendClientMail(client, 'thank-you')}
+                              disabled={Boolean(sendingMailKey)}
+                              className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50"
+                            >
+                              {sendingMailKey === `${client.id}:thank-you`
+                                ? 'Sender…'
+                                : client.reminders?.thankYouSentAt
+                                  ? 'Send på nytt'
+                                  : 'Send nå'}
+                            </button>
+                          </li>
+                          <li>
+                            Reminders:
+                            <button type="button" onClick={() => void sendClientMail(client, '3d')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">3 dager</button>
+                            <button type="button" onClick={() => void sendClientMail(client, '24h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">24 timer</button>
+                            <button type="button" onClick={() => void sendClientMail(client, '1h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">1 time</button>
+                            <button type="button" onClick={() => openMailComposer(client, '24h')} className="ml-2 text-gray-400 hover:underline">Rediger</button>
+                          </li>
+                          <li>3-day reminder: {client.reminders?.reminder3dSentAt ? formatWhen(client.reminders.reminder3dSentAt) : 'Pending/Skipped'}</li>
+                          <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>
+                          <li>1h reminder: {client.reminders?.reminder1hSentAt ? formatWhen(client.reminders.reminder1hSentAt) : 'Pending/Skipped'}</li>
+                        </ul>
+                      </details>
+                      <details open className="sm:col-span-2 text-sm text-gray-200">
+                        <summary className="cursor-pointer text-white font-medium mb-2">Myphoner intake</summary>
+                        <ul className="space-y-1 text-gray-300">
+                          <li>Lead ID: {client.myphoner?.leadId || '—'}</li>
+                          <li>List: {client.myphoner?.listName || client.myphoner?.listId || '—'}</li>
+                          <li>Winner category: {client.myphoner?.winnerCategory || '—'}</li>
+                          <li>Last winner sync: {client.myphoner?.lastWinnerWebhookAt ? formatWhen(client.myphoner.lastWinnerWebhookAt) : '—'}</li>
+                          <li>Last recording sync: {client.myphoner?.lastRecordingWebhookAt ? formatWhen(client.myphoner.lastRecordingWebhookAt) : '—'}</li>
+                          <li>Recording sync status: {client.myphoner?.latestRecordingSyncReason || '—'}</li>
+                          <li>Call ID: {client.myphoner?.latestCallId || '—'}</li>
+                          <li>Call started: {client.myphoner?.latestCallStartedAt ? formatWhen(client.myphoner.latestCallStartedAt) : '—'}</li>
+                        </ul>
+                        {client.myphoner?.latestRecordingUrl ? (
+                          <div className="mt-3 space-y-2">
+                            <button
+                              type="button"
+                              onClick={() => void toggleInlineRecording(client)}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                            >
+                              {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
+                              {recordingOpenClientId === client.id ? 'Hide inline audio' : 'Listen in Sales UI'}
+                            </button>
+                            {recordingOpenClientId === client.id ? (
+                              recordingBlobUrlByClient[client.id] ? (
+                                <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
+                              ) : (
+                                <p className="text-xs text-amber-300">
+                                  {recordingErrorByClient[client.id] || 'Could not load inline audio. Open source URL instead.'}
+                                </p>
+                              )
+                            ) : null}
+                            <button
+                              type="button"
+                              onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
+                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
+                            >
+                              <ExternalLink size={12} />
+                              Open source URL
+                            </button>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-xs text-gray-500">
+                            No call recording synced yet for this lead.
+                            {client.myphoner?.latestRecordingSyncReason ? ` Last sync status: ${client.myphoner.latestRecordingSyncReason}.` : ''}
+                          </p>
+                        )}
+                      </details>
+                      <details open className="sm:col-span-2 text-sm text-gray-200">
+                        <summary className="cursor-pointer text-white font-medium mb-2">QuickFill links</summary>
+                        <div className="grid sm:grid-cols-2 gap-3 text-gray-300">
+                          <div>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Instagram</div>
+                            <p>{String(client.details?.instagramUrl || '—')}</p>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Facebook</div>
+                            <p>{String(client.details?.facebookUrl || '—')}</p>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500 uppercase mb-1">proff.no</div>
+                            <p>{String(client.details?.proffUrl || '—')}</p>
+                          </div>
+                          <div>
+                            <div className="text-xs text-gray-500 uppercase mb-1">Google business profile</div>
+                            <p>{String(client.details?.googleBusinessProfile || '—')}</p>
+                          </div>
+                          <div className="sm:col-span-2">
+                            <div className="text-xs text-gray-500 uppercase mb-1">Other links</div>
+                            <p style={{ whiteSpace: 'pre-wrap' }}>{String(client.details?.otherLinks || '—')}</p>
+                          </div>
+                        </div>
+                      </details>
+                    </div>
+
+                    {!clientIsSsu && (
+                    <>
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
+                      <div className="text-sm text-white font-medium">Public preview</div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() => openPublicPreview(client)}
+                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                          >
+                            <ExternalLink size={14} />
+                            Open preview
+                          </button>
+                          {previewMissingToastId === client.id && (
+                            <div
+                              role="status"
+                              className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
+                            >
+                              Not on asoldi.com yet
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void navigator.clipboard.writeText(publicPreviewUrl).then(
+                            () => setNotice(`Copied ${publicPreviewUrl}`),
+                            () => setError('Could not copy preview URL')
+                          )}
+                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
+                        >
+                          <Copy size={14} />
+                          Copy public URL
+                        </button>
+                      </div>
+                      <p className="text-[11px] text-gray-400 break-all">
+                        Internet URL: <span className="text-white">{publicPreviewUrl}</span>
+                      </p>
+                    </div>
+
+                    <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 text-sm text-white font-medium">
+                          <Tag size={14} className="text-[#FF5B00]" />
+                          Tilbud (nettsidekode)
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openOfferPanel(client)}
+                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200]"
+                        >
+                          <Gift size={13} />
+                          {offerOpenId === client.id ? 'Lukk' : 'Gi tilbud'}
+                        </button>
+                      </div>
+
+                      {clientOffers.length > 0 && (
+                        <div className="space-y-2">
+                          {clientOffers.map((offer) => (
+                            <div
+                              key={offer.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#1a1a1a] border border-white/10 px-3 py-2"
+                            >
+                              <div className="flex items-center gap-3 text-sm">
+                                <span className="px-2 py-1 rounded bg-[#FF5B00]/20 text-[#ff8a4d] font-mono tracking-widest text-base">{offer.code}</span>
+                                <span className="text-gray-200">{offer.planName}</span>
+                                <span className="text-gray-500">{offer.price}</span>
+                              </div>
+                              <div className="flex items-center gap-2 text-xs">
+                                <span className="text-gray-400">{offer.targetEmail || 'Ikke tildelt'}</span>
+                                <span className={`px-2 py-0.5 rounded ${offer.claimed ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/30 text-amber-300'}`}>
+                                  {offer.claimed ? 'Innløst' : 'Aktiv'}
+                                </span>
+                                {offer.previewUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() => window.open(offer.previewUrl, '_blank')}
+                                    className="inline-flex items-center gap-1 text-gray-300 hover:text-white"
+                                  >
+                                    <ExternalLink size={12} />
+                                    Forhåndsvis
+                                  </button>
+                                )}
+                                <button type="button" onClick={() => void deleteOffer(offer.id)} className="text-gray-400 hover:text-red-400" aria-label="Slett tilbud">
+                                  <Trash2 size={13} />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {offerOpenId === client.id && (
+                        <div className="rounded-lg bg-[#1a1a1a] border border-white/10 p-4 space-y-4">
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Velg tier (anbefalt plan)</label>
+                            <div className="grid sm:grid-cols-3 gap-2">
+                              {OFFER_TIERS.map((tier) => (
+                                <button
+                                  key={tier.id}
+                                  type="button"
+                                  onClick={() => setOfferPlanId(tier.id)}
+                                  className={`text-left rounded-lg border px-3 py-2 transition-colors ${
+                                    offerPlanId === tier.id ? 'border-[#FF5B00] bg-[#FF5B00]/10' : 'border-white/10 bg-black/20 hover:border-white/20'
+                                  }`}
+                                >
+                                  <div className="text-sm text-white">{tier.name}</div>
+                                  <div className="text-xs text-gray-400">{tier.price}</div>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Søk etter bruker (e-post, navn eller bedrift)</label>
+                            {offerSelectedUser ? (
+                              <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2">
+                                <div className="text-sm">
+                                  <div className="text-white">{offerSelectedUser.name || offerSelectedUser.email}</div>
+                                  <div className="text-xs text-gray-400">
+                                    {offerSelectedUser.email}
+                                    {offerSelectedUser.businessName ? ` · ${offerSelectedUser.businessName}` : ''}
+                                  </div>
+                                </div>
+                                <button type="button" onClick={() => setOfferSelectedUser(null)} className="text-gray-400 hover:text-white" aria-label="Fjern valgt bruker">
+                                  <X size={15} />
+                                </button>
+                              </div>
+                            ) : (
+                              <>
+                                <div className="relative">
+                                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                                  <input
+                                    value={offerSearch}
+                                    onChange={(e) => setOfferSearch(e.target.value)}
+                                    placeholder="Søk på e-post, navn eller bedrift…"
+                                    className="w-full pl-9 pr-9 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm"
+                                  />
+                                  {offerSearching && (
+                                    <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400" />
+                                  )}
+                                </div>
+                                {offerResults.length > 0 ? (
+                                  <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-white/10 divide-y divide-white/5">
+                                    {offerResults.map((result) => (
+                                      <button
+                                        key={result.userId}
+                                        type="button"
+                                        onClick={() => {
+                                          setOfferSelectedUser(result);
+                                          setOfferResults([]);
+                                        }}
+                                        className="w-full text-left px-3 py-2 hover:bg-white/5"
+                                      >
+                                        <div className="text-sm text-white">{result.name || result.email}</div>
+                                        <div className="text-xs text-gray-400">
+                                          {result.email}
+                                          {result.businessName ? ` · ${result.businessName}` : ''}
+                                        </div>
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : !offerSearching ? (
+                                  <p className="mt-2 text-xs text-gray-500">
+                                    {offerSearch.trim()
+                                      ? 'Ingen klientbrukere matcher søket.'
+                                      : 'Ingen klientbrukere funnet ennå.'}
+                                  </p>
+                                ) : null}
+                                <p className="mt-1 text-[11px] text-gray-500">
+                                  Kun brukere med klient-innlogging vises her. Velg en bruker for å sende tilbudet rett i to-do-listen deres. Uten valgt bruker kan kunden løse inn tilbudet med nettsidekoden.
+                                </p>
+                              </>
+                            )}
+                          </div>
+
+                          <div>
+                            <label className="block text-xs text-gray-400 mb-1">Notat (valgfritt)</label>
+                            <textarea
+                              rows={2}
+                              value={offerNote}
+                              onChange={(e) => setOfferNote(e.target.value)}
+                              className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm resize-y"
+                            />
+                          </div>
+
+                          {client.websiteImport?.previewUrl ? (
+                            <p className="text-[11px] text-gray-400">Forhåndsvisning av importert nettside legges automatisk ved tilbudet.</p>
+                          ) : (
+                            <p className="text-[11px] text-gray-500">Tips: utvikler publiserer preview slik at tilbudet får offentlig forhåndsvisning.</p>
+                          )}
+
+                          {lastCreatedCode && (
+                            <div className="rounded-lg border border-green-600/40 bg-green-900/20 px-3 py-2 text-sm text-green-200">
+                              Tilbud opprettet. Nettsidekode:{' '}
+                              <span className="font-mono tracking-widest text-base text-white">{lastCreatedCode}</span>
+                            </div>
+                          )}
+
+                          <button
+                            type="button"
+                            onClick={() => void createOffer(client)}
+                            disabled={creatingOffer}
+                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200] disabled:opacity-50"
+                          >
+                            {creatingOffer ? <Loader2 size={14} className="animate-spin" /> : <Gift size={14} />}
+                            Opprett tilbud
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    </>
+                    )}
+                  </div>
+                )}
+                </div>
+              </React.Fragment>
+            );
+  }
+
   return (
     <div className="space-y-6">
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
@@ -2035,705 +2761,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 </button>
               );
             }
-            const client = row.client;
-            const clientIsSsu = isSsuClient(client);
-            const publicPreviewUrl = getPublicClientPreviewUrl(client);
-            const clientOffers = offers.filter((entry) => entry.salesClientId === client.id);
-            const expanded = expandedId === client.id;
-            const meetingHeld = Boolean(client.progression?.meetingHeld);
-            const nextAction = getActiveNextAction(client);
-            // Important contact point: the next action is on the sales rep's calendar
-            // (agreed meeting, "Møtet booket", or any action with add-to-calendar on).
-            const calendarAction = getCalendarNextAction(client);
-            const websiteSold = Boolean(client.progression?.contractSigned);
-            const canMarkSold = Boolean(client.progression?.contractSigned);
-            const clientSelected = selectedClientIds.includes(client.id);
-            const confirmationGaps = client.reminders?.thankYouSentAt ? [] : confirmationSendGaps(client);
-            const needsConfirmation = clientNeedsConfirmationSend(client);
-            const booking = salesBookingFacts(client);
-            const bookingRows = [
-              ['Booket av', booking.booker],
-              ['Booket', formatBookingWhen(booking.bookedAt)],
-              ['Booket for', formatBookingWhen(booking.meetingFor)],
-              ['Liste', booking.listName],
-            ];
-            return (
-              <React.Fragment key={client.id}>
-                <div
-                  onClick={(event) => handleClientCardClick(event, client.id)}
-                  className={`rounded-2xl bg-[#2a2a2a] border p-4 flex flex-col gap-3 cursor-pointer ${
-                    clientSelected
-                      ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40'
-                      : confirmationGaps.length
-                        ? 'border-red-500/70 ring-1 ring-red-500/30'
-                        : calendarAction
-                        ? 'border-sky-400/50 ring-1 ring-sky-400/20 shadow-[0_0_0_3px_rgba(56,189,248,0.06)]'
-                        : 'border-white/10'
-                  }`}
-                >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <input
-                        type="checkbox"
-                        checked={clientSelected}
-                        onChange={() => toggleClientSelected(client.id)}
-                        onClick={(event) => event.stopPropagation()}
-                        aria-label={`Select ${client.businessName || 'client'}`}
-                        className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
-                      />
-                      <h3 className="text-white font-semibold truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</h3>
-                      {confirmationGaps.length > 0 ? (
-                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-red-500/15 border border-red-500/40 text-red-200 truncate" title={`Mangler ${confirmationGaps.join(', ')}`}>
-                          Bekreftelse stoppet
-                        </span>
-                      ) : needsConfirmation ? (
-                        <span className="shrink-0 max-w-[46%] px-2 py-0.5 rounded text-[11px] bg-amber-500/15 border border-amber-500/40 text-amber-200 truncate">
-                          Bekreftelse ikke sendt
-                        </span>
-                      ) : nextAction?.name ? (
-                        <span className="shrink-0 max-w-[40%] px-2 py-0.5 rounded text-[11px] bg-black/20 border border-white/10 text-gray-200 truncate">
-                          {nextAction.name}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className={`mt-1 flex items-center gap-1.5 text-xs min-w-0 ${calendarAction ? 'text-sky-300' : 'text-gray-400'}`}>
-                      {calendarAction ? (
-                        <CalendarCheck2 size={12} className="shrink-0" aria-label="På kalenderen" />
-                      ) : (
-                        <CalendarClock size={12} className="shrink-0" />
-                      )}
-                      <span className="truncate">{nextAction?.dueAt ? formatWhen(nextAction.dueAt) : 'Ingen neste handling satt'}</span>
-                      {calendarAction ? (
-                        <span
-                          className="shrink-0 px-1.5 py-px rounded border border-sky-400/30 bg-sky-400/10 text-[10px] uppercase tracking-wide text-sky-200"
-                          title="Neste handling ligger på kalenderen — viktig kontaktpunkt"
-                        >
-                          Kalender
-                        </span>
-                      ) : null}
-                    </div>
-                    {confirmationGaps.length > 0 && (
-                      <div className="mt-2 rounded-lg border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-[11px] leading-snug text-red-200">
-                        Bekreftelse sendes ikke. Mangler {confirmationGaps.join(', ')}.
-                      </div>
-                    )}
-                    {(client.contactPerson || client.contactPhone) ? (
-                      <div className="mt-1 flex items-center gap-1.5 text-xs text-gray-400 min-w-0">
-                        <UserRound size={12} className="shrink-0" />
-                        <span className="truncate">{client.contactPerson || 'No contact person'}</span>
-                        {client.contactPhone ? (
-                          <span className="shrink-0 inline-flex items-center gap-1">
-                            <span aria-hidden="true">·</span>
-                            <Phone size={11} />
-                            {client.contactPhone}
-                          </span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="mt-1 text-[11px] text-gray-500 truncate">
-                      {client.meetingMode === 'in-person' ? 'IRL' : 'Online'}
-                      {client.meetingPlace ? ` · ${client.meetingPlace}` : ''}
-                    </div>
-                    {isSalesAdmin && salesRepOptions.length > 0 && (
-                      <label className="mt-2 flex items-center gap-2 text-[11px] text-gray-400">
-                        <span className="shrink-0">Selger</span>
-                        <select
-                          value={
-                            salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || ''))
-                              ? (client.ownerId || '')
-                              : ''
-                          }
-                          disabled={assigningOwnerId === client.id}
-                          onChange={(event) => void assignClientOwner(client, event.target.value)}
-                          className="min-w-0 flex-1 rounded-md bg-black/30 border border-white/10 text-gray-200 px-2 py-1 disabled:opacity-50"
-                        >
-                          {!salesRepOptions.some((owner) => owner.accountKey === (client.ownerId || '')) && (
-                            <option value="" disabled>
-                              Ikke tildelt
-                            </option>
-                          )}
-                          {salesRepOptions.map((owner) => (
-                            <option key={owner.accountKey} value={owner.accountKey}>
-                              {ownerLabel(owner)}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => openEdit(client)}
-                    title="Edit client"
-                    aria-label="Edit client"
-                    className="shrink-0 p-2 rounded-lg bg-white/10 text-white hover:bg-white/15"
-                  >
-                    <Pencil size={14} />
-                  </button>
-                </div>
-
-                <ClientNotesField
-                  label="Notater"
-                  value={clientNoteDraft(client)}
-                  saving={savingNoteId === client.id}
-                  dirty={clientNoteDraft(client).trim() !== String(client.notes || '').trim()}
-                  onChange={(value) => setNoteDrafts((prev) => ({ ...prev, [client.id]: value }))}
-                  onSave={() => void saveClientNotes(client)}
-                  action={!clientIsSsu ? (
-                    <button
-                      type="button"
-                      onClick={() => setMeetingNotesClient(client)}
-                      className="inline-flex items-center gap-1 px-2 py-1 rounded-md bg-white/10 text-white text-[11px] hover:bg-white/15"
-                    >
-                      Møte notater
-                    </button>
-                  ) : null}
-                />
-
-                <SalesGoalTimeline
-                  client={client}
-                  progressBusyKey={progressBusyKey}
-                  actionBusy={nextActionBusyId === client.id}
-                  onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
-                  onMutateAction={(body) => mutateNextAction(client, body)}
-                  onOpenOffer={!clientIsSsu && meetingHeld ? () => openOfferComposer(client) : undefined}
-                />
-
-                <div className="flex flex-wrap items-center gap-2">
-                  {!clientIsSsu && (
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() => openPublicPreview(client)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                        title={publicPreviewUrl}
-                      >
-                        <ExternalLink size={13} />
-                        Open preview
-                      </button>
-                      {previewMissingToastId === client.id && (
-                        <div
-                          role="status"
-                          className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
-                        >
-                          Not on asoldi.com yet
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {salesMeetLink(client) && (
-                    <button
-                      type="button"
-                      onClick={() => window.open(salesMeetLink(client), '_blank')}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                    >
-                      <ExternalLink size={13} />
-                      Meet link
-                    </button>
-                  )}
-                  {client.myphoner?.latestRecordingUrl && (
-                    <button
-                      type="button"
-                      onClick={() => void toggleInlineRecording(client)}
-                      disabled={recordingLoadingClientId === client.id}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                      title="Load and play latest synced call recording inline"
-                    >
-                      {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
-                      {recordingOpenClientId === client.id ? 'Hide audio' : 'Listen here'}
-                    </button>
-                  )}
-                  {([
-                    ['thank-you', 'Bekreftelse'],
-                    ['3d', '3 dager'],
-                    ['24h', '24 timer'],
-                    ['1h', '1 time'],
-                  ] as const).map(([kind, label]) => (
-                    <button
-                      key={kind}
-                      type="button"
-                      onClick={() => void sendClientMail(client, kind)}
-                      disabled={Boolean(sendingMailKey)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15 disabled:opacity-50"
-                    >
-                      {sendingMailKey === `${client.id}:${kind}` ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
-                      {label}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => openMailComposer(client, 'thank-you')}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                    title="Åpne malen, bytt mottaker og send"
-                  >
-                    Rediger først
-                  </button>
-                  {!clientIsSsu && meetingHeld && (
-                    <button
-                      type="button"
-                      onClick={() => openOfferComposer(client)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                      title="Åpne tilbuds-e-posten med kontrakt (PDF) for denne kunden"
-                    >
-                      <FileText size={13} />
-                      Send tilbud
-                      {client.offerStatus ? (
-                        <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${
-                          client.offerStatus === 'sent'
-                            ? 'bg-emerald-500/20 text-emerald-200'
-                            : client.offerStatus === 'verified'
-                              ? 'bg-sky-500/20 text-sky-200'
-                              : client.offerStatus === 'review-requested'
-                                ? 'bg-amber-500/20 text-amber-200'
-                                : 'bg-white/10 text-gray-300'
-                        }`}>
-                          {client.offerStatus === 'sent' ? 'Sendt' : client.offerStatus === 'verified' ? 'Verifisert' : client.offerStatus === 'review-requested' ? 'Hos admin' : 'Utkast'}
-                        </span>
-                      ) : null}
-                    </button>
-                  )}
-                  {!clientIsSsu && clientOffers.length > 0 && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg bg-[#FF5B00]/15 text-[#ff8a4d] text-[11px]">
-                      <Tag size={12} />
-                      {clientOffers.length} tilbud
-                    </span>
-                  )}
-                </div>
-
-                {recordingOpenClientId === client.id && (
-                  <div className="rounded-xl border border-white/10 bg-black/20 p-3 space-y-2">
-                    {recordingBlobUrlByClient[client.id] ? (
-                      <>
-                        <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
-                        <button
-                          type="button"
-                          onClick={() => window.open(client.myphoner?.latestRecordingUrl || '', '_blank')}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                        >
-                          <ExternalLink size={12} />
-                          Open source URL
-                        </button>
-                      </>
-                    ) : (
-                      <div className="text-xs text-amber-300">
-                        {recordingErrorByClient[client.id] || 'Could not load audio in-app for this recording.'}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                <div className="flex items-center gap-2 pt-1">
-                  {!clientIsSsu && (
-                    <button
-                      type="button"
-                      disabled={!canMarkSold}
-                      onClick={() => {
-                        if (!canMarkSold) return;
-                        onMovedToDevelopment?.();
-                        setNotice(`${client.businessName || 'Kunden'} er solgt og ligger under Utvikling → Deployment.`);
-                      }}
-                      title={canMarkSold
-                        ? 'Kontrakt signert. Åpner deployment-utvikling.'
-                        : 'Solgt nettside kan bare klikkes når kontrakt er signert.'}
-                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs disabled:opacity-40 ${
-                        websiteSold
-                          ? 'bg-emerald-900/40 border border-emerald-700/40 text-emerald-200'
-                          : 'bg-white/10 text-gray-400'
-                      }`}
-                    >
-                      Solgt nettside
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void markNotSold(client)}
-                    disabled={statusBusyId === `not-sold:${client.id}` || websiteSold}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
-                    title={websiteSold ? 'Angre kontrakt signert først hvis dette var et uhell' : 'Arkiver som ikke solgt'}
-                  >
-                    {statusBusyId === `not-sold:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : <ArchiveX size={13} />}
-                    Ikke solgt
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void markSecondary(client)}
-                    disabled={statusBusyId === `secondary:${client.id}` || websiteSold || client.status === 'secondary'}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
-                    title="Move to secondary / not interested in website"
-                  >
-                    {statusBusyId === `secondary:${client.id}` ? <Loader2 size={13} className="animate-spin" /> : null}
-                    Secondary
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between gap-2 mt-auto pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setExpandedId((prev) => (prev === client.id ? null : client.id))}
-                    className="text-xs text-[#FF5B00] hover:underline"
-                  >
-                    {expanded ? 'Hide details' : 'Details & tools'}
-                  </button>
-                </div>
-
-                {expanded && (
-                  <div className="space-y-4 border-t border-white/10 pt-3">
-                    <div className="rounded-xl bg-black/20 border border-white/10 p-4">
-                      <div className="text-sm text-white font-medium mb-2">Booking</div>
-                      <ul className="space-y-1 text-sm">
-                        {bookingRows.map(([label, value]) => (
-                          <li key={label}>
-                            <span className="text-gray-400">{label}: </span>
-                            {value
-                              ? <span className="text-gray-100">{value}</span>
-                              : <span className="text-red-300">Mangler</span>}
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                    <div className="grid sm:grid-cols-2 gap-4 rounded-xl bg-black/20 border border-white/10 p-4">
-                      <details open className="text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>
-                        <ul className="space-y-1 text-gray-300">
-                          <li>Email: {client.contactEmail || '—'}</li>
-                          <li>Phone: {client.contactPhone || '—'}</li>
-                          <li>Meeting: {client.meetingMode === 'in-person' ? 'In person' : 'Online (Google Meet)'}</li>
-                          <li>Address: {client.meetingPlace || '—'}</li>
-                          <li>Org. nr: {client.orgNumber || '—'}</li>
-                          <li>Forretningsadresse: {client.businessAddress || (client.meetingPlace ? `${client.meetingPlace} (fra adresse)` : '—')}</li>
-                          <li>Industry: {client.industry || '—'}</li>
-                          <li>Duration: {durationForMode(client.meetingMode)} min</li>
-                          <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
-                        </ul>
-                      </details>
-                      <details open className="text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">Calendar & reminders</summary>
-                        <ul className="space-y-1 text-gray-300">
-                          {!clientIsSsu && <li>Website domain: {client.websiteDomain || '—'}</li>}
-                          {!clientIsSsu && <li>Public preview: {publicPreviewUrl || '—'}</li>}
-                          <li>Calendar event: {client.calendar?.eventId || '—'}</li>
-                          <li>Calendar account: {client.calendar?.accountKey || '—'}</li>
-                          <li>Meet link: {salesMeetLink(client) || '—'}</li>
-                          <li>
-                            Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}
-                            <button
-                              type="button"
-                              onClick={() => void sendClientMail(client, 'thank-you')}
-                              disabled={Boolean(sendingMailKey)}
-                              className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50"
-                            >
-                              {sendingMailKey === `${client.id}:thank-you`
-                                ? 'Sender…'
-                                : client.reminders?.thankYouSentAt
-                                  ? 'Send på nytt'
-                                  : 'Send nå'}
-                            </button>
-                          </li>
-                          <li>
-                            Reminders:
-                            <button type="button" onClick={() => void sendClientMail(client, '3d')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">3 dager</button>
-                            <button type="button" onClick={() => void sendClientMail(client, '24h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">24 timer</button>
-                            <button type="button" onClick={() => void sendClientMail(client, '1h')} disabled={Boolean(sendingMailKey)} className="ml-2 text-[#FF5B00] hover:underline disabled:opacity-50">1 time</button>
-                            <button type="button" onClick={() => openMailComposer(client, '24h')} className="ml-2 text-gray-400 hover:underline">Rediger</button>
-                          </li>
-                          <li>3-day reminder: {client.reminders?.reminder3dSentAt ? formatWhen(client.reminders.reminder3dSentAt) : 'Pending/Skipped'}</li>
-                          <li>24h reminder: {client.reminders?.reminder24hSentAt ? formatWhen(client.reminders.reminder24hSentAt) : 'Pending/Skipped'}</li>
-                          <li>1h reminder: {client.reminders?.reminder1hSentAt ? formatWhen(client.reminders.reminder1hSentAt) : 'Pending/Skipped'}</li>
-                        </ul>
-                      </details>
-                      <details open className="sm:col-span-2 text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">Myphoner intake</summary>
-                        <ul className="space-y-1 text-gray-300">
-                          <li>Lead ID: {client.myphoner?.leadId || '—'}</li>
-                          <li>List: {client.myphoner?.listName || client.myphoner?.listId || '—'}</li>
-                          <li>Winner category: {client.myphoner?.winnerCategory || '—'}</li>
-                          <li>Last winner sync: {client.myphoner?.lastWinnerWebhookAt ? formatWhen(client.myphoner.lastWinnerWebhookAt) : '—'}</li>
-                          <li>Last recording sync: {client.myphoner?.lastRecordingWebhookAt ? formatWhen(client.myphoner.lastRecordingWebhookAt) : '—'}</li>
-                          <li>Recording sync status: {client.myphoner?.latestRecordingSyncReason || '—'}</li>
-                          <li>Call ID: {client.myphoner?.latestCallId || '—'}</li>
-                          <li>Call started: {client.myphoner?.latestCallStartedAt ? formatWhen(client.myphoner.latestCallStartedAt) : '—'}</li>
-                        </ul>
-                        {client.myphoner?.latestRecordingUrl ? (
-                          <div className="mt-3 space-y-2">
-                            <button
-                              type="button"
-                              onClick={() => void toggleInlineRecording(client)}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                            >
-                              {recordingLoadingClientId === client.id ? <Loader2 size={13} className="animate-spin" /> : <Volume2 size={13} />}
-                              {recordingOpenClientId === client.id ? 'Hide inline audio' : 'Listen in Sales UI'}
-                            </button>
-                            {recordingOpenClientId === client.id ? (
-                              recordingBlobUrlByClient[client.id] ? (
-                                <audio controls preload="metadata" src={recordingBlobUrlByClient[client.id]} className="w-full" />
-                              ) : (
-                                <p className="text-xs text-amber-300">
-                                  {recordingErrorByClient[client.id] || 'Could not load inline audio. Open source URL instead.'}
-                                </p>
-                              )
-                            ) : null}
-                            <button
-                              type="button"
-                              onClick={() => window.open(client.myphoner.latestRecordingUrl, '_blank')}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                            >
-                              <ExternalLink size={12} />
-                              Open source URL
-                            </button>
-                          </div>
-                        ) : (
-                          <p className="mt-2 text-xs text-gray-500">
-                            No call recording synced yet for this lead.
-                            {client.myphoner?.latestRecordingSyncReason ? ` Last sync status: ${client.myphoner.latestRecordingSyncReason}.` : ''}
-                          </p>
-                        )}
-                      </details>
-                      <details open className="sm:col-span-2 text-sm text-gray-200">
-                        <summary className="cursor-pointer text-white font-medium mb-2">QuickFill links</summary>
-                        <div className="grid sm:grid-cols-2 gap-3 text-gray-300">
-                          <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Instagram</div>
-                            <p>{String(client.details?.instagramUrl || '—')}</p>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Facebook</div>
-                            <p>{String(client.details?.facebookUrl || '—')}</p>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">proff.no</div>
-                            <p>{String(client.details?.proffUrl || '—')}</p>
-                          </div>
-                          <div>
-                            <div className="text-xs text-gray-500 uppercase mb-1">Google business profile</div>
-                            <p>{String(client.details?.googleBusinessProfile || '—')}</p>
-                          </div>
-                          <div className="sm:col-span-2">
-                            <div className="text-xs text-gray-500 uppercase mb-1">Other links</div>
-                            <p style={{ whiteSpace: 'pre-wrap' }}>{String(client.details?.otherLinks || '—')}</p>
-                          </div>
-                        </div>
-                      </details>
-                    </div>
-
-                    {!clientIsSsu && (
-                    <>
-                    <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
-                      <div className="text-sm text-white font-medium">Public preview</div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() => openPublicPreview(client)}
-                            className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
-                          >
-                            <ExternalLink size={14} />
-                            Open preview
-                          </button>
-                          {previewMissingToastId === client.id && (
-                            <div
-                              role="status"
-                              className="absolute left-0 bottom-full mb-1 z-20 whitespace-nowrap rounded-md border border-amber-700/40 bg-amber-950/95 px-2.5 py-1.5 text-[11px] text-amber-100 shadow-lg"
-                            >
-                              Not on asoldi.com yet
-                            </div>
-                          )}
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => void navigator.clipboard.writeText(publicPreviewUrl).then(
-                            () => setNotice(`Copied ${publicPreviewUrl}`),
-                            () => setError('Could not copy preview URL')
-                          )}
-                          className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-white text-sm hover:bg-white/15"
-                        >
-                          <Copy size={14} />
-                          Copy public URL
-                        </button>
-                      </div>
-                      <p className="text-[11px] text-gray-400 break-all">
-                        Internet URL: <span className="text-white">{publicPreviewUrl}</span>
-                      </p>
-                    </div>
-
-                    <div className="rounded-xl bg-black/20 border border-white/10 p-4 space-y-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2 text-sm text-white font-medium">
-                          <Tag size={14} className="text-[#FF5B00]" />
-                          Tilbud (nettsidekode)
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => openOfferPanel(client)}
-                          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200]"
-                        >
-                          <Gift size={13} />
-                          {offerOpenId === client.id ? 'Lukk' : 'Gi tilbud'}
-                        </button>
-                      </div>
-
-                      {clientOffers.length > 0 && (
-                        <div className="space-y-2">
-                          {clientOffers.map((offer) => (
-                            <div
-                              key={offer.id}
-                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-[#1a1a1a] border border-white/10 px-3 py-2"
-                            >
-                              <div className="flex items-center gap-3 text-sm">
-                                <span className="px-2 py-1 rounded bg-[#FF5B00]/20 text-[#ff8a4d] font-mono tracking-widest text-base">{offer.code}</span>
-                                <span className="text-gray-200">{offer.planName}</span>
-                                <span className="text-gray-500">{offer.price}</span>
-                              </div>
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="text-gray-400">{offer.targetEmail || 'Ikke tildelt'}</span>
-                                <span className={`px-2 py-0.5 rounded ${offer.claimed ? 'bg-green-900/40 text-green-300' : 'bg-amber-900/30 text-amber-300'}`}>
-                                  {offer.claimed ? 'Innløst' : 'Aktiv'}
-                                </span>
-                                {offer.previewUrl && (
-                                  <button
-                                    type="button"
-                                    onClick={() => window.open(offer.previewUrl, '_blank')}
-                                    className="inline-flex items-center gap-1 text-gray-300 hover:text-white"
-                                  >
-                                    <ExternalLink size={12} />
-                                    Forhåndsvis
-                                  </button>
-                                )}
-                                <button type="button" onClick={() => void deleteOffer(offer.id)} className="text-gray-400 hover:text-red-400" aria-label="Slett tilbud">
-                                  <Trash2 size={13} />
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-
-                      {offerOpenId === client.id && (
-                        <div className="rounded-lg bg-[#1a1a1a] border border-white/10 p-4 space-y-4">
-                          <div>
-                            <label className="block text-xs text-gray-400 mb-1">Velg tier (anbefalt plan)</label>
-                            <div className="grid sm:grid-cols-3 gap-2">
-                              {OFFER_TIERS.map((tier) => (
-                                <button
-                                  key={tier.id}
-                                  type="button"
-                                  onClick={() => setOfferPlanId(tier.id)}
-                                  className={`text-left rounded-lg border px-3 py-2 transition-colors ${
-                                    offerPlanId === tier.id ? 'border-[#FF5B00] bg-[#FF5B00]/10' : 'border-white/10 bg-black/20 hover:border-white/20'
-                                  }`}
-                                >
-                                  <div className="text-sm text-white">{tier.name}</div>
-                                  <div className="text-xs text-gray-400">{tier.price}</div>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div>
-                            <label className="block text-xs text-gray-400 mb-1">Søk etter bruker (e-post, navn eller bedrift)</label>
-                            {offerSelectedUser ? (
-                              <div className="flex items-center justify-between rounded-lg border border-white/10 bg-black/30 px-3 py-2">
-                                <div className="text-sm">
-                                  <div className="text-white">{offerSelectedUser.name || offerSelectedUser.email}</div>
-                                  <div className="text-xs text-gray-400">
-                                    {offerSelectedUser.email}
-                                    {offerSelectedUser.businessName ? ` · ${offerSelectedUser.businessName}` : ''}
-                                  </div>
-                                </div>
-                                <button type="button" onClick={() => setOfferSelectedUser(null)} className="text-gray-400 hover:text-white" aria-label="Fjern valgt bruker">
-                                  <X size={15} />
-                                </button>
-                              </div>
-                            ) : (
-                              <>
-                                <div className="relative">
-                                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                                  <input
-                                    value={offerSearch}
-                                    onChange={(e) => setOfferSearch(e.target.value)}
-                                    placeholder="Søk på e-post, navn eller bedrift…"
-                                    className="w-full pl-9 pr-9 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm"
-                                  />
-                                  {offerSearching && (
-                                    <Loader2 size={14} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-gray-400" />
-                                  )}
-                                </div>
-                                {offerResults.length > 0 ? (
-                                  <div className="mt-2 max-h-40 overflow-y-auto rounded-lg border border-white/10 divide-y divide-white/5">
-                                    {offerResults.map((result) => (
-                                      <button
-                                        key={result.userId}
-                                        type="button"
-                                        onClick={() => {
-                                          setOfferSelectedUser(result);
-                                          setOfferResults([]);
-                                        }}
-                                        className="w-full text-left px-3 py-2 hover:bg-white/5"
-                                      >
-                                        <div className="text-sm text-white">{result.name || result.email}</div>
-                                        <div className="text-xs text-gray-400">
-                                          {result.email}
-                                          {result.businessName ? ` · ${result.businessName}` : ''}
-                                        </div>
-                                      </button>
-                                    ))}
-                                  </div>
-                                ) : !offerSearching ? (
-                                  <p className="mt-2 text-xs text-gray-500">
-                                    {offerSearch.trim()
-                                      ? 'Ingen klientbrukere matcher søket.'
-                                      : 'Ingen klientbrukere funnet ennå.'}
-                                  </p>
-                                ) : null}
-                                <p className="mt-1 text-[11px] text-gray-500">
-                                  Kun brukere med klient-innlogging vises her. Velg en bruker for å sende tilbudet rett i to-do-listen deres. Uten valgt bruker kan kunden løse inn tilbudet med nettsidekoden.
-                                </p>
-                              </>
-                            )}
-                          </div>
-
-                          <div>
-                            <label className="block text-xs text-gray-400 mb-1">Notat (valgfritt)</label>
-                            <textarea
-                              rows={2}
-                              value={offerNote}
-                              onChange={(e) => setOfferNote(e.target.value)}
-                              className="w-full px-3 py-2 rounded-lg bg-black/30 border border-white/10 text-white text-sm resize-y"
-                            />
-                          </div>
-
-                          {client.websiteImport?.previewUrl ? (
-                            <p className="text-[11px] text-gray-400">Forhåndsvisning av importert nettside legges automatisk ved tilbudet.</p>
-                          ) : (
-                            <p className="text-[11px] text-gray-500">Tips: utvikler publiserer preview slik at tilbudet får offentlig forhåndsvisning.</p>
-                          )}
-
-                          {lastCreatedCode && (
-                            <div className="rounded-lg border border-green-600/40 bg-green-900/20 px-3 py-2 text-sm text-green-200">
-                              Tilbud opprettet. Nettsidekode:{' '}
-                              <span className="font-mono tracking-widest text-base text-white">{lastCreatedCode}</span>
-                            </div>
-                          )}
-
-                          <button
-                            type="button"
-                            onClick={() => void createOffer(client)}
-                            disabled={creatingOffer}
-                            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200] disabled:opacity-50"
-                          >
-                            {creatingOffer ? <Loader2 size={14} className="animate-spin" /> : <Gift size={14} />}
-                            Opprett tilbud
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    </>
-                    )}
-                  </div>
-                )}
-                </div>
-              </React.Fragment>
-            );
+            return renderSalesClientCard(row.client, false);
           })}
 
           {timelineClients.length === 0 && (
@@ -2761,82 +2789,14 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h3 className="text-white font-semibold">Wins</h3>
-              <p className="text-[11px] text-gray-400 mt-0.5">Solgte kunder ligger her, ikke i handlinglisten. Preview beholdes som den er.</p>
+              <p className="text-[11px] text-gray-400 mt-0.5">Solgte kunder ligger her. Samme kundekort og handlinger, uten møte-, tilbud- og kontraktsteg.</p>
             </div>
             <span className="text-xs px-2 py-1 rounded bg-emerald-900/30 border border-emerald-700/30 text-emerald-200">
               {winClients.length} solgt
             </span>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
-            {winClients.map((client) => {
-              const clientSelected = selectedClientIds.includes(client.id);
-              const publicPreviewUrl = getPublicClientPreviewUrl(client);
-              return (
-                <div
-                  key={client.id}
-                  onClick={(event) => handleClientCardClick(event, client.id)}
-                  className={`rounded-xl bg-black/20 border p-3 space-y-2 cursor-pointer ${
-                    clientSelected ? 'border-[#FF5B00] ring-1 ring-[#FF5B00]/40' : 'border-white/10'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <input
-                          type="checkbox"
-                          checked={clientSelected}
-                          onChange={() => toggleClientSelected(client.id)}
-                          onClick={(event) => event.stopPropagation()}
-                          aria-label={`Select ${client.businessName || 'sold client'}`}
-                          className="h-4 w-4 shrink-0 accent-[#FF5B00] cursor-pointer"
-                        />
-                        <div className="text-sm font-medium text-white truncate min-w-0 flex-1">{client.businessName || 'Unnamed business'}</div>
-                      </div>
-                      <div className="text-xs text-gray-400 truncate mt-1">
-                        {[client.contactPerson || 'No contact person', client.contactPhone, client.meetingPlace]
-                          .filter(Boolean)
-                          .join(' · ')}
-                      </div>
-                    </div>
-                    <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-emerald-900/40 text-emerald-200 border border-emerald-700/40">
-                      Solgt
-                    </span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {!isSsuClient(client) && (
-                      <button
-                        type="button"
-                        onClick={() => openPublicPreview(client)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                        title={publicPreviewUrl || 'Preview'}
-                      >
-                        <ExternalLink size={13} />
-                        Open preview
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onMovedToDevelopment?.();
-                        setNotice(`${client.businessName || 'Kunden'} ligger under Utvikling → Deployment.`);
-                      }}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-900/40 border border-emerald-700/40 text-emerald-200 text-xs"
-                    >
-                      Solgt nettside
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void toggleProgress(client, 'contractSigned')}
-                      disabled={progressBusyKey === `${client.id}:contractSigned`}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
-                      title="Angre kontrakt signert og send kunden tilbake i handlinglisten"
-                    >
-                      Tilbake til salg
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
+            {winClients.map((client) => renderSalesClientCard(client, true))}
           </div>
         </div>
       )}

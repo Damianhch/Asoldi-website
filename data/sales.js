@@ -684,6 +684,7 @@ export function setSalesNextAction(id, patch = {}) {
     throw error;
   }
   const updates = { nextActions: applied.nextActions };
+  if (applied.progression) updates.progression = applied.progression;
   if (Object.prototype.hasOwnProperty.call(applied, 'meetingAt')) {
     updates.meetingAt = applied.meetingAt;
     updates.agreedTime = Boolean(applied.agreedTime);
