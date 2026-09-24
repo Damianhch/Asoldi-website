@@ -581,11 +581,11 @@ export function SalesOfferComposer() {
                   {!locked && (
                     <div className="flex flex-wrap items-end gap-2">
                       <label className="text-xs text-gray-400 flex-1 min-w-[220px]">
-                        Møtenavn fra Fireflies
+                        Møtenavn eller Fireflies-lenke
                         <input
                           value={meetingQuery}
                           onChange={(event) => setMeetingQuery(event.target.value)}
-                          placeholder="Lim inn møtenavnet"
+                          placeholder="Møtenavn eller https://app.fireflies.ai/view/…"
                           className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm"
                         />
                       </label>

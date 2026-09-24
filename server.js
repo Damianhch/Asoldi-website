@@ -105,9 +105,13 @@ import {
 import {
   authorizeFirefliesWebhook,
   isFirefliesWebhookConfigured,
+  buildFirefliesMeetingRecord,
+  fetchFirefliesTranscript,
+  firefliesIdsFromPaste,
   listStoredFirefliesMeetings,
   meetingRefForClient,
   rankMeetingsByTitle,
+  storeFirefliesMeeting,
   notifyFirefliesRecording,
   readFirefliesWebhookConfig,
   readStoredFirefliesMeeting,
@@ -12505,11 +12509,35 @@ app.post('/api/admin/sales/:id/offer/use-meeting', salesAuth, async (req, res) =
     return res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated) });
   }
   const meetingId = sanitizeText(req.body?.meetingId);
+  const pasted = sanitizeText(req.body?.title || req.body?.query || '');
   let record = meetingId ? readStoredFirefliesMeeting(meetingId) : null;
   if (!record) {
-    const matches = rankMeetingsByTitle(listStoredFirefliesMeetings({}), req.body?.title || req.body?.query || '');
+    const stored = listStoredFirefliesMeetings({});
+    let matches = rankMeetingsByTitle(stored, pasted);
     if (!matches.length) {
-      return res.status(404).json({ message: 'Fant ikke møtet i Fireflies-innboksen. Sjekk navnet, eller vent til opptaket er sendt inn.' });
+      const config = readFirefliesWebhookConfig();
+      for (const id of firefliesIdsFromPaste(pasted)) {
+        const known = readStoredFirefliesMeeting(id);
+        if (known) {
+          matches = [known];
+          break;
+        }
+        if (!config.apiKey) continue;
+        try {
+          const transcript = await fetchFirefliesTranscript(id, { apiKey: config.apiKey });
+          const built = buildFirefliesMeetingRecord({ meeting_id: transcript?.id || id }, transcript);
+          if (built?.meetingId) {
+            storeFirefliesMeeting(built);
+            matches = [readStoredFirefliesMeeting(built.meetingId) || built];
+            break;
+          }
+        } catch {
+          // Try the next id form (full slug, then the part after ::).
+        }
+      }
+    }
+    if (!matches.length) {
+      return res.status(404).json({ message: 'Fant ikke møtet i Fireflies. Sjekk navnet eller lenken, eller vent til opptaket er sendt inn.' });
     }
     if (matches.length > 1 && !meetingId) {
       return res.json({

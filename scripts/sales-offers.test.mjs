@@ -113,6 +113,15 @@ test('pasted Fireflies title finds the stored meeting', async () => {
   const hit = hooks.rankMeetingsByTitle(rows, 'Byneset Bydelskafé');
   assert.equal(hit[0].meetingId, 'aaa');
   assert.equal(hooks.rankMeetingsByTitle(rows, 'ab').length, 0);
+  const linked = hooks.rankMeetingsByTitle(
+    [{ meetingId: '01M39D9CR6WJ5C5BQHKWV3YE6D', title: 'Sales meeting', transcriptUrl: 'https://app.fireflies.ai/view/sales-meeting::01M39D9CR6WJ5C5BQHKWV3YE6D' }],
+    'https://app.fireflies.ai/view/sales-meeting::01M39D9CR6WJ5C5BQHKWV3YE6D'
+  );
+  assert.equal(linked[0].meetingId, '01M39D9CR6WJ5C5BQHKWV3YE6D');
+  assert.deepEqual(
+    hooks.firefliesIdsFromPaste('https://app.fireflies.ai/view/sales-meeting::01M39D9CR6WJ5C5BQHKWV3YE6D'),
+    ['sales-meeting::01M39D9CR6WJ5C5BQHKWV3YE6D', '01M39D9CR6WJ5C5BQHKWV3YE6D']
+  );
 });
 
 test('fireflies matcher: only the booked sales meeting counts, not a later calendar reminder', () => {
