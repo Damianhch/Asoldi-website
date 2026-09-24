@@ -246,11 +246,17 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   const fillCall = seen[0];
   assert.match(fillCall.system, /bare én seksjon/i);
   assert.match(fillCall.system, /ikke gjenta/i);
-  assert.match(fillCall.system, /nøyaktig 3 avsnitt/i);
+  assert.match(fillCall.system, /Kunden vil at/i);
+  assert.match(fillCall.system, /Vi kommer til å fokusere på/i);
+  assert.match(fillCall.user, /Takk for samtalen om \{\{need\}\}/);
+  assert.match(fillCall.user, /Vi tar en workshop der vi går gjennom dette/);
+  assert.match(fillCall.system, /allerede står/i);
+  assert.doesNotMatch(fillCall.system, /Aldri start med/i);
+  assert.doesNotMatch(fillCall.system, /I samtalen la dere/i);
   assert.doesNotMatch(fillCall.user, /SEO optimization/i);
   assert.doesNotMatch(fillCall.user, /opp til 7 sider/i);
   assert.doesNotMatch(fillCall.system, /enkelt CMS/i);
-  assert.match(fillCall.system, /uten ordene "kundebetingelser"/i);
+  assert.match(fillCall.system, /uten ordet "kundebetingelser"/i);
 
   const products = offerEmail.productsWithTier([], tiers.WEBSITE_TIERS[1].id);
   const summary = await offerAi.reflectContractFromEmail({ emailHtml: '<p>Tilbud</p>', products, deps: { chat } });
