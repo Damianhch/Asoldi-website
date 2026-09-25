@@ -68,6 +68,11 @@ import { confirmationSendGaps } from './lib/sales-next-actions.js';
 import { normalizeStoredWebsiteEmail, resolveWebsiteEmail } from './lib/sales-website-email.js';
 import { extractBookingFromLead } from './lib/sales-booking-facts.js';
 import {
+  generalSalesOwnerKeys,
+  isGeneralSalesOwnerKey,
+  resolveMyphonerSalesOwnerId as pickMyphonerSalesOwnerId,
+} from './lib/myphoner-sales-owner.js';
+import {
   buildOfferEmailForClient,
   composeEmailForClient,
   deleteEmailTemplate,
@@ -5605,52 +5610,36 @@ function findSalesClientForMyphonerLead(lead = {}, resourcePath = '') {
   return findSalesClientByPhone(phone);
 }
 
-async function resolveMyphonerSalesOwnerId(lead = {}, existingOwnerId = '') {
-  const source = lead && typeof lead === 'object' ? lead : {};
-  const existing = sanitizeText(existingOwnerId);
+async function listSalesUsers() {
   let users = [];
   try {
     users = await store.getAllUsers();
   } catch {
     users = [];
   }
-  const salesUsers = Array.isArray(users)
+  return Array.isArray(users)
     ? users.filter((user) => sanitizeText(user?.role).toLowerCase() === 'sales' && sanitizeText(user?.id))
     : [];
-  const salesOwnerFromUser = (user = null) => {
-    const id = sanitizeText(user?.id);
-    return id ? `sales:${id}` : '';
-  };
-  const findSalesByEmail = (email = '') => {
-    const target = normalizeEmail(email);
-    if (!target) return null;
-    return salesUsers.find((user) => normalizeEmail(user?.username) === target) || null;
-  };
-  const claimedSalesUser = findSalesByEmail(source.claimed_by || source.claimedBy);
-  if (claimedSalesUser) {
-    const claimedOwner = salesOwnerFromUser(claimedSalesUser);
-    if (claimedOwner) return claimedOwner;
-  }
-  if (existing.startsWith('sales:')) return existing;
+}
 
-  const configuredOwnerRaw = sanitizeText(MYPHONER_DEFAULT_SALES_OWNER_KEY);
-  const configuredOwnerLower = configuredOwnerRaw.toLowerCase();
-  if (configuredOwnerLower.startsWith('sales:')) return configuredOwnerRaw;
-  if (configuredOwnerRaw && !configuredOwnerRaw.includes(':')) {
-    const configuredSalesUser = findSalesByEmail(configuredOwnerRaw);
-    if (configuredSalesUser) {
-      const configuredSalesOwner = salesOwnerFromUser(configuredSalesUser);
-      if (configuredSalesOwner) return configuredSalesOwner;
-    }
-  }
+/** MyPhoner holds the client on admin:damian@asoldi.com. A rep already chosen in Sales is kept. */
+async function resolveMyphonerSalesOwnerId(_lead = {}, existingOwnerId = '') {
+  const salesUsers = await listSalesUsers();
+  return pickMyphonerSalesOwnerId({
+    existingOwnerId,
+    salesUsers,
+    defaultOwnerKey: MYPHONER_DEFAULT_SALES_OWNER_KEY,
+  });
+}
 
-  if (salesUsers.length) {
-    const fallbackSalesOwner = salesOwnerFromUser(salesUsers[0]);
-    if (fallbackSalesOwner) return fallbackSalesOwner;
-  }
-  if (existing) return existing;
-  if (configuredOwnerRaw) return configuredOwnerRaw;
-  return '';
+async function ownerIsGeneralSalesBucket(accountKey = '') {
+  const key = sanitizeText(accountKey);
+  if (!key.startsWith('sales:')) return false;
+  const salesUsers = await listSalesUsers();
+  return isGeneralSalesOwnerKey(key, {
+    salesUsers,
+    defaultOwnerKey: MYPHONER_DEFAULT_SALES_OWNER_KEY,
+  });
 }
 
 async function upsertSalesClientFromMyphonerLead({
@@ -5708,7 +5697,7 @@ async function upsertSalesClientFromMyphonerLead({
     client = sales.updateSalesClient(existing.id, {
       ...mergedInput,
       product,
-      ownerId: resolvedOwnerId || existing.ownerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      ownerId: resolvedOwnerId,
       myphoner: {
         ...(existing.myphoner || {}),
         ...myphonerPatch,
@@ -5723,7 +5712,7 @@ async function upsertSalesClientFromMyphonerLead({
     const createPayload = {
       ...incomingInput,
       product,
-      ownerId: resolvedOwnerId || MYPHONER_DEFAULT_SALES_OWNER_KEY,
+      ownerId: resolvedOwnerId,
       myphoner: {
         ...myphonerPatch,
         leadIds: mergedLeadIds,
@@ -8105,6 +8094,10 @@ function applyRecipientEmail(client, to = '') {
 async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAssigned = false } = {}) {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return { sent: false, reason: 'manual-only', client };
   if (!isSalesRepAccountKey(client?.ownerId)) return { sent: false, reason: 'owner-not-assigned', client };
+  // damian@asoldi.com is the old MyPhoner catch-all. Only an explicit assign sends from it.
+  if (!ownerJustAssigned && await ownerIsGeneralSalesBucket(client.ownerId)) {
+    return { sent: false, reason: 'general-owner', client };
+  }
   const gaps = confirmationSendGaps(client);
   if (gaps.length) return { sent: false, reason: 'missing-fields', client, gaps };
   if (client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent', client };
@@ -8292,8 +8285,14 @@ async function sendDueSalesReminders() {
     const nowMs = Date.now();
     const catchupMs = 6 * 60 * 60 * 1000;
     const clients = sales.getSalesClients();
+    const salesUsers = await listSalesUsers();
+    const generalOwners = generalSalesOwnerKeys({
+      salesUsers,
+      defaultOwnerKey: MYPHONER_DEFAULT_SALES_OWNER_KEY,
+    });
     for (const client of clients) {
       if (!isSalesRepAccountKey(client.ownerId)) continue;
+      if (generalOwners.has(sanitizeText(client.ownerId))) continue;
       if (!client.agreedTime || !client.meetingAt) continue;
       const meetingMs = new Date(client.meetingAt).getTime();
       if (!Number.isFinite(meetingMs) || meetingMs <= nowMs) continue;
