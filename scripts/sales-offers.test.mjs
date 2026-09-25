@@ -160,7 +160,10 @@ test('offer draft shows the client and the editing rep instead of identity merge
   assert.match(old, /Dere sender logo/);
   assert.doesNotMatch(old, /eget CMS/);
   assert.doesNotMatch(old, /Vedlagt ligger kontrakten/);
-  assert.match(old, /Hva som skjer fremover[\s\S]*avtale oppstarts tid/);
+  assert.match(old, /Hva som skjer fremover[\s\S]*signert kontrakten som er vedlagt/);
+  const fromReply = offerEmail.refreshOfferShell('<h2>Hva som skjer fremover</h2><p data-offer-fixed="next">Etter at dere har sett på tilbudet og vi har mottatt svar vil vi avtale oppstarts tid.</p>');
+  assert.match(fromReply, /signert kontrakten som er vedlagt/);
+  assert.doesNotMatch(fromReply, /mottatt svar/);
 });
 
 test('offer readiness: contract fields must be on the client card', () => {
@@ -263,7 +266,7 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   assert.match(fillCall.system, /Kall mottakeren "kunden"/i);
   assert.doesNotMatch(fillCall.system, /Kunden vil at …/);
   const letter = offerEmail.offerLetterAlreadyWritten();
-  assert.match(letter, /\{\{terms\}\}[\s\S]*Hva er inkludert[\s\S]*\{\{benefits\}\}[\s\S]*Hva som skjer fremover[\s\S]*avtale oppstarts tid/);
+  assert.match(letter, /\{\{terms\}\}[\s\S]*Hva er inkludert[\s\S]*\{\{benefits\}\}[\s\S]*Hva som skjer fremover[\s\S]*signert kontrakten som er vedlagt/);
   assert.doesNotMatch(letter, /eget CMS/);
   assert.match(fillCall.system, /allerede står/i);
   assert.doesNotMatch(fillCall.system, /Aldri start med/i);
