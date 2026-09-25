@@ -302,11 +302,11 @@ export async function createRunViaMakerPopup(
       finish(() =>
         reject(
           new Error(
-            `Timed out creating the run at ${makerOrigin}. Confirm Website Maker is open in this browser and try again.`
+            `Timed out creating the run at ${makerOrigin}. Website Maker was still compiling that page. Wait a moment and try again.`
           )
         )
       );
-    }, 90_000);
+    }, 180_000);
     const closeWatcherId = window.setInterval(() => {
       if (!popup.closed) return;
       finish(() => reject(new Error('The Website Maker popup was closed before the run was created.')));
