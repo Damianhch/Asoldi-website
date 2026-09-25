@@ -227,6 +227,9 @@ function normalizeCalendar(value = {}) {
     syncedAt: sanitizeText(input.syncedAt),
     guestInvitedAt: sanitizeText(input.guestInvitedAt),
     firefliesInvitedAt: sanitizeText(input.firefliesInvitedAt),
+    firefliesLiveJoinedAt: sanitizeText(input.firefliesLiveJoinedAt),
+    firefliesLiveJoinAttemptAt: sanitizeText(input.firefliesLiveJoinAttemptAt),
+    firefliesLiveJoinError: sanitizeText(input.firefliesLiveJoinError),
     inviteSequence: Number.isFinite(Number(input.inviteSequence)) && Number(input.inviteSequence) > 0
       ? Math.trunc(Number(input.inviteSequence))
       : 0,
@@ -815,6 +818,9 @@ export function clearSalesMeetingScheduling(id) {
       syncedAt: '',
       guestInvitedAt: '',
       firefliesInvitedAt: '',
+      firefliesLiveJoinedAt: '',
+      firefliesLiveJoinAttemptAt: '',
+      firefliesLiveJoinError: '',
       inviteSequence: 0,
     },
   });

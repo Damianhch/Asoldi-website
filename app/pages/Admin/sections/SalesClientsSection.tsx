@@ -1705,7 +1705,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       type="button"
                       onClick={() => window.open(salesMeetLink(client), '_blank')}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                      title="Åpner Meet-rommet med en gang. Fireflies blir med ved kalendertid — slipp ham inn under Deltakere → Med potensiell risiko."
+                      title="Åpner Meet-rommet. Fireflies sendes inn ved kalendertid via API — slipp ham inn under Deltakere hvis Meet ber om det."
                     >
                       <ExternalLink size={13} />
                       Meet link
@@ -1912,6 +1912,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                             Fireflies: {client.calendar?.firefliesInvitedAt
                               ? `invitert ${formatWhen(client.calendar.firefliesInvitedAt)}`
                               : 'ikke invitert på Google-eventet — send bekreftelse på nytt'}
+                            {client.calendar?.firefliesLiveJoinedAt
+                              ? ` · sendt inn i Meet ${formatWhen(client.calendar.firefliesLiveJoinedAt)}`
+                              : client.calendar?.firefliesLiveJoinError
+                                ? ` · live-join: ${client.calendar.firefliesLiveJoinError}`
+                                : client.reminders?.thankYouSentAt
+                                  ? ' · sendes inn i Meet ved start (uavhengig av Fireflies Upcoming)'
+                                  : ''}
                           </li>
                           <li>
                             Thank-you sent: {client.reminders?.thankYouSentAt ? formatWhen(client.reminders.thankYouSentAt) : 'No'}

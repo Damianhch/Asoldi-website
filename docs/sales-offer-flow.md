@@ -112,6 +112,10 @@ For an offer: tier contract when only a tier is present; admin-verified summary 
   unassigned calendar creates keep him off the attendee list so Google does not
   save-without-sending. If he was already saved on the event, confirmation send
   removes and re-adds him so Fireflies gets a real invite.
+* Calendar sync often never lists sales-page events in Fireflies Upcoming (the
+  confirmation From address is Resend, not the Google organizer). At meeting
+  start Asoldi also calls Fireflies `addToLiveMeeting` with the Meet link so Fred
+  joins even when Upcoming is empty. Retries stay under the API cap (3 / 20 min).
 * Webhook `POST /api/webhooks/fireflies?token=…` (`lib/fireflies-webhook.js`) stores the meeting record and runs
   `lib/fireflies-client-match.js`: attendee e-mail = `contactEmail` (+70), attendee domain = client website (+30),
   host = client’s rep (+15), start within 45 min / 3 h of `meetingAt` (+35 / +25), contact name / business name in

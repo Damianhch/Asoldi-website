@@ -112,6 +112,9 @@ import {
 } from './lib/fathom-webhook.js';
 import {
   authorizeFirefliesWebhook,
+  addFirefliesToLiveMeeting,
+  firefliesLiveJoinShouldWait,
+  firefliesLiveJoinWindow,
   isFirefliesWebhookConfigured,
   buildFirefliesMeetingRecord,
   fetchFirefliesTranscript,
@@ -296,6 +299,8 @@ const CLOUDFLARED_WINDOWS_CANDIDATES = [
 const LOCAL_RECORDING_EXTENSIONS = new Set(['.wav', '.mp3', '.m4a', '.ogg', '.flac']);
 let salesReminderLoopRunning = false;
 let salesReminderInterval = null;
+let firefliesJoinLoopRunning = false;
+let firefliesJoinInterval = null;
 let makerTunnelProcess = null;
 let makerTunnelUrl = '';
 let makerTunnelTargetUrl = '';
@@ -7850,12 +7855,21 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
         calendarMeta.guestInvitedAt = '';
         calendarMeta.inviteSequence = 0;
         calendarMeta.firefliesInvitedAt = '';
+        calendarMeta.firefliesLiveJoinedAt = '';
+        calendarMeta.firefliesLiveJoinAttemptAt = '';
+        calendarMeta.firefliesLiveJoinError = '';
+      }
+      if (sanitizeText(previousClient?.meetingAt) !== sanitizeText(nextClient?.meetingAt)) {
+        calendarMeta.firefliesLiveJoinedAt = '';
+        calendarMeta.firefliesLiveJoinAttemptAt = '';
+        calendarMeta.firefliesLiveJoinError = '';
       }
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
       calendarInviteSent = notifyAttendees;
+      const organizerEmail = sanitizeText(getGoogleCalendarStatus(accountKey).googleEmail);
       console.log(
-        `[calendar] upsert id=${sanitizeText(nextClient?.id)} event=${sanitizeText(nextClient?.calendar?.eventId)} meet=${sanitizeText(nextClient?.calendar?.meetLink)} sendUpdates=${notifyAttendees ? 'all' : 'none'} notify=${notifyAttendees} fireflies=${calendarMeta.firefliesInvited ? 'invited' : (sanitizeText(nextClient?.calendar?.firefliesInvitedAt) ? 'kept' : 'skipped')}`
+        `[calendar] upsert id=${sanitizeText(nextClient?.id)} event=${sanitizeText(nextClient?.calendar?.eventId)} meet=${sanitizeText(nextClient?.calendar?.meetLink)} sendUpdates=${notifyAttendees ? 'all' : 'none'} notify=${notifyAttendees} fireflies=${calendarMeta.firefliesInvited ? 'invited' : (sanitizeText(nextClient?.calendar?.firefliesInvitedAt) ? 'kept' : 'skipped')} organizer=${organizerEmail || accountKey}`
       );
       if (
         sanitizeText(nextClient?.ownerId) &&
@@ -8103,8 +8117,14 @@ function applyRecipientEmail(client, to = '') {
 /** After confirmation already went out, add Fred on the live Google event if he was never emailed. */
 async function inviteFirefliesAfterConfirmation(client, { actorAccountKey = '' } = {}) {
   if (normalizeMeetingMode(client?.meetingMode) !== 'online') return { client, invited: false };
-  if (!firefliesNotetakerEmail() || sanitizeText(client?.calendar?.firefliesInvitedAt)) {
-    return { client, invited: false };
+  if (!firefliesNotetakerEmail()) return { client, invited: false };
+  if (sanitizeText(client?.calendar?.firefliesInvitedAt)) {
+    const liveJoin = await maybeJoinFirefliesLive(client);
+    return {
+      client: liveJoin.client || client,
+      invited: true,
+      warnings: liveJoin.warnings || [],
+    };
   }
   if (!isSalesRepAccountKey(client?.ownerId)) return { client, invited: false };
   if (!client?.agreedTime || !client?.meetingAt) return { client, invited: false };
@@ -8113,10 +8133,13 @@ async function inviteFirefliesAfterConfirmation(client, { actorAccountKey = '' }
     forceGuestInvite: false,
     actorAccountKey: actorAccountKey || client.ownerId,
   });
+  client = syncResult.client || client;
+  const liveJoin = await maybeJoinFirefliesLive(client);
+  if (liveJoin.client) client = liveJoin.client;
   return {
-    client: syncResult.client || client,
-    invited: Boolean(sanitizeText(syncResult.client?.calendar?.firefliesInvitedAt)),
-    warnings: syncResult.warnings || [],
+    client,
+    invited: Boolean(sanitizeText(client?.calendar?.firefliesInvitedAt)),
+    warnings: [...(syncResult.warnings || []), ...(liveJoin.warnings || [])],
   };
 }
 
@@ -8204,14 +8227,18 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
     icalEvent: composed.icalEvent,
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
+  client = updated || client;
+  const liveJoin = isOnline ? await maybeJoinFirefliesLive(client) : { joined: false };
+  if (liveJoin.client) client = liveJoin.client;
+  const warnings = [...(syncResult.warnings || []), ...(liveJoin.warnings || [])];
   return {
     sent: true,
-    client: updated || client,
+    client,
     channel: 'email',
     meetLink,
     from: composed.from,
     copyTo: salesEmailCopyBcc(recipient),
-    warnings: syncResult.warnings || [],
+    warnings,
   };
 }
 
@@ -8363,11 +8390,96 @@ async function sendDueSalesReminders() {
   }
 }
 
+async function maybeJoinFirefliesLive(client, { force = false } = {}) {
+  const warnings = [];
+  if (normalizeMeetingMode(client?.meetingMode) !== 'online') {
+    return { joined: false, reason: 'not-online', client, warnings };
+  }
+  if (!sanitizeText(client?.reminders?.thankYouSentAt) && !sanitizeText(client?.calendar?.firefliesInvitedAt)) {
+    return { joined: false, reason: 'not-confirmed', client, warnings };
+  }
+  if (!force && sanitizeText(client?.calendar?.firefliesLiveJoinedAt)) {
+    return { joined: false, reason: 'already-joined', client, warnings };
+  }
+  const meetLink = sanitizeText(client?.calendar?.meetLink);
+  if (!isRealGoogleMeetLink(meetLink)) {
+    return { joined: false, reason: 'no-meet', client, warnings };
+  }
+  if (!force && !firefliesLiveJoinWindow({ meetingAt: client?.meetingAt })) {
+    return { joined: false, reason: 'outside-window', client, warnings };
+  }
+  if (!force && firefliesLiveJoinShouldWait({ attemptAt: client?.calendar?.firefliesLiveJoinAttemptAt })) {
+    return { joined: false, reason: 'retry-wait', client, warnings };
+  }
+  const config = readFirefliesWebhookConfig();
+  if (!config.apiKey) {
+    warnings.push('Fireflies API key is missing, so Fred cannot be sent into the Meet from Asoldi.');
+    return { joined: false, reason: 'no-api-key', client, warnings };
+  }
+  const attemptedAt = new Date().toISOString();
+  try {
+    const result = await addFirefliesToLiveMeeting({
+      meetingLink: meetLink,
+      title: buildEventSummary(client),
+      apiKey: config.apiKey,
+    });
+    if (!result.ok) {
+      const message = result.message || 'Fireflies did not accept the live join.';
+      sales.setSalesCalendar(client.id, {
+        firefliesLiveJoinAttemptAt: attemptedAt,
+        firefliesLiveJoinError: message,
+      });
+      console.warn(`[fireflies] live-join failed id=${sanitizeText(client.id)} ${message}`);
+      warnings.push(message);
+      return { joined: false, reason: message, client, warnings };
+    }
+    const next = sales.setSalesCalendar(client.id, {
+      firefliesLiveJoinedAt: attemptedAt,
+      firefliesLiveJoinAttemptAt: attemptedAt,
+      firefliesLiveJoinError: '',
+    });
+    console.log(`[fireflies] live-join id=${sanitizeText(client.id)} meet=${meetLink}`);
+    return { joined: true, reason: 'joined', client: next || client, warnings };
+  } catch (error) {
+    const message = sanitizeText(error?.message) || 'Fireflies live join failed.';
+    sales.setSalesCalendar(client.id, {
+      firefliesLiveJoinAttemptAt: attemptedAt,
+      firefliesLiveJoinError: message,
+    });
+    console.warn(`[fireflies] live-join error id=${sanitizeText(client.id)} ${message}`);
+    warnings.push(message);
+    return { joined: false, reason: message, client, warnings };
+  }
+}
+
+async function sendDueFirefliesLiveJoins() {
+  if (firefliesJoinLoopRunning) return;
+  firefliesJoinLoopRunning = true;
+  try {
+    for (const client of sales.getSalesClients()) {
+      if (!client?.agreedTime || !client?.meetingAt) continue;
+      if (normalizeMeetingMode(client.meetingMode) !== 'online') continue;
+      await maybeJoinFirefliesLive(client);
+    }
+  } catch (error) {
+    console.error('[fireflies] live-join tick failed', error);
+  } finally {
+    firefliesJoinLoopRunning = false;
+  }
+}
+
 function startSalesReminderLoop() {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return;
   if (salesReminderInterval) return;
   salesReminderInterval = setInterval(() => {
     sendDueSalesReminders().catch((error) => console.error('Sales reminder tick failed:', error));
+  }, SALES_REMINDER_POLL_MS);
+}
+
+function startFirefliesLiveJoinLoop() {
+  if (firefliesJoinInterval) return;
+  firefliesJoinInterval = setInterval(() => {
+    sendDueFirefliesLiveJoins().catch((error) => console.error('[fireflies] live-join tick failed', error));
   }, SALES_REMINDER_POLL_MS);
 }
 
@@ -15011,11 +15123,13 @@ async function ensureData() {
 
 ensureData().then(() => {
   startSalesReminderLoop();
+  startFirefliesLiveJoinLoop();
   startMyphonerWebhookReconcileLoop();
   startMyphonerRecordingRetryLoop();
   startSalesGeocodeWarmupLoop();
   startLanPreviewAutoPublishLoop();
   sendDueSalesReminders().catch((error) => console.error('Initial sales reminder run failed:', error));
+  sendDueFirefliesLiveJoins().catch((error) => console.error('[fireflies] initial live-join failed:', error));
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on port ${PORT}`);
     console.log(`[audio] persistent=${MYPHONER_AUDIO_DIR} extra=${extraMyphonerAudioDirs().join('|') || '(none)'}`);

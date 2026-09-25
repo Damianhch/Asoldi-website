@@ -261,6 +261,9 @@ export type SalesCalendarMeta = {
   syncedAt: string;
   guestInvitedAt?: string;
   firefliesInvitedAt?: string;
+  firefliesLiveJoinedAt?: string;
+  firefliesLiveJoinAttemptAt?: string;
+  firefliesLiveJoinError?: string;
   inviteSequence?: number;
 };
 

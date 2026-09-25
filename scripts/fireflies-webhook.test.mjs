@@ -9,8 +9,11 @@ const dataDir = mkdtempSync(join(tmpdir(), 'asoldi-fireflies-webhook-'));
 process.env.APP_DATA_DIR = dataDir;
 
 const {
+  addFirefliesToLiveMeeting,
   authorizeFirefliesWebhook,
   buildFirefliesMeetingRecord,
+  firefliesLiveJoinShouldWait,
+  firefliesLiveJoinWindow,
   buildFirefliesNotifyEmail,
   eventFromPayload,
   fetchFirefliesTranscript,
@@ -167,4 +170,45 @@ test('bot-joined events are ignored', async () => {
     event: 'meeting.bot_joined',
     meetingId: 'ASxwZxCstx',
   });
+});
+
+test('live-join window is 3 minutes before through 15 minutes after start', () => {
+  const meetingAt = '2026-09-26T10:00:00.000Z';
+  const start = Date.parse(meetingAt);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt, nowMs: start - (3 * 60 * 1000) }), true);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt, nowMs: start - (3 * 60 * 1000) - 1 }), false);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt, nowMs: start }), true);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt, nowMs: start + (15 * 60 * 1000) }), true);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt, nowMs: start + (15 * 60 * 1000) + 1 }), false);
+  assert.equal(firefliesLiveJoinWindow({ meetingAt: 'not-a-date', nowMs: start }), false);
+});
+
+test('live-join retries wait 6 minutes after an attempt', () => {
+  const attemptAt = '2026-09-26T10:00:00.000Z';
+  const now = Date.parse(attemptAt);
+  assert.equal(firefliesLiveJoinShouldWait({ attemptAt, nowMs: now + (6 * 60 * 1000) - 1 }), true);
+  assert.equal(firefliesLiveJoinShouldWait({ attemptAt, nowMs: now + (6 * 60 * 1000) }), false);
+  assert.equal(firefliesLiveJoinShouldWait({ attemptAt: '', nowMs: now }), false);
+});
+
+test('addToLiveMeeting posts the Meet link to Fireflies GraphQL', async () => {
+  let captured;
+  const result = await addFirefliesToLiveMeeting({
+    meetingLink: 'https://meet.google.com/pfk-wrzo-qfy',
+    title: 'Asoldi · Online møte · Test',
+    apiKey: 'ff-key',
+    fetchImpl: async (url, options) => {
+      captured = { url, options };
+      return {
+        ok: true,
+        json: async () => ({ data: { addToLiveMeeting: { success: true, message: 'ok' } } }),
+      };
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(captured.url, 'https://api.fireflies.ai/graphql');
+  const body = JSON.parse(captured.options.body);
+  assert.match(body.query, /addToLiveMeeting/);
+  assert.equal(body.variables.meetingLink, 'https://meet.google.com/pfk-wrzo-qfy');
+  assert.equal(captured.options.headers.Authorization, 'Bearer ff-key');
 });
