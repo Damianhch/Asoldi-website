@@ -99,7 +99,8 @@ ex. MVA, MVA 25 % and incl. MVA **per month** (retainer). The shell has no envel
 
 `lib/offer-contract-pdf.js` (pdfkit). Sections follow the original “Web utviklings kontrakt” template: parties,
 scope summary (no price breakdown), monthly fee ex./incl. MVA, delivery, client obligations, IP, termination,
-signatures. Three blank tier templates: `GET /api/admin/offers/contract-template/<tierId>.pdf`.
+signatures. Asoldi’s handwritten signature is stamped above the Service Provider line
+(`assets/asoldi-contract-signature.png`). Three blank tier templates: `GET /api/admin/offers/contract-template/<tierId>.pdf`.
 For an offer: tier contract when only a tier is present; admin-verified summary when custom products exist.
 
 ## Fireflies meeting data

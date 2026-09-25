@@ -173,10 +173,17 @@ test('offer readiness: contract fields must be on the client card', () => {
 });
 
 test('contract pdf: tier contract and custom-summary contract both render a PDF', async () => {
+  const { existsSync } = await import('node:fs');
+  const { dirname, join } = await import('node:path');
+  const { fileURLToPath } = await import('node:url');
+  const signaturePng = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'asoldi-contract-signature.png');
+  assert.equal(existsSync(signaturePng), true, 'Asoldi signature PNG is in the repo');
+
   const tierBuffer = await contractPdf.buildContractPdf({ client: CLIENT, tierId: tiers.WEBSITE_TIERS[0].id });
   assert.ok(Buffer.isBuffer(tierBuffer));
   assert.equal(tierBuffer.subarray(0, 5).toString(), '%PDF-');
-  assert.ok(tierBuffer.length > 2000);
+  assert.ok(tierBuffer.length > 8000, 'signed contract embeds the Asoldi signature image');
+  assert.match(tierBuffer.toString('latin1'), /\/Subtype\s*\/Image/);
 
   const summary = {
     title: 'Avtale om nettside og drift',
