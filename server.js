@@ -8119,7 +8119,7 @@ async function inviteFirefliesAfterConfirmation(client, { actorAccountKey = '' }
   if (normalizeMeetingMode(client?.meetingMode) !== 'online') return { client, invited: false };
   if (!firefliesNotetakerEmail()) return { client, invited: false };
   if (sanitizeText(client?.calendar?.firefliesInvitedAt)) {
-    const liveJoin = await maybeJoinFirefliesLive(client);
+    const liveJoin = await maybeJoinFirefliesLive(client, { ignoreRetryWait: true });
     return {
       client: liveJoin.client || client,
       invited: true,
@@ -8134,7 +8134,7 @@ async function inviteFirefliesAfterConfirmation(client, { actorAccountKey = '' }
     actorAccountKey: actorAccountKey || client.ownerId,
   });
   client = syncResult.client || client;
-  const liveJoin = await maybeJoinFirefliesLive(client);
+  const liveJoin = await maybeJoinFirefliesLive(client, { ignoreRetryWait: true });
   if (liveJoin.client) client = liveJoin.client;
   return {
     client,
@@ -8228,7 +8228,7 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
   });
   const updated = sales.markSalesReminderSent(client.id, 'thankYou');
   client = updated || client;
-  const liveJoin = isOnline ? await maybeJoinFirefliesLive(client) : { joined: false };
+  const liveJoin = isOnline ? await maybeJoinFirefliesLive(client, { ignoreRetryWait: true }) : { joined: false };
   if (liveJoin.client) client = liveJoin.client;
   const warnings = [...(syncResult.warnings || []), ...(liveJoin.warnings || [])];
   return {
@@ -8390,7 +8390,15 @@ async function sendDueSalesReminders() {
   }
 }
 
-async function maybeJoinFirefliesLive(client, { force = false } = {}) {
+function firefliesLiveJoinTitle(client) {
+  return [sanitizeText(client?.businessName), sanitizeText(client?.contactPerson)].filter(Boolean).join(' · ') || 'Asoldi møte';
+}
+
+function firefliesLiveJoinErrorIsCodeBug(message = '') {
+  return /is not defined|buildEventSummary/i.test(sanitizeText(message));
+}
+
+async function maybeJoinFirefliesLive(client, { force = false, ignoreRetryWait = false } = {}) {
   const warnings = [];
   if (normalizeMeetingMode(client?.meetingMode) !== 'online') {
     return { joined: false, reason: 'not-online', client, warnings };
@@ -8408,7 +8416,13 @@ async function maybeJoinFirefliesLive(client, { force = false } = {}) {
   if (!force && !firefliesLiveJoinWindow({ meetingAt: client?.meetingAt })) {
     return { joined: false, reason: 'outside-window', client, warnings };
   }
-  if (!force && firefliesLiveJoinShouldWait({ attemptAt: client?.calendar?.firefliesLiveJoinAttemptAt })) {
+  const lastError = sanitizeText(client?.calendar?.firefliesLiveJoinError);
+  if (
+    !force
+    && !ignoreRetryWait
+    && !firefliesLiveJoinErrorIsCodeBug(lastError)
+    && firefliesLiveJoinShouldWait({ attemptAt: client?.calendar?.firefliesLiveJoinAttemptAt })
+  ) {
     return { joined: false, reason: 'retry-wait', client, warnings };
   }
   const config = readFirefliesWebhookConfig();
@@ -8417,10 +8431,12 @@ async function maybeJoinFirefliesLive(client, { force = false } = {}) {
     return { joined: false, reason: 'no-api-key', client, warnings };
   }
   const attemptedAt = new Date().toISOString();
+  const title = firefliesLiveJoinTitle(client);
+  console.log(`[fireflies] live-join try id=${sanitizeText(client.id)} meet=${meetLink} title=${title}`);
   try {
     const result = await addFirefliesToLiveMeeting({
       meetingLink: meetLink,
-      title: buildEventSummary(client),
+      title,
       apiKey: config.apiKey,
     });
     if (!result.ok) {
