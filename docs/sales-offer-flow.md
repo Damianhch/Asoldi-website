@@ -75,7 +75,8 @@ weeks and included features live. `app/data/websiteProducts.ts`, `app/data/clien
 * `<div id="offer-products">…<div id="offer-products-end">` – the “Hva er inkludert” block. `applyOfferProducts`
   swaps it whenever products change (tier chosen, admin adds a product).
 * `data-offer-slot="need|project|terms|benefits|delivery"` – the nuance slots filled by DeepSeek
-  (`fillOfferSlots`) or by hand.
+  (`fillOfferSlots`) or by hand. Terms sit before “Hva er inkludert”. Benefits is one section
+  (what they achieve, where the site is built, and why). “Hva som skjer fremover” is fixed copy.
 
 Each product renders: name, “Opp til N sider”, included bullets, monthly price ex. MVA; the totals table shows
 ex. MVA, MVA 25 % and incl. MVA **per month** (retainer). The shell has no envelope illustration and the

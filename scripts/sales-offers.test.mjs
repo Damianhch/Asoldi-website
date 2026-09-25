@@ -155,10 +155,12 @@ test('offer draft shows the client and the editing rep instead of identity merge
   assert.match(html, /\+47 923 31 098/);
   assert.match(html, /\{\{need\}\}/);
   assert.equal(subject, 'Tilbud til Byneset Bydelskafé AS fra Asoldi');
-  const old = offerEmail.refreshOfferShell('<p><strong>Kundebetingelser:</strong> Dere sender logo.</p><h2>Hva som skjer fremover</h2><p>Etterpå avtaler vi oppstart.</p><p>Vedlagt ligger kontrakten for valgt pakke. Den signeres først når dere har bestemt dere – ingenting betales før nettsiden er levert.</p>');
+  const old = offerEmail.refreshOfferShell('<p><strong>Kundebetingelser:</strong> Dere sender logo.</p><p>Nettsiden bygges i vårt eget CMS. Der ligger automatiserte prosesser.</p><h2>Hva som skjer fremover</h2><p>Vedlagt ligger kontrakten for valgt pakke. Den signeres først når dere har bestemt dere – ingenting betales før nettsiden er levert.</p>');
   assert.equal(old.includes('Kundebetingelser'), false);
   assert.match(old, /Dere sender logo/);
-  assert.match(old, /Hva som skjer fremover[\s\S]*Vedlagt ligger kontrakten/);
+  assert.doesNotMatch(old, /eget CMS/);
+  assert.doesNotMatch(old, /Vedlagt ligger kontrakten/);
+  assert.match(old, /Hva som skjer fremover[\s\S]*avtale oppstarts tid/);
 });
 
 test('offer readiness: contract fields must be on the client card', () => {
@@ -254,7 +256,8 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   assert.match(fillCall.system, /Kall mottakeren "kunden"/i);
   assert.doesNotMatch(fillCall.system, /Kunden vil at …/);
   const letter = offerEmail.offerLetterAlreadyWritten();
-  assert.match(letter, /Hva er inkludert[\s\S]*eget CMS/);
+  assert.match(letter, /\{\{terms\}\}[\s\S]*Hva er inkludert[\s\S]*\{\{benefits\}\}[\s\S]*Hva som skjer fremover[\s\S]*avtale oppstarts tid/);
+  assert.doesNotMatch(letter, /eget CMS/);
   assert.match(fillCall.system, /allerede står/i);
   assert.doesNotMatch(fillCall.system, /Aldri start med/i);
   assert.doesNotMatch(fillCall.system, /I samtalen la dere/i);

@@ -88,7 +88,6 @@ import {
   offerSlotIsOpen,
   productsWithTier,
   refreshOfferShell,
-  ensurePlatformParagraph,
   resolveOfferIdentityTags,
   summarizeOfferProducts,
 } from './lib/offer-email.js';
@@ -12394,7 +12393,7 @@ async function fillOpenOfferSlotsFromSalesMeeting(offer, client, req) {
   if (!sanitizeText(meeting.transcript) && !sanitizeText(meeting.summary)) return offer;
   if (!isDeepseekConfigured()) return offer;
   const nuances = await fillOfferFromTranscript({ client, meeting, products: offer.products, tierId: offer.tierId });
-  const filled = ensurePlatformParagraph(fillOfferSlots(html, nuances, { onlyOpen: true }));
+  const filled = refreshOfferShell(fillOfferSlots(html, nuances, { onlyOpen: true }));
   if (filled === html) return offer;
   return salesOffers.updateSalesOffer(offer.id, {
     email: { html: filled },
@@ -12406,7 +12405,7 @@ async function fillOpenOfferSlotsFromSalesMeeting(offer, client, req) {
 async function composeOfferMessage(offer, client, req) {
   const sender = await resolveSalesSenderForAccount(req.salesUser);
   const composed = composeEmailForClient(client, 'offer', {
-    html: ensurePlatformParagraph(offer.email.html),
+    html: refreshOfferShell(offer.email.html),
     subject: offer.email.subject,
     preheader: offer.email.preheader,
   }, { sender, attachInvite: false, offer: { products: offer.products, mvaIncluded: offer.mvaIncluded } }).message;
