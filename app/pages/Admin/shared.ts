@@ -260,6 +260,7 @@ export type SalesCalendarMeta = {
   accountKey: string;
   syncedAt: string;
   guestInvitedAt?: string;
+  firefliesInvitedAt?: string;
   inviteSequence?: number;
 };
 

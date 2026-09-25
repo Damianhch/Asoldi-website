@@ -226,6 +226,7 @@ function normalizeCalendar(value = {}) {
     accountKey: sanitizeText(input.accountKey),
     syncedAt: sanitizeText(input.syncedAt),
     guestInvitedAt: sanitizeText(input.guestInvitedAt),
+    firefliesInvitedAt: sanitizeText(input.firefliesInvitedAt),
     inviteSequence: Number.isFinite(Number(input.inviteSequence)) && Number(input.inviteSequence) > 0
       ? Math.trunc(Number(input.inviteSequence))
       : 0,
@@ -813,6 +814,7 @@ export function clearSalesMeetingScheduling(id) {
       accountKey: '',
       syncedAt: '',
       guestInvitedAt: '',
+      firefliesInvitedAt: '',
       inviteSequence: 0,
     },
   });

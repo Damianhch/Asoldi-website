@@ -107,6 +107,11 @@ For an offer: tier contract when only a tier is present; admin-verified summary 
 
 ## Fireflies meeting data
 
+* Fred (`fred@fireflies.ai`) is invited on the Google Calendar event only when the
+  confirmation is actually sent — after a sales rep is assigned. Silent MyPhoner /
+  unassigned calendar creates keep him off the attendee list so Google does not
+  save-without-sending. If he was already saved on the event, confirmation send
+  removes and re-adds him so Fireflies gets a real invite.
 * Webhook `POST /api/webhooks/fireflies?token=…` (`lib/fireflies-webhook.js`) stores the meeting record and runs
   `lib/fireflies-client-match.js`: attendee e-mail = `contactEmail` (+70), attendee domain = client website (+30),
   host = client’s rep (+15), start within 45 min / 3 h of `meetingAt` (+35 / +25), contact name / business name in

@@ -156,6 +156,7 @@ import {
   createGoogleCalendarAuthUrl,
   deleteMeetingEvent,
   exchangeGoogleCalendarCode,
+  firefliesNotetakerEmail,
   getGoogleCalendarStatus,
   isRealGoogleMeetLink,
   findConnectedCalendarAccountKeysByGoogleEmail,
@@ -7833,23 +7834,28 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
           sendUpdates: notifyAttendees ? 'all' : 'none',
           includeAttendees: notifyAttendees || (guestAlreadyInvited && Boolean(eventIdForUpsert)),
           forceGuestInvite: notifyAttendees && (forceGuestInvite || !guestAlreadyInvited || !eventIdForUpsert),
-          // A second confirmation must reuse the Meet link already on the event.
-          addFireflies: isOnline,
+          // Fred only when the confirmation invite is actually sent. Silent
+          // MyPhoner/unassigned creates must not save him without emailing him.
+          addFireflies: isOnline && notifyAttendees,
         }
       );
       if (notifyAttendees) {
         const previousSequence = Number(nextClient?.calendar?.inviteSequence) || 0;
         calendarMeta.inviteSequence = previousSequence + 1;
         calendarMeta.guestInvitedAt = new Date().toISOString();
+        if (calendarMeta.firefliesInvited) {
+          calendarMeta.firefliesInvitedAt = calendarMeta.guestInvitedAt;
+        }
       } else if (sanitizeText(calendarMeta.eventId) !== currentEventId) {
         calendarMeta.guestInvitedAt = '';
         calendarMeta.inviteSequence = 0;
+        calendarMeta.firefliesInvitedAt = '';
       }
       const withCalendar = sales.setSalesCalendar(nextClient.id, calendarMeta);
       if (withCalendar) nextClient = withCalendar;
       calendarInviteSent = notifyAttendees;
       console.log(
-        `[calendar] upsert id=${sanitizeText(nextClient?.id)} event=${sanitizeText(nextClient?.calendar?.eventId)} meet=${sanitizeText(nextClient?.calendar?.meetLink)} sendUpdates=${notifyAttendees ? 'all' : 'none'} notify=${notifyAttendees}`
+        `[calendar] upsert id=${sanitizeText(nextClient?.id)} event=${sanitizeText(nextClient?.calendar?.eventId)} meet=${sanitizeText(nextClient?.calendar?.meetLink)} sendUpdates=${notifyAttendees ? 'all' : 'none'} notify=${notifyAttendees} fireflies=${calendarMeta.firefliesInvited ? 'invited' : (sanitizeText(nextClient?.calendar?.firefliesInvitedAt) ? 'kept' : 'skipped')}`
       );
       if (
         sanitizeText(nextClient?.ownerId) &&
@@ -8036,7 +8042,10 @@ async function backfillMissingSalesCalendarEvents({
 async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', requireMeetLink = false } = {}) {
   const alreadyInvited = Boolean(sanitizeText(client?.calendar?.guestInvitedAt));
   const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
-  const notifyAttendees = !alreadySent || !alreadyInvited;
+  const isOnlineMeeting = normalizeMeetingMode(client?.meetingMode) === 'online';
+  const firefliesNeeded = isOnlineMeeting && Boolean(firefliesNotetakerEmail());
+  const firefliesAlreadyInvited = Boolean(sanitizeText(client?.calendar?.firefliesInvitedAt));
+  const notifyAttendees = !alreadySent || !alreadyInvited || (firefliesNeeded && !firefliesAlreadyInvited);
   const syncResult = await maybeSyncCalendar(client, client, {
     notifyAttendees,
     forceGuestInvite: notifyAttendees && !alreadyInvited,
@@ -8090,6 +8099,26 @@ function applyRecipientEmail(client, to = '') {
   return { client: updated || { ...client, contactEmail: recipient }, recipient };
 }
 
+/** After confirmation already went out, add Fred on the live Google event if he was never emailed. */
+async function inviteFirefliesAfterConfirmation(client, { actorAccountKey = '' } = {}) {
+  if (normalizeMeetingMode(client?.meetingMode) !== 'online') return { client, invited: false };
+  if (!firefliesNotetakerEmail() || sanitizeText(client?.calendar?.firefliesInvitedAt)) {
+    return { client, invited: false };
+  }
+  if (!isSalesRepAccountKey(client?.ownerId)) return { client, invited: false };
+  if (!client?.agreedTime || !client?.meetingAt) return { client, invited: false };
+  const syncResult = await maybeSyncCalendar(client, client, {
+    notifyAttendees: true,
+    forceGuestInvite: false,
+    actorAccountKey: actorAccountKey || client.ownerId,
+  });
+  return {
+    client: syncResult.client || client,
+    invited: Boolean(sanitizeText(syncResult.client?.calendar?.firefliesInvitedAt)),
+    warnings: syncResult.warnings || [],
+  };
+}
+
 /** Confirmation goes out only after a sales rep owns the client, and it is sent as that rep. */
 async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAssigned = false } = {}) {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return { sent: false, reason: 'manual-only', client };
@@ -8100,7 +8129,17 @@ async function autoSendThankYouFromOwner(client, { existing = null, ownerJustAss
   }
   const gaps = confirmationSendGaps(client);
   if (gaps.length) return { sent: false, reason: 'missing-fields', client, gaps };
-  if (client?.reminders?.thankYouSentAt) return { sent: false, reason: 'already-sent', client };
+  if (client?.reminders?.thankYouSentAt) {
+    const healed = await inviteFirefliesAfterConfirmation(client, {
+      actorAccountKey: client.ownerId,
+    });
+    return {
+      sent: false,
+      reason: 'already-sent',
+      client: healed.client || client,
+      warnings: healed.warnings || [],
+    };
+  }
   const becameReady = !existing
     || ownerJustAssigned
     || confirmationSendGaps(existing).length > 0

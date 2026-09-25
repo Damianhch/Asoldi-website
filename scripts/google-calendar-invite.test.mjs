@@ -1,11 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  attendeesToReinvite,
   buildEventSummary,
   buildGoogleCalendarInvitationSubject,
   buildMeetingAttendees,
   calendarInviteLeadMs,
   firefliesNotetakerEmail,
+  shouldIncludeFireflies,
+  withoutAttendeeEmails,
 } from '../lib/google-calendar.js';
 
 const client = {
@@ -36,6 +39,62 @@ test('Fireflies is added only when the sales meeting asks for it', () => {
   const botOnly = buildMeetingAttendees(client, { includeAttendees: false, includeFireflies: true });
   assert.equal(botOnly.length, 1);
   assert.equal(botOnly[0].email, firefliesNotetakerEmail());
+});
+
+test('silent calendar creates do not add Fred until the invite is actually sent', () => {
+  assert.equal(shouldIncludeFireflies({
+    isOnline: true,
+    addFireflies: true,
+    sendUpdates: 'none',
+    alreadyOnEvent: false,
+  }), false);
+  assert.equal(shouldIncludeFireflies({
+    isOnline: true,
+    addFireflies: true,
+    sendUpdates: 'all',
+    alreadyOnEvent: false,
+  }), true);
+  assert.equal(shouldIncludeFireflies({
+    isOnline: true,
+    addFireflies: false,
+    sendUpdates: 'all',
+    alreadyOnEvent: false,
+  }), false);
+  assert.equal(shouldIncludeFireflies({
+    isOnline: false,
+    addFireflies: true,
+    sendUpdates: 'all',
+    alreadyOnEvent: false,
+  }), false);
+});
+
+test('silent updates keep Fred after he was already invited', () => {
+  assert.equal(shouldIncludeFireflies({
+    isOnline: true,
+    addFireflies: false,
+    sendUpdates: 'none',
+    alreadyOnEvent: true,
+  }), true);
+  assert.equal(shouldIncludeFireflies({
+    isOnline: true,
+    addFireflies: true,
+    sendUpdates: 'none',
+    alreadyOnEvent: false,
+  }), false);
+});
+
+test('Fred is stripped before a real invite if he was only saved on the event', () => {
+  const current = [
+    { email: 'daracha777@gmail.com' },
+    { email: firefliesNotetakerEmail() },
+  ];
+  assert.deepEqual(
+    attendeesToReinvite(current, ['daracha777@gmail.com', firefliesNotetakerEmail()]),
+    ['daracha777@gmail.com', firefliesNotetakerEmail()]
+  );
+  const leftover = withoutAttendeeEmails(current, [firefliesNotetakerEmail()]);
+  assert.equal(leftover.length, 1);
+  assert.equal(leftover[0].email, 'daracha777@gmail.com');
 });
 
 test('Google invitation subject matches Gmail’s invite prefix', () => {
