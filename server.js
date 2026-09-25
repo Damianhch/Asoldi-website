@@ -7868,6 +7868,11 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
       if (requireMeetLink && isOnline && !isRealGoogleMeetLink(nextClient?.calendar?.meetLink)) {
         warnings.push('Google Calendar sync ran but did not return a real Google Meet link.');
       }
+      if (notifyAttendees && isOnline && firefliesNotetakerEmail() && !calendarMeta.firefliesInvited) {
+        warnings.push(
+          'Google did not keep fred@fireflies.ai on the event. Check that this Google account can invite guests outside the company, then send the confirmation again.'
+        );
+      }
     } catch (error) {
       warnings.push(`Calendar sync failed: ${error.message}`);
     }
@@ -8040,15 +8045,11 @@ async function backfillMissingSalesCalendarEvents({
 }
 
 async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', requireMeetLink = false } = {}) {
-  const alreadyInvited = Boolean(sanitizeText(client?.calendar?.guestInvitedAt));
-  const alreadySent = Boolean(client?.reminders?.thankYouSentAt);
-  const isOnlineMeeting = normalizeMeetingMode(client?.meetingMode) === 'online';
-  const firefliesNeeded = isOnlineMeeting && Boolean(firefliesNotetakerEmail());
-  const firefliesAlreadyInvited = Boolean(sanitizeText(client?.calendar?.firefliesInvitedAt));
-  const notifyAttendees = !alreadySent || !alreadyInvited || (firefliesNeeded && !firefliesAlreadyInvited);
+  // Always email Google guests on a confirmation send. Skipping here does a
+  // silent events.update (sendUpdates=none) that cancels the invite we just queued.
   const syncResult = await maybeSyncCalendar(client, client, {
-    notifyAttendees,
-    forceGuestInvite: notifyAttendees && !alreadyInvited,
+    notifyAttendees: true,
+    forceGuestInvite: true,
     requireMeetLink,
     actorAccountKey,
   });
@@ -8060,7 +8061,7 @@ async function syncCalendarInviteForThankYou(client, { actorAccountKey = '', req
   const organizer = sanitizeText(calendarStatus.googleEmail).toLowerCase();
   const guest = sanitizeText(nextClient?.contactEmail).toLowerCase();
   const selfInvite = Boolean(organizer && guest && organizer === guest);
-  if (selfInvite && notifyAttendees) {
+  if (selfInvite) {
     warnings.push(
       'Google does not email a separate calendar invitation to the same Gmail that owns the calendar. The confirmation mail still includes a calendar invite the client can accept.'
     );
