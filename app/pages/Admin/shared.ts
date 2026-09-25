@@ -395,6 +395,14 @@ export type SalesOffer = {
   /** Rep absorbed the VAT: listed prices are what the client pays incl. 25 % MVA (default false = MVA on top). */
   mvaIncluded: boolean;
   email: { subject: string; preheader: string; html: string };
+  /** Empty fields fall back to the client card. contactEmail is the Til override. */
+  party?: {
+    businessName: string;
+    orgNumber: string;
+    address: string;
+    contactPerson: string;
+    contactEmail: string;
+  };
   products: OfferProduct[];
   contract: { summary: OfferContractSummary | null; generatedAt: string; pdfPath: string };
   meetingId: string;
@@ -427,6 +435,8 @@ export type SalesClient = {
   businessName: string;
   contactPerson: string;
   contactEmail: string;
+  /** Public website email. Empty means use contactEmail until the Maker draft adds another. */
+  websiteEmail?: string;
   contactPhone: string;
   meetingPlace: string;
   /** 9-digit Norwegian org number (contract parties block). */

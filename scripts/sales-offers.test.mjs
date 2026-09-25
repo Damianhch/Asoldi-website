@@ -166,6 +166,21 @@ test('offer draft shows the client and the editing rep instead of identity merge
   assert.doesNotMatch(fromReply, /mottatt svar/);
 });
 
+test('offer party: empty override uses the card, Til wins for email, map address is the address', () => {
+  assert.equal(readiness.contractAddressFor({ meetingPlace: 'Kartveien 1', businessAddress: 'Gammel vei 2' }), 'Kartveien 1');
+  const resolved = readiness.resolveOfferParty(CLIENT, {
+    party: { businessName: 'Annet AS', orgNumber: '', address: '', contactPerson: '', contactEmail: 'annet@example.com' },
+  }, { to: 'til@example.com' });
+  assert.equal(resolved.businessName, 'Annet AS');
+  assert.equal(resolved.orgNumber, CLIENT.orgNumber.replace(/\D+/g, ''));
+  assert.equal(resolved.address, CLIENT.meetingPlace || CLIENT.businessAddress);
+  assert.equal(resolved.contactPerson, CLIENT.contactPerson);
+  assert.equal(resolved.contactEmail, 'til@example.com');
+  const cleared = readiness.resolveOfferParty(CLIENT, { party: { businessName: '', contactEmail: 'annet@example.com' } });
+  assert.equal(cleared.businessName, CLIENT.businessName);
+  assert.equal(cleared.contactEmail, 'annet@example.com');
+});
+
 test('offer readiness: contract fields must be on the client card', () => {
   assert.deepEqual(readiness.offerMissingFields(CLIENT), []);
   const missing = readiness.offerMissingFields({ ...CLIENT, orgNumber: '123', contactEmail: 'nope' });
@@ -403,6 +418,11 @@ test('sales offers store: preview approval is tied to the exact content and mva 
 
   const previewed = store.markOfferPreviewed(offer.id, { actor: 'anna' });
   assert.equal(store.offerPreviewIsCurrent(previewed), true);
+  const olderApproval = {
+    ...previewed,
+    previewHash: store.offerContentHash(previewed, { includeParty: false }),
+  };
+  assert.equal(store.offerPreviewIsCurrent(olderApproval), true, 'approval from before party was hashed still counts');
   assert.ok(previewed.previewedAt);
   assert.ok(previewed.history.some((entry) => entry.action === 'previewed'));
 

@@ -120,17 +120,12 @@ type Props = {
   onMovedToDevelopment?: () => void;
 };
 
-type BrregEntity = {
-  organizationNumber: string;
-  name: string;
-  address: string;
-};
-
 type SalesFormState = {
   product: SalesProduct;
   businessName: string;
   contactPerson: string;
   contactEmail: string;
+  websiteEmail: string;
   contactPhone: string;
   meetingPlace: string;
   orgNumber: string;
@@ -153,6 +148,7 @@ const INITIAL_FORM: SalesFormState = {
   businessName: '',
   contactPerson: '',
   contactEmail: '',
+  websiteEmail: '',
   contactPhone: '',
   meetingPlace: '',
   orgNumber: '',
@@ -357,9 +353,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<SalesFormState>(INITIAL_FORM);
-  const [brregLoading, setBrregLoading] = useState(false);
-  const [brregError, setBrregError] = useState('');
-  const [brregResults, setBrregResults] = useState<BrregEntity[]>([]);
+  const [websiteEmailTouched, setWebsiteEmailTouched] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deletingArchivedId, setDeletingArchivedId] = useState<string | null>(null);
   const [progressBusyKey, setProgressBusyKey] = useState<string | null>(null);
@@ -424,6 +418,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       client.businessName,
       client.contactPerson,
       client.contactEmail,
+      client.websiteEmail,
       client.contactPhone,
       client.meetingPlace,
       client.industry,
@@ -938,6 +933,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
 
   function openCreate() {
     setEditingId(null);
+    setWebsiteEmailTouched(false);
     setForm({ ...INITIAL_FORM, product: productBracket });
     setShowForm(true);
   }
@@ -1004,108 +1000,28 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  function applyBrregEntity(entity: BrregEntity) {
-    setForm((prev) => ({
-      ...prev,
-      businessName: prev.businessName.trim() || entity.name,
-      orgNumber: entity.organizationNumber || prev.orgNumber,
-      businessAddress: entity.address || prev.businessAddress,
-    }));
-    setBrregResults([]);
-    setBrregError('');
-  }
-
-  // Auto-fill Kontraktdata from the proff.no URL: the org number is part of the link, so
-  // derive it, then resolve the registered address via Brønnøysund. Only fields that are
-  // empty or that this auto-fill wrote previously are touched — manual edits are kept.
-  const proffAutoFillRef = useRef<{ orgNumber: string; businessAddress: string; url: string }>({
-    orgNumber: '',
-    businessAddress: '',
-    url: '',
-  });
-  const formRef = useRef(form);
-  formRef.current = form;
+  // Org. nr lives in the proff.no URL. No link means no fetch; a new link replaces the stored number.
   useEffect(() => {
-    if (!showForm) {
-      proffAutoFillRef.current = { orgNumber: '', businessAddress: '', url: '' };
-      return;
-    }
-    const url = form.proffUrl.trim();
-    const orgFromProff = extractOrgNumberFromProffUrl(url);
+    if (!showForm) return;
+    const orgFromProff = extractOrgNumberFromProffUrl(form.proffUrl);
     if (!orgFromProff) return;
-    const currentOrg = String(formRef.current.orgNumber || '').replace(/\D+/g, '');
-    const previousAuto = proffAutoFillRef.current;
-    if (previousAuto.url === url && previousAuto.orgNumber === orgFromProff) return;
-    // A different, manually typed org nr wins over the URL-derived one.
-    if (currentOrg && currentOrg !== orgFromProff && currentOrg !== previousAuto.orgNumber) return;
-    proffAutoFillRef.current = { ...previousAuto, url, orgNumber: orgFromProff };
-    if (currentOrg !== orgFromProff) {
-      setForm((prev) => ({ ...prev, orgNumber: orgFromProff }));
-    }
-    let active = true;
-    const timer = window.setTimeout(async () => {
-      try {
-        const data = await request(`/admin/sales/brreg-search?q=${encodeURIComponent(orgFromProff)}`) as { results?: BrregEntity[] };
-        if (!active) return;
-        const match = (Array.isArray(data.results) ? data.results : []).find(
-          (row) => String(row.organizationNumber || '').replace(/\D+/g, '') === orgFromProff
-        );
-        if (!match) return;
-        setForm((prev) => {
-          const prevAddress = prev.businessAddress.trim();
-          const canWriteAddress = !prevAddress || prevAddress === proffAutoFillRef.current.businessAddress;
-          const nextAddress = canWriteAddress && match.address ? match.address : prev.businessAddress;
-          if (canWriteAddress && match.address) proffAutoFillRef.current.businessAddress = match.address;
-          return {
-            ...prev,
-            businessName: prev.businessName.trim() || match.name,
-            businessAddress: nextAddress,
-          };
-        });
-        setBrregError('');
-      } catch {
-        // Best-effort: org nr is already filled from the URL; address can be fetched manually.
-      }
-    }, 400);
-    return () => {
-      active = false;
-      window.clearTimeout(timer);
-    };
+    setForm((prev) => {
+      const current = String(prev.orgNumber || '').replace(/\D+/g, '');
+      if (current === orgFromProff) return prev;
+      return { ...prev, orgNumber: orgFromProff };
+    });
   }, [form.proffUrl, showForm]);
-
-  async function lookupBrreg() {
-    const query = form.orgNumber.replace(/\D+/g, '').length === 9 ? form.orgNumber : form.businessName;
-    if (!query.trim()) return;
-    setBrregLoading(true);
-    setBrregError('');
-    setBrregResults([]);
-    try {
-      const data = await request(`/admin/sales/brreg-search?q=${encodeURIComponent(query.trim())}`) as { results?: BrregEntity[] };
-      const results = Array.isArray(data.results) ? data.results.filter((row) => row.organizationNumber) : [];
-      if (!results.length) {
-        setBrregError('Fant ingen selskaper i Brønnøysund. Skriv inn org. nr manuelt.');
-      } else if (results.length === 1) {
-        applyBrregEntity(results[0]);
-      } else {
-        setBrregResults(results);
-      }
-    } catch (err) {
-      setBrregError(err instanceof Error ? err.message : 'Oppslag mot Brønnøysund feilet.');
-    } finally {
-      setBrregLoading(false);
-    }
-  }
 
   function openEdit(client: SalesClient) {
     const details = parseDetails(client.details);
-    setBrregResults([]);
-    setBrregError('');
     setEditingId(client.id);
+    setWebsiteEmailTouched(Boolean(String(client.websiteEmail || '').trim()));
     setForm({
       product: normalizeSalesProduct(client.product),
       businessName: client.businessName || '',
       contactPerson: client.contactPerson || '',
       contactEmail: client.contactEmail || '',
+      websiteEmail: client.websiteEmail || '',
       contactPhone: client.contactPhone || '',
       meetingPlace: client.meetingPlace || '',
       orgNumber: client.orgNumber || '',
@@ -1136,6 +1052,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         businessName: form.businessName,
         contactPerson: form.contactPerson,
         contactEmail: form.contactEmail,
+        websiteEmail: websiteEmailTouched ? form.websiteEmail : '',
         contactPhone: form.contactPhone,
         meetingPlace: form.meetingPlace,
         orgNumber: form.orgNumber,
@@ -1968,12 +1885,15 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       <details open className="text-sm text-gray-200">
                         <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>
                         <ul className="space-y-1 text-gray-300">
-                          <li>Email: {client.contactEmail || '—'}</li>
+                          <li>Contact email: {client.contactEmail || '—'}</li>
+                          <li>
+                            Website email:{' '}
+                            {client.websiteEmail
+                              || (client.contactEmail ? `${client.contactEmail} (from contact)` : '—')}
+                          </li>
                           <li>Phone: {client.contactPhone || '—'}</li>
                           <li>Meeting: {client.meetingMode === 'in-person' ? 'In person' : 'Online (Google Meet)'}</li>
                           <li>Address: {client.meetingPlace || '—'}</li>
-                          <li>Org. nr: {client.orgNumber || '—'}</li>
-                          <li>Forretningsadresse: {client.businessAddress || (client.meetingPlace ? `${client.meetingPlace} (fra adresse)` : '—')}</li>
                           <li>Industry: {client.industry || '—'}</li>
                           <li>Duration: {durationForMode(client.meetingMode)} min</li>
                           <li>Agreed time: {client.agreedTime ? 'Yes' : 'No'}</li>
@@ -2075,6 +1995,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                           <div>
                             <div className="text-xs text-gray-500 uppercase mb-1">proff.no</div>
                             <p>{String(client.details?.proffUrl || '—')}</p>
+                            <p className="mt-1">Org. nr: {client.orgNumber || '—'}</p>
                           </div>
                           <div>
                             <div className="text-xs text-gray-500 uppercase mb-1">Google business profile</div>
@@ -2335,18 +2256,18 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 ? ' You are logged in as admin, so Connect binds the admin’s Google account. Each salesperson must log in at /sales as themselves and click Connect.'
                 : ''}
             </p>
-          </div>
+            </div>
           {showCalendarConnect && (
             <button type="button" onClick={connectGoogleCalendar} className="shrink-0 px-3 py-2 rounded-lg bg-[#FF5B00] text-white hover:bg-[#e55200]">
               {calendarStatus?.connected ? 'Reconnect Google Calendar' : 'Connect Google Calendar'}
             </button>
           )}
         </div>
-      </div>
+        </div>
 
       <div className="rounded-2xl bg-[#2a2a2a] border border-white/10 p-5">
         <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
-          <div>
+            <div>
             <h2 className="text-lg font-semibold text-white">Sales clients</h2>
             <p className="text-sm text-gray-400 mt-1">
               {isSsuBracket
@@ -2362,7 +2283,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 {' '}or open the public <code>asoldi.com/sales-preview/…</code> link on the client card.
               </p>
             )}
-          </div>
+            </div>
           <div className="flex items-center gap-3">
             {!isSsuBracket && (
               <a
@@ -2414,13 +2335,13 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             <div className="flex flex-col sm:flex-row gap-2">
               <div className="relative flex-1">
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-                <input
+                        <input
                   value={clientSearchInput}
                   onChange={(e) => setClientSearchInput(e.target.value)}
                   placeholder="Business, contact, or area (e.g. oslo area)"
                   className="w-full pl-9 pr-3 py-2 rounded-lg bg-[#1a1a1a] border border-white/10 text-white text-sm"
                 />
-              </div>
+                      </div>
               <button
                 type="submit"
                 className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm hover:bg-[#e55200]"
@@ -2438,7 +2359,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   Clear
                 </button>
               )}
-            </div>
+                      </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <label className="text-[11px] text-gray-400">
                 <span className="inline-flex items-center gap-1 mb-1">
@@ -2477,7 +2398,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   ))}
                 </select>
               </label>
-            </div>
+                    </div>
           </div>
           {hasActiveFilters && (
             <p className="mt-2 text-[11px] text-gray-400">
@@ -2517,7 +2438,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 {selectedCount
                   ? `${selectedCount} selected`
                   : `${visibleSelectableIds.length} clients on this list`}
-              </span>
+                    </span>
             </label>
             {selectedCount > 0 && (
               <button
@@ -2529,9 +2450,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 Clear selection
               </button>
             )}
-          </div>
+                  </div>
           {selectedCount > 0 ? (
-            <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
               {isSalesAdmin && salesOwners.length > 0 && (
                 <div className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-2 py-1.5">
                   <Users size={14} className="text-[#FF5B00]" />
@@ -2548,30 +2469,30 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                       </option>
                     ))}
                   </select>
-                  <button
-                    type="button"
+                      <button
+                        type="button"
                     disabled={bulkBusy || !bulkAssignOwnerId}
                     onClick={() => void runBulkAction('assign', { ownerId: bulkAssignOwnerId })}
                     className="px-2 py-1 rounded-md bg-[#FF5B00] text-white text-xs hover:bg-[#e55200] disabled:opacity-50"
                   >
                     Tildel
-                  </button>
+                      </button>
                 </div>
-              )}
-              <button
-                type="button"
+                    )}
+                    <button
+                      type="button"
                 disabled={bulkBusy}
                 onClick={() => void runBulkAction('delete')}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-900/40 text-red-200 text-xs hover:bg-red-900/50 disabled:opacity-50"
               >
                 {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
                 Delete
-              </button>
-              <button
-                type="button"
+                    </button>
+                    <button
+                      type="button"
                 disabled={bulkBusy}
                 onClick={() => void runBulkAction('not-sold')}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-gray-200 text-xs hover:bg-white/15 disabled:opacity-50"
               >
                 <ArchiveX size={13} />
                 Not sold
@@ -2601,8 +2522,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
               >
                 {bulkBusy ? <Loader2 size={13} className="animate-spin" /> : <Mail size={13} />}
                 Send bekreftelse
-              </button>
-            </div>
+                    </button>
+                  </div>
           ) : (
             <p className="text-[11px] text-gray-500">
               Tick client cards to run mass actions.
@@ -2611,7 +2532,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 : ' Assigning clients between sales reps is admin-only.'}
             </p>
           )}
-        </div>
+                </div>
       </div>
 
       {(error || notice) && (
@@ -2924,54 +2845,42 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
               </div>
               <Field label="Business name" value={form.businessName} onChange={(value) => setForm((prev) => ({ ...prev, businessName: value }))} required />
               <Field label="Contact person" value={form.contactPerson} onChange={(value) => setForm((prev) => ({ ...prev, contactPerson: value }))} required />
-              <Field label="Email (optional)" type="email" value={form.contactEmail} onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))} />
+              <Field
+                label="Contact email"
+                type="email"
+                value={form.contactEmail}
+                onChange={(value) => setForm((prev) => ({ ...prev, contactEmail: value }))}
+              />
+              <Field
+                label="Website email"
+                type="email"
+                value={form.websiteEmail || form.contactEmail}
+                hint="Autofilled from this client's contact email. Used on the website if the Maker draft has no other email. Changing this does not change the contact email."
+                onChange={(value) => {
+                  const next = value.trim();
+                  const contact = form.contactEmail.trim();
+                  if (!next || next.toLowerCase() === contact.toLowerCase()) {
+                    setWebsiteEmailTouched(false);
+                    setForm((prev) => ({ ...prev, websiteEmail: '' }));
+                    return;
+                  }
+                  setWebsiteEmailTouched(true);
+                  setForm((prev) => ({ ...prev, websiteEmail: value }));
+                }}
+              />
               <Field label="Phone number" value={form.contactPhone} onChange={(value) => setForm((prev) => ({ ...prev, contactPhone: value }))} />
-              <div className="md:col-span-2 rounded-lg border border-white/10 bg-[#161616] p-3 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm text-gray-300">Kontraktdata (kreves før tilbud kan sendes)</span>
-                  <button
-                    type="button"
-                    onClick={() => void lookupBrreg()}
-                    disabled={brregLoading || !(form.businessName.trim() || form.orgNumber.trim())}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-xs text-white hover:bg-white/15 disabled:opacity-50"
-                  >
-                    {brregLoading ? <Loader2 size={12} className="animate-spin" /> : <Search size={12} />}
-                    Hent fra Brønnøysund
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500">
-                  Org. nr og adresse fylles automatisk fra proff.no-lenken når den er lagt inn.
-                </p>
-                {brregError && <p className="text-xs text-amber-300">{brregError}</p>}
-                {brregResults.length > 1 && (
-                  <div className="space-y-1">
-                    <p className="text-xs text-gray-400">Flere treff — velg riktig selskap:</p>
-                    {brregResults.map((row) => (
-                      <button
-                        key={row.organizationNumber || row.name}
-                        type="button"
-                        onClick={() => applyBrregEntity(row)}
-                        className="w-full text-left px-3 py-2 rounded-lg bg-black/30 hover:bg-black/50 text-xs text-gray-200"
-                      >
-                        <span className="font-medium text-white">{row.name}</span>
-                        {row.organizationNumber ? ` · ${row.organizationNumber}` : ''}
-                        {row.address ? ` · ${row.address}` : ''}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div className="grid md:grid-cols-2 gap-3">
-                  <Field label="Org. nr (9 siffer)" value={form.orgNumber} onChange={(value) => setForm((prev) => ({ ...prev, orgNumber: value }))} />
-                  <Field label="Forretningsadresse" value={form.businessAddress} onChange={(value) => setForm((prev) => ({ ...prev, businessAddress: value }))} />
-                </div>
-              </div>
               <Field label="Industry" value={form.industry} onChange={(value) => setForm((prev) => ({ ...prev, industry: value }))} />
               {form.product !== 'ssu' && (
                 <Field label="Website domain (optional)" value={form.websiteDomain} onChange={(value) => setForm((prev) => ({ ...prev, websiteDomain: value }))} />
               )}
               <Field label="Instagram URL" value={form.instagramUrl} onChange={(value) => setForm((prev) => ({ ...prev, instagramUrl: value }))} />
               <Field label="Facebook URL" value={form.facebookUrl} onChange={(value) => setForm((prev) => ({ ...prev, facebookUrl: value }))} />
-              <Field label="proff.no URL" value={form.proffUrl} onChange={(value) => setForm((prev) => ({ ...prev, proffUrl: value }))} />
+              <div>
+                <Field label="proff.no URL" value={form.proffUrl} onChange={(value) => setForm((prev) => ({ ...prev, proffUrl: value }))} />
+                <p className="mt-1 text-[11px] text-gray-500">
+                  Org. nr hentes fra lenken når den er lagt inn{form.orgNumber ? `: ${form.orgNumber}` : ''}. Uten lenke hentes ingenting. Adressen er feltet «Business address (shown on map)».
+                </p>
+              </div>
               <Field
                 label="Google business profile URL"
                 value={form.googleBusinessProfile}
@@ -3097,12 +3006,14 @@ function Field({
   onChange,
   type = 'text',
   required = false,
+  hint = '',
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   type?: string;
   required?: boolean;
+  hint?: string;
 }) {
   return (
     <div>
@@ -3114,6 +3025,7 @@ function Field({
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-4 py-3 rounded-lg bg-[#161616] border border-white/10 text-white"
       />
+      {hint ? <p className="mt-1 text-xs text-gray-500">{hint}</p> : null}
     </div>
   );
 }

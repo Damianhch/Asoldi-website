@@ -21,6 +21,7 @@ import {
 } from './emailApi';
 import { getSalesToken, type SalesOffer, type SalesSender } from '../Admin/shared';
 import { ContractSummaryCard, HtmlPreview, OfferProductsCard, OfferStatusChip } from './offerUi';
+import { clientCardParty, offerMissingFields, offerReadinessMessage } from '../../../lib/offer-readiness.js';
 
 type OfferClient = {
   id: string;
@@ -64,7 +65,7 @@ export function SalesOfferComposer() {
   const [notice, setNotice] = useState('');
   const [offer, setOffer] = useState<SalesOffer | null>(null);
   const [client, setClient] = useState<OfferClient | null>(null);
-  const [readiness, setReadiness] = useState<OfferReadiness>({ ready: false, missing: [], message: '' });
+  const [party, setParty] = useState({ businessName: '', orgNumber: '', address: '', contactPerson: '' });
   const [tiers, setTiers] = useState<OfferTier[]>([]);
   const [mergeFields, setMergeFields] = useState<MergeField[]>([]);
   const [meeting, setMeeting] = useState<MeetingInfo>(null);
@@ -84,6 +85,18 @@ export function SalesOfferComposer() {
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const htmlRef = useRef(html);
+  const subjectRef = useRef(subject);
+  const preheaderRef = useRef(preheader);
+  const toRef = useRef(to);
+  const partyRef = useRef(party);
+  const clientRef = useRef(client);
+  htmlRef.current = html;
+  subjectRef.current = subject;
+  preheaderRef.current = preheader;
+  toRef.current = to;
+  partyRef.current = party;
+  clientRef.current = client;
 
   const status = offer?.status || 'draft';
   const locked = status === 'review-requested' || status === 'verified' || status === 'sent';
@@ -123,14 +136,21 @@ export function SalesOfferComposer() {
         canSendEmail: boolean;
       };
       setClient(data.client);
-      setReadiness(data.readiness);
       setTiers(Array.isArray(data.tiers) ? data.tiers : []);
       setMergeFields(Array.isArray(data.mergeFields) ? data.mergeFields : []);
       setMeeting(data.meeting || null);
       setSender(data.sender || null);
       setDeepseek(Boolean(data.deepseek));
       setCanSendEmail(data.canSendEmail !== false);
-      setTo(data.client?.contactEmail || '');
+      const card = clientCardParty(data.client);
+      const stored = data.offer.party;
+      setParty({
+        businessName: stored?.businessName || card.businessName,
+        orgNumber: stored?.orgNumber || card.orgNumber,
+        address: stored?.address || card.address,
+        contactPerson: stored?.contactPerson || card.contactPerson,
+      });
+      setTo(stored?.contactEmail || card.contactEmail);
       applyOffer(data.offer);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kunne ikke åpne tilbudet');
@@ -152,15 +172,36 @@ export function SalesOfferComposer() {
     void load();
   }, [clientId, navigate, load]);
 
+  function partyPayload() {
+    const card = clientCardParty(clientRef.current || {});
+    const draft = partyRef.current;
+    const email = toRef.current.trim();
+    const org = draft.orgNumber.replace(/\D+/g, '');
+    return {
+      businessName: draft.businessName.trim() === card.businessName ? '' : draft.businessName.trim(),
+      orgNumber: org === card.orgNumber ? '' : org,
+      address: draft.address.trim() === card.address ? '' : draft.address.trim(),
+      contactPerson: draft.contactPerson.trim() === card.contactPerson ? '' : draft.contactPerson.trim(),
+      contactEmail: email.toLowerCase() === card.contactEmail.toLowerCase() ? '' : email,
+    };
+  }
+
   // Autosave the draft so the rep can leave and come back (and so admin review sees the latest content).
-  const scheduleSave = useCallback((payload: Record<string, unknown>) => {
+  const scheduleSave = useCallback((extra: Record<string, unknown> = {}) => {
     if (!offer || locked) return;
     dirtyRef.current = true;
     setEditedSincePreview(true);
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        const data = await saveClientOffer(clientId, payload) as { offer: SalesOffer };
+        const data = await saveClientOffer(clientId, {
+          html: htmlRef.current,
+          subject: subjectRef.current,
+          preheader: preheaderRef.current,
+          to: toRef.current,
+          party: partyPayload(),
+          ...extra,
+        }) as { offer: SalesOffer };
         setOffer(data.offer);
         dirtyRef.current = false;
       } catch (err) {
@@ -191,7 +232,7 @@ export function SalesOfferComposer() {
       saveTimer.current = null;
     }
     if (!dirtyRef.current || locked) return offer;
-    const data = await saveClientOffer(clientId, { html, subject, preheader }) as { offer: SalesOffer };
+    const data = await saveClientOffer(clientId, { html, subject, preheader, to, party: partyPayload() }) as { offer: SalesOffer };
     setOffer(data.offer);
     dirtyRef.current = false;
     return data.offer;
@@ -202,7 +243,7 @@ export function SalesOfferComposer() {
     setError('');
     try {
       // No reviewRequested here: the server forces it on for custom and resets it when leaving custom.
-      const data = await saveClientOffer(clientId, { tierId, html, subject, preheader }) as { offer: SalesOffer };
+      const data = await saveClientOffer(clientId, { tierId, html, subject, preheader, to, party: partyPayload() }) as { offer: SalesOffer };
       applyOffer(data.offer);
       setNotice(tierId === 'custom'
         ? 'Skreddersydd valgt – tilbudet må kjøres via admin før det kan sendes.'
@@ -308,8 +349,13 @@ export function SalesOfferComposer() {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
       }
-      const data = await previewClientOffer(clientId, locked ? { to } : { to, html, subject, preheader });
+      const data = await previewClientOffer(clientId, locked ? { to } : { to, html, subject, preheader, party: partyPayload() });
       setOffer(data.offer);
+      if (data.offer?.email?.html && data.offer.email.html !== html) {
+        setHtml(data.offer.email.html);
+        setHtmlKey(`${data.offer.id}-${data.offer.updatedAt}-${Date.now()}`);
+      }
+      if (data.offer?.email?.subject) setSubject(data.offer.email.subject);
       dirtyRef.current = false;
       setPreviewState({ preview: data.preview, placeholders: data.placeholders || [], blocker: data.blocker || '' });
     } catch (err) {
@@ -355,7 +401,7 @@ export function SalesOfferComposer() {
     setError('');
     setNotice('');
     try {
-      const payload = status === 'verified' ? { to } : { to, html, subject, preheader };
+      const payload = { to, party: partyPayload() };
       const data = await sendClientOffer(clientId, payload) as { offer: SalesOffer; copyTo?: string; contractFileName?: string };
       applyOffer(data.offer);
       setNotice(`Tilbud sendt til ${to}${data.contractFileName ? ` med ${data.contractFileName}` : ''}${data.copyTo ? ` · Kopi: ${data.copyTo}` : ''}`);
@@ -371,6 +417,14 @@ export function SalesOfferComposer() {
     setError('');
     try {
       const data = await startNewClientOffer(clientId) as { offer: SalesOffer };
+      const fresh = clientCardParty(client || {});
+      setParty({
+        businessName: fresh.businessName,
+        orgNumber: fresh.orgNumber,
+        address: fresh.address,
+        contactPerson: fresh.contactPerson,
+      });
+      setTo(fresh.contactEmail);
       applyOffer(data.offer);
       setNotice('Nytt tilbudsutkast opprettet.');
     } catch (err) {
@@ -387,6 +441,19 @@ export function SalesOfferComposer() {
     if (meeting.tooThin) return 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.';
     return '';
   }, [deepseek, meeting]);
+
+  const card = useMemo(() => clientCardParty(client || {}), [client]);
+  const readiness = useMemo(() => {
+    const missing = offerMissingFields({
+      businessName: party.businessName,
+      orgNumber: party.orgNumber,
+      meetingPlace: party.address,
+      businessAddress: party.address,
+      contactPerson: party.contactPerson,
+      contactEmail: to,
+    });
+    return { ready: missing.length === 0, missing, message: offerReadinessMessage(missing) };
+  }, [party, to]);
 
   const sendDisabledReason = useMemo(() => {
     if (!offer) return '';
@@ -441,8 +508,8 @@ export function SalesOfferComposer() {
                 <div className="flex items-start gap-3 rounded-xl border border-amber-400/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
                   <AlertTriangle size={18} className="shrink-0 mt-0.5" />
                   <div>
-                    <div className="font-medium">Kundekortet mangler data som kontrakten trenger</div>
-                    <div className="text-amber-200">{readiness.message} Rediger kunden i salgsterminalen (bruk «Hent fra Brønnøysund») før du sender.</div>
+                    <div className="font-medium">Kontrakten mangler data</div>
+                    <div className="text-amber-200">{readiness.message} Fyll inn feltene under Kontraktdata, eller legg proff.no-lenke og adresse på kundekortet.</div>
                   </div>
                 </div>
               )}
@@ -501,7 +568,16 @@ export function SalesOfferComposer() {
                     </label>
                     <label className="text-xs text-gray-400">
                       Til
-                      <input value={to} onChange={(e) => setTo(e.target.value)} disabled={status === 'sent'} className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50" />
+                      <input
+                        value={to}
+                        onChange={(e) => {
+                          setTo(e.target.value);
+                          setEditedSincePreview(true);
+                          if (!locked) scheduleSave();
+                        }}
+                        disabled={status === 'sent'}
+                        className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50"
+                      />
                     </label>
                     <label className="text-xs text-gray-400">
                       Emne
@@ -707,13 +783,14 @@ export function SalesOfferComposer() {
                 <aside className="flex flex-col gap-4">
                   <OfferProductsCard products={offer.products} mvaIncluded={mvaIncluded} />
                   <ContractSummaryCard summary={offer.contract.summary} mvaIncluded={mvaIncluded} />
-                  <div className="rounded-xl border border-white/10 bg-[#161616] p-4 text-xs text-gray-300 space-y-1">
-                    <div className="font-medium text-white text-sm mb-1">Kontraktdata fra kundekortet</div>
-                    <div>Bedrift: <span className="text-white">{client?.businessName || '—'}</span></div>
-                    <div>Org. nr: <span className="text-white">{client?.orgNumber || '—'}</span></div>
-                    <div>Adresse: <span className="text-white">{client?.businessAddress || client?.meetingPlace || '—'}</span></div>
-                    <div>Innehaver: <span className="text-white">{client?.contactPerson || '—'}</span></div>
-                    <div>E-post: <span className="text-white">{client?.contactEmail || '—'}</span></div>
+                  <div className="rounded-xl border border-white/10 bg-[#161616] p-4 text-xs text-gray-300 space-y-2">
+                    <div className="font-medium text-white text-sm">Kontraktdata for dette tilbudet</div>
+                    <p className="text-[11px] text-gray-500">Krysset nullstiller feltet til kundekortet. E-posten er den samme som Til.</p>
+                    <PartyField label="Bedrift" value={party.businessName} cardValue={card.businessName} disabled={locked} onChange={(value) => { setParty((prev) => ({ ...prev, businessName: value })); scheduleSave(); }} onReset={() => { setParty((prev) => ({ ...prev, businessName: card.businessName })); scheduleSave(); }} />
+                    <PartyField label="Org. nr" value={party.orgNumber} cardValue={card.orgNumber} disabled={locked} onChange={(value) => { setParty((prev) => ({ ...prev, orgNumber: value })); scheduleSave(); }} onReset={() => { setParty((prev) => ({ ...prev, orgNumber: card.orgNumber })); scheduleSave(); }} />
+                    <PartyField label="Adresse" value={party.address} cardValue={card.address} disabled={locked} onChange={(value) => { setParty((prev) => ({ ...prev, address: value })); scheduleSave(); }} onReset={() => { setParty((prev) => ({ ...prev, address: card.address })); scheduleSave(); }} />
+                    <PartyField label="Innehaver" value={party.contactPerson} cardValue={card.contactPerson} disabled={locked} onChange={(value) => { setParty((prev) => ({ ...prev, contactPerson: value })); scheduleSave(); }} onReset={() => { setParty((prev) => ({ ...prev, contactPerson: card.contactPerson })); scheduleSave(); }} />
+                    <PartyField label="E-post" value={to} cardValue={card.contactEmail} disabled={status === 'sent'} onChange={(value) => { setTo(value); setEditedSincePreview(true); if (!locked) scheduleSave(); }} onReset={() => { setTo(card.contactEmail); setEditedSincePreview(true); if (!locked) scheduleSave(); }} />
                   </div>
                   {sender && (
                     <div className="rounded-xl border border-white/10 bg-[#161616] p-4 text-xs text-gray-300 space-y-1">
@@ -807,5 +884,55 @@ export function SalesOfferComposer() {
         )}
       </div>
     </>
+  );
+}
+
+function samePartyValue(value: string, cardValue: string) {
+  const digits = (input: string) => input.replace(/\D+/g, '');
+  if (digits(cardValue).length === 9 && digits(value) === digits(cardValue)) return true;
+  return value.trim().toLowerCase() === cardValue.trim().toLowerCase();
+}
+
+function PartyField({
+  label,
+  value,
+  cardValue,
+  disabled,
+  onChange,
+  onReset,
+}: {
+  label: string;
+  value: string;
+  cardValue: string;
+  disabled: boolean;
+  onChange: (value: string) => void;
+  onReset: () => void;
+}) {
+  const overridden = !samePartyValue(value, cardValue);
+  return (
+    <label className="block">
+      <span className="text-gray-400">{label}</span>
+      <span className="mt-1 flex items-center gap-1">
+        <input
+          value={value}
+          disabled={disabled}
+          onChange={(event) => {
+            if (!event.target.value.trim()) onReset();
+            else onChange(event.target.value);
+          }}
+          className="w-full px-2 py-1.5 rounded-lg bg-[#111] border border-white/15 text-white text-xs disabled:opacity-50"
+        />
+        {overridden && !disabled && (
+          <button
+            type="button"
+            title="Tilbakestill til kundekortet"
+            onClick={onReset}
+            className="p-1.5 rounded-lg bg-white/10 text-gray-300 hover:bg-white/15"
+          >
+            <X size={12} />
+          </button>
+        )}
+      </span>
+    </label>
   );
 }

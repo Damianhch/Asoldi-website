@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { getDataFilePath, ensurePersistentDataDir, writeDataJson } from './storage-path.js';
 import { DEVELOPMENT_KEYS, normalizeDevelopment } from '../lib/development-phase.js';
+import { normalizeStoredWebsiteEmail } from '../lib/sales-website-email.js';
 import {
   applyNextActionMutation,
   applyProgressionChange,
@@ -402,6 +403,7 @@ function normalizeSalesClient(raw = {}) {
     businessName: sanitizeText(raw.businessName),
     contactPerson: sanitizeText(raw.contactPerson),
     contactEmail: sanitizeText(raw.contactEmail),
+    websiteEmail: normalizeStoredWebsiteEmail(raw.websiteEmail, raw.contactEmail),
     contactPhone: sanitizeText(raw.contactPhone),
     meetingPlace: sanitizeText(raw.meetingPlace),
     // Contract parties block (offer/contract flow): org number + registered business address.

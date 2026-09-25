@@ -104,6 +104,19 @@ export function normalizeContractSummary(raw) {
   };
 }
 
+const PARTY_KEYS = ['businessName', 'orgNumber', 'address', 'contactPerson', 'contactEmail'];
+
+/** Empty string means "use the client card". Org is stored as digits only. */
+export function normalizeOfferParty(raw = {}) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const party = {};
+  for (const key of PARTY_KEYS) {
+    const value = sanitizeText(source[key]);
+    party[key] = key === 'orgNumber' ? value.replace(/\D+/g, '').slice(0, 9) : value.slice(0, 300);
+  }
+  return party;
+}
+
 function normalizeEmail(raw = {}) {
   const source = raw && typeof raw === 'object' ? raw : {};
   return {
@@ -140,6 +153,8 @@ export function normalizeSalesOffer(raw = {}) {
     /** Rep absorbed the VAT: listed prices are what the client pays incl. 25 % MVA (default: MVA added on top). */
     mvaIncluded: Boolean(raw.mvaIncluded),
     email: normalizeEmail(raw.email),
+    /** Per-offer replacements for the contract block. Empty fields fall back to the client card. */
+    party: normalizeOfferParty(raw.party),
     products: normalizeOfferProducts(raw.products),
     /** Content hash at the moment the rep approved the full preview; must match on send. */
     previewHash: sanitizeText(raw.previewHash),
@@ -232,6 +247,7 @@ export function updateSalesOffer(id, patch = {}, { actor = '', action = 'updated
     ...current,
     ...patch,
     email: patch.email ? { ...current.email, ...patch.email } : current.email,
+    party: patch.party ? { ...current.party, ...patch.party } : current.party,
     contract: patch.contract ? { ...current.contract, ...patch.contract } : current.contract,
     id: current.id,
     salesClientId: current.salesClientId,
@@ -317,12 +333,17 @@ export function offerNeedsVerification(offer = {}) {
   return offer.tierId === CUSTOM_TIER_ID || Boolean(offer.reviewRequested);
 }
 
+function partyOverrides(raw = {}) {
+  const party = normalizeOfferParty(raw);
+  return Object.fromEntries(PARTY_KEYS.filter((key) => party[key]).map((key) => [key, party[key]]));
+}
+
 /**
  * Fingerprint of everything the client will actually receive. The rep must approve a full preview of
  * exactly this content before sending; any later edit changes the hash and invalidates the approval.
  */
-export function offerContentHash(offer = {}) {
-  const payload = JSON.stringify({
+export function offerContentHash(offer = {}, { includeParty = true } = {}) {
+  const payload = {
     subject: sanitizeText(offer?.email?.subject),
     preheader: sanitizeText(offer?.email?.preheader),
     html: String(offer?.email?.html || ''),
@@ -330,12 +351,18 @@ export function offerContentHash(offer = {}) {
     mvaIncluded: Boolean(offer?.mvaIncluded),
     tierId: sanitizeText(offer?.tierId),
     summary: offer?.contract?.summary || null,
-  });
-  return createHash('sha1').update(payload).digest('hex');
+  };
+  if (includeParty) payload.party = partyOverrides(offer?.party);
+  return createHash('sha1').update(JSON.stringify(payload)).digest('hex');
 }
 
 export function offerPreviewIsCurrent(offer = {}) {
-  return Boolean(offer?.previewHash) && offer.previewHash === offerContentHash(offer);
+  if (!offer?.previewHash) return false;
+  if (offer.previewHash === offerContentHash(offer)) return true;
+  // Approvals stored before party was part of the fingerprint still count
+  // when this offer has no contract-block overrides.
+  return offer.previewHash === offerContentHash(offer, { includeParty: false })
+    && Object.keys(partyOverrides(offer?.party)).length === 0;
 }
 
 export function markOfferPreviewed(id, { actor = '' } = {}) {

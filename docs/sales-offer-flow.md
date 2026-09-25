@@ -34,10 +34,12 @@ switching from `custom` back to a tier 1–3 clears it; toggling it on a standar
 
 ## Hard requirements before sending
 
-`lib/offer-readiness.js` — the client card must have `businessName`, `orgNumber` (9 digits), `businessAddress`
-(falls back to `meetingPlace`), `contactPerson`, `contactEmail`. Enforced in the UI (amber banner) and on the
-`send` / `request-review` routes (HTTP 400 with the missing labels). **Hent fra Brønnøysund** in the client edit
-form fills org number + address (`GET /api/admin/sales/brreg-search`).
+`lib/offer-readiness.js` — the offer needs `businessName`, `orgNumber` (9 digits), an address, `contactPerson`,
+and `contactEmail`. Org. nr is taken from the proff.no link on the client card (no link, no fetch). The address
+is **Business address (shown on map)** (`meetingPlace`), with an older stored forretningsadresse only as fallback.
+On the offer page, **Kontraktdata for dette tilbudet** can replace any of those for this send; the X on a field
+clears that override. E-post there is the same value as **Til**. Empty overrides fall back to the card.
+Enforced in the UI (amber banner) and on the `send` / `request-review` routes (HTTP 400 with the missing labels).
 
 **Preview gate.** A rep cannot send until they have opened **Forhåndsvis e-post** (modal with the fully merged
 e-mail, subject, attachment name and signature) and clicked *Ser riktig ut – klar til sending*.

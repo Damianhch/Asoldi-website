@@ -65,6 +65,7 @@ import {
   salesEmailMergeMap,
 } from './lib/sales-email.js';
 import { confirmationSendGaps } from './lib/sales-next-actions.js';
+import { normalizeStoredWebsiteEmail, resolveWebsiteEmail } from './lib/sales-website-email.js';
 import { extractBookingFromLead } from './lib/sales-booking-facts.js';
 import {
   buildOfferEmailForClient,
@@ -91,7 +92,7 @@ import {
   resolveOfferIdentityTags,
   summarizeOfferProducts,
 } from './lib/offer-email.js';
-import { offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
+import { clientWithOfferParty, offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
 import { buildContractPdf, contractFileName, contractInputsForOffer, offerContractIsAvailable } from './lib/offer-contract-pdf.js';
 import { isDeepseekConfigured } from './lib/deepseek.js';
 import { fillOfferFromTranscript, meetingContextIsTooThin, reflectContractFromEmail } from './lib/offer-ai.js';
@@ -1910,13 +1911,16 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
   const details = normalizeSalesDetailLinks(source.details, existing?.details);
   // Kontraktdata fallback: the proff.no link carries the org number, so a client saved
   // without an explicit org nr still gets it (the Sales UI also pre-fills it live).
-  const orgNumber =
-    sales.sanitizeOrgNumber(source.orgNumber ?? existing?.orgNumber) ||
-    extractProffOrganizationNumberFromUrl(details.proffUrl);
+  const orgFromProff = extractProffOrganizationNumberFromUrl(details.proffUrl);
+  const orgNumber = orgFromProff || sales.sanitizeOrgNumber(source.orgNumber ?? existing?.orgNumber);
   const payload = {
     businessName: sanitizeText(source.businessName ?? existing?.businessName),
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
+    websiteEmail: normalizeStoredWebsiteEmail(
+      source.websiteEmail ?? existing?.websiteEmail,
+      sanitizeText(source.contactEmail ?? existing?.contactEmail)
+    ),
     contactPhone: sanitizeText(source.contactPhone ?? existing?.contactPhone),
     meetingPlace: meetingPlaceRaw,
     orgNumber,
@@ -10949,7 +10953,11 @@ app.post('/api/admin/sales/maker-status-callback', async (req, res) => {
       clientPatch.contactPhone = sanitizeText(fields.phone);
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'email')) {
-      clientPatch.contactEmail = sanitizeText(fields.email);
+      // Maker draft email is the public website address, not the sales contact.
+      clientPatch.websiteEmail = normalizeStoredWebsiteEmail(
+        fields.email,
+        client.contactEmail
+      );
     }
     if (Object.prototype.hasOwnProperty.call(fields, 'address')) {
       const nextAddress = sanitizeText(fields.address);
@@ -12211,9 +12219,29 @@ function refreshStoredOfferShell(offer, req) {
   return salesOffers.updateSalesOffer(offer.id, { email: { html } }, { actor: offerActor(req), action: '' }) || offer;
 }
 
-function offerReadiness(client) {
-  const missing = offerMissingFields(client);
+function offerReadiness(client, offer = null, { to = '' } = {}) {
+  const view = offer ? clientWithOfferParty(client, offer, { to }) : client;
+  const missing = offerMissingFields(view);
   return { ready: missing.length === 0, missing, message: offerReadinessMessage(missing) };
+}
+
+/** Persist Til and the contract-block edits. Content stays locked after verification; the recipient still updates. */
+function persistOfferDraft(offer, client, body, req, { content = true } = {}) {
+  if (!offer || offer.status === 'sent') return offer;
+  const patch = content && offer.status !== 'verified' && offer.status !== 'review-requested'
+    ? offerPatchFromBody(body || {}, offer)
+    : {};
+  const recipient = offerRecipientPatch(body || {}, client);
+  if (recipient) patch.party = { ...(patch.party || {}), ...recipient };
+  if (!Object.keys(patch).length) return offer;
+  const previewed = salesOffers.offerPreviewIsCurrent(offer);
+  const updated = salesOffers.updateSalesOffer(offer.id, patch, { actor: offerActor(req), action: '' }) || offer;
+  if (salesOffers.offerPreviewIsCurrent(updated)) return updated;
+  // Same letter they already approved (only Til / empty party bookkeeping). Keep the approval.
+  if (previewed && salesOffers.offerContentHash(offer, { includeParty: false }) === salesOffers.offerContentHash(updated, { includeParty: false })) {
+    return salesOffers.markOfferPreviewed(updated.id, { actor: offerActor(req) }) || updated;
+  }
+  return updated;
 }
 
 /** Fireflies recording of this client's booked sales meeting. Later calendar reminders are ignored. */
@@ -12263,6 +12291,8 @@ function withResolvedOfferIdentity(email = {}, values = {}) {
 async function ensureOfferDraft(client, req) {
   const existing = salesOffers.getOfferForClient(client.id);
   if (existing) {
+    // A confirmed preview is the message they signed off on — do not rewrite it on send/open.
+    if (existing.status === 'sent' || salesOffers.offerPreviewIsCurrent(existing)) return existing;
     const refreshed = refreshStoredOfferShell(existing, req);
     const values = await offerIdentityValues(client, req);
     const email = withResolvedOfferIdentity(refreshed?.email || {}, values);
@@ -12318,7 +12348,16 @@ function offerPatchFromBody(body = {}, current = {}) {
     const html = typeof email.html === 'string' ? email.html : current.email?.html || '';
     patch.email = { ...(patch.email || {}), html: applyOfferProducts(html, list, { mvaIncluded }) };
   }
+  if (body.party && typeof body.party === 'object') patch.party = body.party;
   return patch;
+}
+
+/** Til on the offer page. Stored only when it differs from the client card, so clearing it falls back. */
+function offerRecipientPatch(body = {}, client = {}) {
+  if (typeof body.to !== 'string') return null;
+  const email = sanitizeText(body.to);
+  const card = sanitizeText(client?.contactEmail);
+  return { contactEmail: email && email.toLowerCase() !== card.toLowerCase() ? email : '' };
 }
 
 async function notifyOfferReviewRequested(offer, client, req) {
@@ -12370,15 +12409,16 @@ async function notifyOfferVerified(offer, client, req) {
   return { sent: true, to };
 }
 
-async function offerContractBuffer(offer, client) {
+async function offerContractBuffer(offer, client, { to = '' } = {}) {
   const inputs = contractInputsForOffer(offer);
   if (!offerContractIsAvailable(offer)) {
     throw new Error(offer.tierId === CUSTOM_TIER_ID
       ? 'Kontrakten for skreddersydd tilbud lages av admin (Speil e-post i kontrakt) før verifisering.'
       : 'Velg en nettside-tier før kontrakten kan lages.');
   }
-  const buffer = await buildContractPdf({ client, ...inputs });
-  const fileName = contractFileName({ client, tierId: inputs.summary && inputs.preferSummary && offer.tierId === CUSTOM_TIER_ID ? CUSTOM_TIER_ID : offer.tierId });
+  const view = clientWithOfferParty(client, offer, { to });
+  const buffer = await buildContractPdf({ client: view, ...inputs });
+  const fileName = contractFileName({ client: view, tierId: inputs.summary && inputs.preferSummary && offer.tierId === CUSTOM_TIER_ID ? CUSTOM_TIER_ID : offer.tierId });
   return { buffer, fileName };
 }
 
@@ -12402,9 +12442,10 @@ async function fillOpenOfferSlotsFromSalesMeeting(offer, client, req) {
 }
 
 /** The exact message the client receives (merge fields resolved, hosted assets), used for preview and send. */
-async function composeOfferMessage(offer, client, req) {
+async function composeOfferMessage(offer, client, req, { to = '' } = {}) {
   const sender = await resolveSalesSenderForAccount(req.salesUser);
-  const composed = composeEmailForClient(client, 'offer', {
+  const view = clientWithOfferParty(client, offer, { to });
+  const composed = composeEmailForClient(view, 'offer', {
     html: refreshOfferShell(offer.email.html),
     subject: offer.email.subject,
     preheader: offer.email.preheader,
@@ -12447,7 +12488,7 @@ app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
   res.json({
     offer: presentOffer(offer),
     client: compactOfferClient(client),
-    readiness: offerReadiness(client),
+    readiness: offerReadiness(client, offer),
     tiers: compactTiers(),
     mergeFields: mergeFieldsMeta(),
     sender,
@@ -12469,8 +12510,10 @@ app.put('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
     return res.status(409).json({ message: 'Tilbudet er verifisert av admin og låst. Be admin åpne det igjen for endringer.', offer: presentOffer(current) });
   }
   const patch = offerPatchFromBody(req.body || {}, current);
+  const recipient = offerRecipientPatch(req.body || {}, client);
+  if (recipient) patch.party = { ...(patch.party || {}), ...recipient };
   const updated = salesOffers.updateSalesOffer(current.id, patch, { actor: offerActor(req), action: '' });
-  res.json({ offer: presentOffer(updated), readiness: offerReadiness(client) });
+  res.json({ offer: presentOffer(updated), readiness: offerReadiness(client, updated) });
 });
 
 app.post('/api/admin/sales/:id/offer/new', salesAuth, async (req, res) => {
@@ -12600,12 +12643,12 @@ app.post('/api/admin/sales/:id/offer/request-review', salesAuth, async (req, res
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
-  const readiness = offerReadiness(client);
-  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
   const current = await ensureOfferDraft(client, req);
   if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
-  const patched = salesOffers.updateSalesOffer(current.id, offerPatchFromBody(req.body || {}, current), { actor: offerActor(req), action: '' });
-  const updated = salesOffers.requestOfferReview(patched.id, { actor: offerActor(req), note: sanitizeText(req.body?.note) });
+  const drafted = persistOfferDraft(current, client, req.body, req);
+  const readiness = offerReadiness(client, drafted, { to: req.body?.to });
+  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
+  const updated = salesOffers.requestOfferReview(drafted.id, { actor: offerActor(req), note: sanitizeText(req.body?.note) });
   let notification = { sent: false };
   try {
     notification = await notifyOfferReviewRequested(updated, client, req);
@@ -12637,21 +12680,21 @@ app.post('/api/admin/sales/:id/offer/preview', salesAuth, async (req, res) => {
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   let offer = await ensureOfferDraft(client, req);
-  if (offer.status !== 'sent' && offer.status !== 'verified' && offer.status !== 'review-requested') {
-    offer = salesOffers.updateSalesOffer(offer.id, offerPatchFromBody(req.body || {}, offer), { actor: offerActor(req), action: '' });
-  }
+  offer = persistOfferDraft(offer, client, req.body, req);
+  const to = sanitizeText(req.body?.to) || offer.party?.contactEmail || client.contactEmail;
   try {
     offer = await fillOpenOfferSlotsFromSalesMeeting(offer, client, req);
-    const { sender, composed } = await composeOfferMessage(offer, client, req);
+    const view = clientWithOfferParty(client, offer, { to });
+    const { sender, composed } = await composeOfferMessage(offer, client, req, { to });
     const contractAvailable = offerContractIsAvailable(offer);
     const contractName = contractAvailable
-      ? contractFileName({ client, tierId: offer.tierId === CUSTOM_TIER_ID || offer.products.some((item) => item.kind !== 'tier') ? CUSTOM_TIER_ID : offer.tierId })
+      ? contractFileName({ client: view, tierId: offer.tierId === CUSTOM_TIER_ID || offer.products.some((item) => item.kind !== 'tier') ? CUSTOM_TIER_ID : offer.tierId })
       : '';
-    const readiness = offerReadiness(client);
+    const readiness = offerReadiness(client, offer, { to });
     res.json({
       offer: presentOffer(offer),
       preview: {
-        to: sanitizeText(req.body?.to) || client.contactEmail,
+        to,
         from: composed.from,
         replyTo: composed.replyTo,
         subject: composed.subject,
@@ -12684,31 +12727,23 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
-  // Client-card completeness first: that is the error the rep can act on.
-  const readiness = offerReadiness(client);
-  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
   if (!emailLib.canSendEmail()) return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
 
   let offer = await ensureOfferDraft(client, req);
   if (offer.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.', offer: presentOffer(offer) });
-  if (offer.status !== 'verified') {
-    offer = salesOffers.updateSalesOffer(offer.id, offerPatchFromBody(req.body || {}, offer), { actor: offerActor(req), action: '' });
-  }
-  try {
-    offer = await fillOpenOfferSlotsFromSalesMeeting(offer, client, req);
-  } catch (error) {
-    return res.status(502).json({ message: sanitizeText(error?.message) || 'Kunne ikke legge møtet inn i tilbudet.' });
-  }
+  const to = sanitizeText(req.body?.to) || offer.party?.contactEmail || client.contactEmail;
+  const readiness = offerReadiness(client, offer, { to });
+  if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
   const blocker = offerSendBlocker(offer);
   if (blocker) {
     const waiting = offer.status === 'review-requested' || (salesOffers.offerNeedsVerification(offer) && offer.status !== 'verified');
     return res.status(waiting ? 409 : 400).json({ message: blocker, offer: presentOffer(offer) });
   }
-  const to = sanitizeText(req.body?.to) || client.contactEmail;
+  offer = persistOfferDraft(offer, client, req.body, req, { content: false });
   if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
   try {
-    const { buffer, fileName } = await offerContractBuffer(offer, client);
-    const { composed } = await composeOfferMessage(offer, client, req);
+    const { buffer, fileName } = await offerContractBuffer(offer, client, { to });
+    const { composed } = await composeOfferMessage(offer, client, req, { to });
     await emailLib.sendEmail({
       to,
       from: composed.from,
@@ -12791,7 +12826,7 @@ app.get('/api/admin/offers/:id', salesAuth, async (req, res) => {
   res.json({
     offer: presentOffer(offer),
     client: client ? compactOfferClient(client) : null,
-    readiness: client ? offerReadiness(client) : { ready: false, missing: [], message: 'Kunden finnes ikke lenger.' },
+    readiness: client ? offerReadiness(client, offer) : { ready: false, missing: [], message: 'Kunden finnes ikke lenger.' },
     ownerName: ownerNames[sanitizeText(offer.ownerId)] || offer.ownerId || '',
     tiers: compactTiers(),
     mergeFields: mergeFieldsMeta(),
@@ -13601,6 +13636,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesOrDevelopmentAuth, async 
       'kontakt@asoldi.com'
     );
     const clientContactEmail = sanitizeText(client.contactEmail);
+    const websiteEmail = resolveWebsiteEmail(client);
     const extraContext = [
       clientContactPerson ? `Primary contact person: ${clientContactPerson}` : '',
       clientPhone ? `Primary contact phone: ${clientPhone}` : '',
@@ -13610,7 +13646,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesOrDevelopmentAuth, async 
     const answersPatch = {
       businessName: client.businessName || '',
       industry: client.industry || '',
-      email: clientContactEmail || salesOwnerContact,
+      email: websiteEmail,
       phone: clientPhone,
       address: clientMeetingPlace,
       googleBusinessProfile: salesDetails.googleBusinessProfile || '',
@@ -13630,6 +13666,7 @@ app.post('/api/admin/sales/:id/create-maker-run', salesOrDevelopmentAuth, async 
       industry: client.industry || '',
       source: 'sales',
       salesContact: salesOwnerContact,
+      salesContactEmail: clientContactEmail,
       salesAddress: clientMeetingPlace,
       salesClientId: client.id,
       salesOwnerId: req.salesUser?.accountKey || '',
