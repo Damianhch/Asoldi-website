@@ -12665,6 +12665,15 @@ app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
   });
 });
 
+app.get('/api/admin/sales/:id/offer/meeting', salesAuth, async (req, res) => {
+  const client = sales.getSalesClientById(req.params.id);
+  if (!client) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  const offer = salesOffers.getOfferForClient(client.id);
+  const meeting = meetingForOffer(client, offer);
+  return res.json({ meeting: presentMeetingForOffer(meeting, offer) });
+});
+
 app.put('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });

@@ -8,6 +8,7 @@ import {
   fillClientOffer,
   useClientOfferMeeting,
   getClientOffer,
+  getClientOfferMeeting,
   openAuthedPdf,
   previewClientOffer,
   requestClientOfferReview,
@@ -171,6 +172,44 @@ export function SalesOfferComposer() {
     }
     void load();
   }, [clientId, navigate, load]);
+
+  const meetingReady = Boolean(meeting?.hasTranscript || meeting?.hasSummary);
+
+  useEffect(() => {
+    if (!clientId || !getSalesToken() || meeting?.manual || meetingReady) return undefined;
+    let cancelled = false;
+    async function tick() {
+      if (document.visibilityState === 'hidden') return;
+      try {
+        const data = await getClientOfferMeeting(clientId) as { meeting: MeetingInfo };
+        if (cancelled) return;
+        const next = data.meeting || null;
+        let becameReady = false;
+        setMeeting((current) => {
+          if (current?.manual) return current;
+          const same = (current?.meetingId || '') === (next?.meetingId || '')
+            && Boolean(current?.hasTranscript) === Boolean(next?.hasTranscript)
+            && Boolean(current?.hasSummary) === Boolean(next?.hasSummary);
+          if (same) return current;
+          if (next && (next.hasTranscript || next.hasSummary) && !(current?.hasTranscript || current?.hasSummary)) {
+            becameReady = true;
+          }
+          return next;
+        });
+        if (becameReady) setNotice('Fireflies-møtet er klart på tilbudet.');
+      } catch {
+        // Keep waiting; the webhook may not have landed yet.
+      }
+    }
+    const timer = window.setInterval(() => { void tick(); }, 10_000);
+    const onVisible = () => { if (document.visibilityState === 'visible') void tick(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+  }, [clientId, meeting?.manual, meetingReady]);
 
   function partyPayload() {
     const card = clientCardParty(clientRef.current || {});
@@ -436,7 +475,7 @@ export function SalesOfferComposer() {
 
   const fillDisabledReason = useMemo(() => {
     if (!deepseek) return 'AI-utfylling er ikke aktivert på serveren enda (DeepSeek-nøkkel mangler). Du kan fylle ut feltene manuelt i editoren.';
-    if (!meeting) return 'Ingen Fireflies-møte er koblet til kunden enda.';
+    if (!meeting) return 'Venter på Fireflies-transkript (vanligvis 5–10 min etter møtet). Siden oppdateres automatisk.';
     if (!meeting.hasTranscript && !meeting.hasSummary) return 'Møtet mangler transkript/sammendrag.';
     if (meeting.tooThin) return 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.';
     return '';
@@ -616,15 +655,18 @@ export function SalesOfferComposer() {
                       </span>
                     )}
                     {!meeting && (
-                      <a
-                        href="https://app.fireflies.ai/"
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-xs text-[#FF5B00] hover:underline"
-                      >
-                        <ExternalLink size={12} />
-                        Åpne i Fireflies
-                      </a>
+                      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
+                        <span>Venter på Fireflies-transkript. Oppdateres automatisk når det er klart.</span>
+                        <a
+                          href="https://app.fireflies.ai/"
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-[#FF5B00] hover:underline"
+                        >
+                          <ExternalLink size={12} />
+                          Åpne i Fireflies
+                        </a>
+                      </span>
                     )}
                     <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
                       <label

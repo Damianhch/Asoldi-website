@@ -95,6 +95,10 @@ export function getClientOffer(clientId: string) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer`);
 }
 
+export function getClientOfferMeeting(clientId: string) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/meeting`);
+}
+
 export function saveClientOffer(clientId: string, payload: Record<string, unknown>) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer`, { method: 'PUT', body: JSON.stringify(payload) });
 }
