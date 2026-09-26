@@ -99,11 +99,12 @@ import {
 } from './lib/offer-email.js';
 import { clientWithOfferParty, offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
 import { buildContractPdf, contractFileName, contractInputsForOffer, offerContractIsAvailable } from './lib/offer-contract-pdf.js';
+import { contractHtmlForOffer } from './lib/offer-contract-html.js';
 import { isDeepseekConfigured } from './lib/deepseek.js';
 import { fillOfferFromTranscript, meetingContextIsTooThin, reflectContractFromEmail } from './lib/offer-ai.js';
 import { matchMeetingToClients, recordingMatchesSalesMeeting } from './lib/fireflies-client-match.js';
 import { describeFirefliesMedia, firefliesMediaFilePath, persistFirefliesMedia } from './lib/fireflies-media.js';
-import { CUSTOM_TIER_ID, WEBSITE_TIERS, tierById } from './lib/website-tiers.js';
+import { CUSTOM_TIER_ID, WEBSITE_TIERS, resolveTier, tierById, toClientWebsitePlan } from './lib/website-tiers.js';
 import { buildSalesSender, normalizeAsoldiFromEmail } from './lib/sales-sender.js';
 import {
   authorizeFathomWebhook,
@@ -113,6 +114,7 @@ import {
 import {
   authorizeFirefliesWebhook,
   addFirefliesToLiveMeeting,
+  fetchRecentFirefliesTranscripts,
   firefliesLiveJoinShouldWait,
   firefliesLiveJoinWindow,
   isFirefliesWebhookConfigured,
@@ -157,6 +159,7 @@ import {
   toPublicSalesPreviewUrl,
 } from './lib/laptop-preview.js';
 import {
+  buildEventSummary,
   createGoogleCalendarAuthUrl,
   deleteMeetingEvent,
   exchangeGoogleCalendarCode,
@@ -1929,6 +1932,7 @@ function buildSalesInput(body = {}, { existing = null, requireCore = false } = {
     businessName: sanitizeText(source.businessName ?? existing?.businessName),
     contactPerson: sanitizeText(source.contactPerson ?? existing?.contactPerson),
     contactEmail: sanitizeText(source.contactEmail ?? existing?.contactEmail),
+    clientEmail: normalizeEmail(source.clientEmail ?? existing?.clientEmail),
     websiteEmail: normalizeStoredWebsiteEmail(
       source.websiteEmail ?? existing?.websiteEmail,
       sanitizeText(source.contactEmail ?? existing?.contactEmail)
@@ -7842,7 +7846,7 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
           forceGuestInvite: notifyAttendees && (forceGuestInvite || !guestAlreadyInvited || !eventIdForUpsert),
           // Fred only when the confirmation invite is actually sent. Silent
           // MyPhoner/unassigned creates must not save him without emailing him.
-          addFireflies: isOnline && notifyAttendees,
+          addFireflies: isOnline && notifyAttendees && !Boolean(nextClient?.progression?.meetingHeld),
         }
       );
       if (notifyAttendees) {
@@ -7860,7 +7864,10 @@ async function maybeSyncCalendar(client, previousClient = null, options = {}) {
         calendarMeta.firefliesLiveJoinAttemptAt = '';
         calendarMeta.firefliesLiveJoinError = '';
       }
-      if (sanitizeText(previousClient?.meetingAt) !== sanitizeText(nextClient?.meetingAt)) {
+      if (
+        !nextClient?.progression?.meetingHeld
+        && sanitizeText(previousClient?.meetingAt) !== sanitizeText(nextClient?.meetingAt)
+      ) {
         calendarMeta.firefliesLiveJoinedAt = '';
         calendarMeta.firefliesLiveJoinAttemptAt = '';
         calendarMeta.firefliesLiveJoinError = '';
@@ -8404,6 +8411,9 @@ async function maybeJoinFirefliesLive(client, { force = false, ignoreRetryWait =
   if (normalizeMeetingMode(client?.meetingMode) !== 'online') {
     return { joined: false, reason: 'not-online', client, warnings };
   }
+  if (!force && client?.progression?.meetingHeld) {
+    return { joined: false, reason: 'meeting-held', client, warnings };
+  }
   if (!sanitizeText(client?.reminders?.thankYouSentAt) && !sanitizeText(client?.calendar?.firefliesInvitedAt)) {
     return { joined: false, reason: 'not-confirmed', client, warnings };
   }
@@ -8455,8 +8465,9 @@ async function maybeJoinFirefliesLive(client, { force = false, ignoreRetryWait =
       firefliesLiveJoinAttemptAt: attemptedAt,
       firefliesLiveJoinError: '',
     });
+    const recorded = recordLiveJoinMeeting(next || client, { joinedAt: attemptedAt, title, meetLink });
     console.log(`[fireflies] live-join id=${sanitizeText(client.id)} meet=${meetLink}`);
-    return { joined: true, reason: 'joined', client: next || client, warnings };
+    return { joined: true, reason: 'joined', client: recorded || next || client, warnings };
   } catch (error) {
     const message = sanitizeText(error?.message) || 'Fireflies live join failed.';
     sales.setSalesCalendar(client.id, {
@@ -10541,20 +10552,76 @@ async function handleStripeWebhook(req, res) {
   return res.json({ received: true });
 }
 
+function presentClientOffer(offer) {
+  if (!offer) return null;
+  const plan = findWebsitePlan(offer.planId);
+  const acceptance = offer.acceptance || null;
+  return {
+    id: offer.id,
+    code: offer.code,
+    planId: offer.planId,
+    planName: offer.planName || plan?.name || '',
+    price: offer.price || plan?.price || '',
+    note: offer.note || '',
+    previewUrl: offer.previewUrl || '',
+    letterHtml: offer.letterHtml || '',
+    contractHtml: offer.contractHtml || '',
+    accepted: Boolean(acceptance?.acceptedAt),
+    acceptedAt: acceptance?.acceptedAt || '',
+  };
+}
+
+function applyOfferPlanToUser(userId, offer) {
+  const plan = findWebsitePlan(offer?.planId);
+  if (!plan || !userId) return;
+  const profile = clientPortal.getClientProfile(userId);
+  if (profile?.payment?.status === 'active') return;
+  if (profile?.websiteBuilder?.selectedPlanId === plan.id) return;
+  clientPortal.setClientSelectedWebsitePlan(userId, {
+    id: plan.id,
+    name: plan.name,
+    price: plan.price,
+    type: 'standard',
+  });
+}
+
 app.get('/api/client/offer', clientAuth, async (req, res) => {
   const user = await store.getUserById(req.client.userId);
   if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
   let offer = offers.getActiveOfferForUser({ userId: user.id, email: user.username });
   if (!offer) return res.json({ offer: null });
   offer = hydrateOfferPreviewFromSalesImport(offer, { persist: true });
-  const plan = findWebsitePlan(offer.planId);
-  return res.json({
-    offer: {
-      ...offer,
-      planName: offer.planName || plan?.name || '',
-      price: offer.price || plan?.price || '',
-    },
+  applyOfferPlanToUser(user.id, offer);
+  return res.json({ offer: presentClientOffer(offer) });
+});
+
+app.post('/api/client/offer/accept', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const offer = offers.getActiveOfferForUser({ userId: user.id, email: user.username });
+  if (!offer) return res.status(404).json({ message: 'Fant ingen tilbud på denne kontoen.' });
+  const screen = req.body?.screen && typeof req.body.screen === 'object' ? req.body.screen : {};
+  const saved = offers.recordOfferAcceptance(offer.id, {
+    userId: user.id,
+    email: user.username,
+    ip: req.ip || req.socket?.remoteAddress || '',
+    userAgent: sanitizeText(req.get('user-agent')),
+    language: req.body?.language,
+    timezone: req.body?.timezone,
+    platform: req.body?.platform,
+    screen: { width: screen.width, height: screen.height },
   });
+  if (offer.salesClientId) {
+    const salesClient = sales.getSalesClientById(offer.salesClientId);
+    if (salesClient?.progression?.meetingHeld && salesClient?.progression?.offerSent && !salesClient.progression.contractSigned) {
+      try {
+        sales.setSalesProgress(salesClient.id, 'contractSigned', true);
+      } catch {
+        // Acceptance is stored even if the sales checklist cannot move yet.
+      }
+    }
+  }
+  return res.json({ offer: presentClientOffer(saved || offer) });
 });
 
 app.post('/api/client/website/existing-code', clientAuth, async (req, res) => {
@@ -12111,6 +12178,73 @@ app.patch('/api/admin/sales/:id/next-actions', salesAuth, async (req, res) => {
   }
 });
 
+app.patch('/api/admin/sales/:id/client-email', salesAuth, (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  const clientEmail = normalizeEmail(req.body?.clientEmail);
+  if (clientEmail && !isValidEmail(clientEmail)) {
+    return res.status(400).json({ message: 'Klient-e-post må være en gyldig e-postadresse.' });
+  }
+  const updated = sales.updateSalesClient(req.params.id, { clientEmail });
+  res.json({ client: updated });
+});
+
+app.post('/api/admin/sales/:id/connect-portal', salesAuth, async (req, res) => {
+  const existing = sales.getSalesClientById(req.params.id);
+  if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
+  if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
+  const clientEmail = normalizeEmail(existing.clientEmail);
+  if (!isValidEmail(clientEmail)) {
+    return res.status(400).json({ message: 'Sett klient-e-post først. Det er e-posten kunden bruker på asoldi.com.' });
+  }
+  const user = await findClientUserByEmail(clientEmail);
+  if (!user) {
+    return res.status(404).json({ message: 'Fant ingen kundekonto med denne e-posten. Kunden må opprette kontoen først.' });
+  }
+  const salesOffer = salesOffers.getOfferForClient(existing.id);
+  const tier = chosenWebsiteTier(existing, salesOffer);
+  if (!tier) {
+    return res.status(400).json({ message: 'Velg en tier i møtenotatene eller i tilbudet før du kobler.' });
+  }
+  const plan = toClientWebsitePlan(tier);
+  const previewUrl = getPublicSalesPreviewUrl(existing) || '';
+  clientPortal.ensureClientProfileForUser(user);
+  clientPortal.setClientSelectedWebsitePlan(user.id, {
+    id: plan.id,
+    name: plan.name,
+    price: plan.price,
+    type: 'standard',
+  });
+  clientPortal.upsertClientProfile(user.id, {
+    websiteBuilder: { salesClientId: existing.id, previewUrl },
+  });
+  const portalOffer = offers.findPortalOfferForSales({
+    salesOfferId: salesOffer?.id,
+    salesClientId: existing.id,
+  });
+  if (portalOffer) {
+    offers.updateOffer(portalOffer.id, {
+      targetUserId: user.id,
+      targetEmail: clientEmail,
+      planId: plan.id,
+      planName: plan.name,
+      price: plan.price,
+      previewUrl: previewUrl || portalOffer.previewUrl,
+    });
+  }
+  const updated = sales.updateSalesClient(existing.id, {
+    portalUserId: user.id,
+    portalConnectedAt: new Date().toISOString(),
+    portalTierId: tier.id,
+  });
+  res.json({
+    client: updated,
+    user: { id: user.id, email: clientEmail },
+    tier: { id: tier.id, name: plan.name },
+  });
+});
+
 app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
@@ -12352,6 +12486,7 @@ function compactOfferClient(client = {}) {
     businessName: client.businessName || '',
     contactPerson: client.contactPerson || '',
     contactEmail: client.contactEmail || '',
+    clientEmail: client.clientEmail || '',
     contactPhone: client.contactPhone || '',
     orgNumber: client.orgNumber || '',
     businessAddress: client.businessAddress || '',
@@ -12415,13 +12550,95 @@ function persistOfferDraft(offer, client, body, req, { content = true } = {}) {
 /** Fireflies recording of this client's booked sales meeting. Later calendar reminders are ignored. */
 function salesMeetingRef(client) {
   const meetings = Array.isArray(client?.meetings) ? client.meetings : [];
-  return meetings.find((item) => item?.forSalesMeeting || recordingMatchesSalesMeeting(client, item)) || null;
+  const locked = sanitizeText(client?.lockedOfferMeetingId);
+  if (locked) return meetings.find((item) => item?.meetingId === locked) || null;
+  return meetings.find((item) => item?.forSalesMeeting || recordingMatchesSalesMeeting(client, item)) || meetings[0] || null;
+}
+
+function formatOfferMeetingWhen(value = '') {
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return sanitizeText(value);
+  return new Date(ms).toLocaleString('nb-NO', { dateStyle: 'short', timeStyle: 'short', timeZone: 'Europe/Oslo' });
+}
+
+function recordLiveJoinMeeting(client, { joinedAt = '', title = '', meetLink = '' } = {}) {
+  if (!client?.id) return client;
+  const meetingId = sales.liveJoinMeetingId(client.id, client.meetingAt);
+  const startedAt = sanitizeText(client.meetingAt) || joinedAt;
+  sales.linkMeetingToSalesClient(client.id, {
+    meetingId,
+    title: sanitizeText(title) || firefliesLiveJoinTitle(client),
+    when: formatOfferMeetingWhen(startedAt),
+    startedAt,
+    meetLink: sanitizeText(meetLink) || sanitizeText(client?.calendar?.meetLink),
+    hasTranscript: false,
+    liveJoinedAt: joinedAt || new Date().toISOString(),
+    source: 'live-join',
+    linkedBy: 'live-join',
+    forSalesMeeting: true,
+  });
+  return sales.getSalesClientById(client.id) || client;
+}
+
+function ensureOfferMeetingHistory(client) {
+  if (!client?.id) return client;
+  if (normalizeMeetingMode(client.meetingMode) !== 'online') return client;
+  const meetLink = sanitizeText(client?.calendar?.meetLink);
+  if (!isRealGoogleMeetLink(meetLink)) return client;
+  const already = (client.meetings || []).some((row) => (
+    sanitizeText(row.meetLink) === meetLink
+    || sanitizeText(row.meetingId) === sales.liveJoinMeetingId(client.id, client.meetingAt)
+  ));
+  if (already) return client;
+  const joined = sanitizeText(client?.calendar?.firefliesLiveJoinedAt);
+  const invited = sanitizeText(client?.calendar?.firefliesInvitedAt) || sanitizeText(client?.reminders?.thankYouSentAt);
+  const meetingMs = Date.parse(client?.meetingAt);
+  const started = Number.isFinite(meetingMs) && Date.now() >= meetingMs - (3 * 60 * 1000);
+  if (!joined && !(invited && started)) return client;
+  return recordLiveJoinMeeting(client, {
+    joinedAt: joined,
+    title: firefliesLiveJoinTitle(client),
+    meetLink,
+  });
+}
+
+async function attachRecentFirefliesByMeetLink(client) {
+  const config = readFirefliesWebhookConfig();
+  const meetLink = sanitizeText(client?.calendar?.meetLink);
+  if (!config.apiKey || !isRealGoogleMeetLink(meetLink)) return client;
+  try {
+    const rows = await fetchRecentFirefliesTranscripts({ apiKey: config.apiKey, limit: 15 });
+    const wanted = meetLink.toLowerCase().replace(/[?#].*$/, '');
+    const business = sanitizeText(client.businessName).toLowerCase();
+    for (const row of rows) {
+      const built = buildFirefliesMeetingRecord({ meeting_id: row?.id }, row);
+      if (!built?.meetingId) continue;
+      const rowLink = sanitizeText(row?.meeting_link || row?.meetingLink || built.meetingLink).toLowerCase().replace(/[?#].*$/, '');
+      const title = sanitizeText(built.title).toLowerCase();
+      if (rowLink !== wanted && !(business && title.includes(business))) continue;
+      storeFirefliesMeeting(built);
+      linkFirefliesMeeting(client.id, meetingRefForClient({ ...built, meetLink: built.meetingLink || meetLink }, {
+        clientId: client.id,
+        linkedBy: 'meet-link',
+        confidence: 'medium',
+      }));
+    }
+  } catch (error) {
+    console.warn(`[fireflies] recent-transcripts ${sanitizeText(error?.message) || error}`);
+  }
+  return sales.getSalesClientById(client.id) || client;
 }
 
 function meetingForOffer(client, offer) {
   if (sanitizeText(offer?.meetingSource) === 'manual' && sanitizeText(offer?.meetingId)) {
-    const chosen = readStoredFirefliesMeeting(offer.meetingId);
+    const chosen = readStoredFirefliesMeeting(offer.meetingId)
+      || (client.meetings || []).find((row) => row.meetingId === sanitizeText(offer.meetingId));
     if (chosen) return chosen;
+  }
+  if (client?.progression?.meetingHeld && sanitizeText(client.lockedOfferMeetingId)) {
+    const locked = readStoredFirefliesMeeting(client.lockedOfferMeetingId)
+      || (client.meetings || []).find((row) => row.meetingId === client.lockedOfferMeetingId);
+    if (locked) return locked;
   }
   const ref = salesMeetingRef(client);
   if (ref?.meetingId) return readStoredFirefliesMeeting(ref.meetingId) || { ...ref, transcript: '' };
@@ -12440,20 +12657,25 @@ function meetingForOffer(client, offer) {
       return byLink;
     }
   }
-  return null;
+  return (client.meetings || [])[0] || null;
 }
 
 function presentMeetingForOffer(meeting, offer, client = null) {
   if (!meeting) {
     const joinedAt = sanitizeText(client?.calendar?.firefliesLiveJoinedAt);
-    if (!joinedAt) return null;
+    if (!joinedAt && !(client.meetings || []).length) return null;
+    const fallback = (client.meetings || [])[0];
+    if (fallback) {
+      return presentMeetingForOffer(fallback, offer, client);
+    }
     const meetingMs = Date.parse(client?.meetingAt || '');
     return {
       meetingId: '',
-      title: 'Fireflies ble sendt inn i Meet',
+      title: firefliesLiveJoinTitle(client) || 'Fireflies ble sendt inn i Meet',
       when: Number.isFinite(meetingMs)
-        ? new Date(meetingMs).toLocaleString('nb-NO', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/Oslo' })
+        ? formatOfferMeetingWhen(client.meetingAt)
         : joinedAt,
+      durationMinutes: '',
       hasTranscript: false,
       hasSummary: false,
       tooThin: true,
@@ -12463,20 +12685,36 @@ function presentMeetingForOffer(meeting, offer, client = null) {
     };
   }
   const view = sanitizeText(meeting.transcriptUrl);
-  const hasTranscript = Boolean(sanitizeText(meeting.transcript));
+  const hasTranscript = Boolean(sanitizeText(meeting.transcript) || meeting.hasTranscript);
   const hasSummary = Boolean(sanitizeText(meeting.summary));
   return {
     meetingId: meeting.meetingId || '',
-    title: meeting.title || '',
-    when: meeting.when || '',
+    title: meeting.title || firefliesLiveJoinTitle(client) || 'Fireflies-møte',
+    when: meeting.when || formatOfferMeetingWhen(meeting.startedAt || client?.meetingAt),
+    durationMinutes: meeting.durationMinutes === '' || meeting.durationMinutes == null ? '' : Number(meeting.durationMinutes),
     hasTranscript,
     hasSummary,
     tooThin: meetingContextIsTooThin(meeting),
     pendingTranscript: !hasTranscript && !hasSummary,
-    liveJoined: Boolean(sanitizeText(client?.calendar?.firefliesLiveJoinedAt)),
+    liveJoined: Boolean(meeting.liveJoinedAt) || String(meeting.meetingId || '').startsWith('live:') || Boolean(sanitizeText(client?.calendar?.firefliesLiveJoinedAt)),
     manual: sanitizeText(offer?.meetingSource) === 'manual',
     firefliesUrl: /^https:\/\/app\.fireflies\.ai\//i.test(view) ? view : 'https://app.fireflies.ai/',
   };
+}
+
+function presentOfferMeetings(client, offer) {
+  const selected = sanitizeText(offer?.meetingId)
+    || (client?.progression?.meetingHeld ? sanitizeText(client?.lockedOfferMeetingId) : '')
+    || sanitizeText(salesMeetingRef(client)?.meetingId);
+  return (Array.isArray(client?.meetings) ? client.meetings : []).map((row) => ({
+    meetingId: row.meetingId,
+    title: row.title || 'Fireflies-møte',
+    when: row.when || formatOfferMeetingWhen(row.startedAt),
+    durationMinutes: row.durationMinutes === '' || row.durationMinutes == null ? '' : Number(row.durationMinutes),
+    hasTranscript: Boolean(row.hasTranscript),
+    liveJoined: Boolean(row.liveJoinedAt) || String(row.meetingId || '').startsWith('live:'),
+    selected: Boolean(selected) && selected === row.meetingId,
+  }));
 }
 
 async function offerIdentityValues(client, req) {
@@ -12683,9 +12921,11 @@ function sendPdf(res, buffer, fileName, { download = false } = {}) {
 // --- Sales side: one offer per client --------------------------------------------------------
 
 app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
-  const client = sales.getSalesClientById(req.params.id);
+  let client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  client = ensureOfferMeetingHistory(client);
+  client = await attachRecentFirefliesByMeetLink(client);
   const offer = await ensureOfferDraft(client, req);
   const sender = await resolveSalesSenderForAccount(req.salesUser);
   const meeting = meetingForOffer(client, offer);
@@ -12698,17 +12938,22 @@ app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
     sender,
     deepseek: isDeepseekConfigured(),
     meeting: presentMeetingForOffer(meeting, offer, client),
+    meetings: presentOfferMeetings(client, offer),
     canSendEmail: emailLib.canSendEmail(),
   });
 });
 
 app.get('/api/admin/sales/:id/offer/meeting', salesAuth, async (req, res) => {
-  const client = sales.getSalesClientById(req.params.id);
+  let client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
+  client = ensureOfferMeetingHistory(client);
   const offer = salesOffers.getOfferForClient(client.id);
   const meeting = meetingForOffer(client, offer);
-  return res.json({ meeting: presentMeetingForOffer(meeting, offer, client) });
+  return res.json({
+    meeting: presentMeetingForOffer(meeting, offer, client),
+    meetings: presentOfferMeetings(client, offer),
+  });
 });
 
 app.put('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
@@ -12796,6 +13041,9 @@ app.post('/api/admin/sales/:id/offer/use-meeting', salesAuth, async (req, res) =
   const meetingId = sanitizeText(req.body?.meetingId);
   const pasted = sanitizeText(req.body?.title || req.body?.query || '');
   let record = meetingId ? readStoredFirefliesMeeting(meetingId) : null;
+  if (!record && meetingId) {
+    record = (client.meetings || []).find((row) => row.meetingId === meetingId) || null;
+  }
   if (!record) {
     const stored = listStoredFirefliesMeetings({});
     let matches = rankMeetingsByTitle(stored, pasted);
@@ -12848,8 +13096,13 @@ app.post('/api/admin/sales/:id/offer/use-meeting', salesAuth, async (req, res) =
     meetingId: record.meetingId,
     meetingSource: 'manual',
   }, { actor: offerActor(req), action: 'meeting-picked', note: sanitizeText(record.title) });
-  const meeting = meetingForOffer(client, updated);
-  res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated, client) });
+  const fresh = sales.getSalesClientById(client.id) || client;
+  const meeting = meetingForOffer(fresh, updated);
+  res.json({
+    offer: presentOffer(updated),
+    meeting: presentMeetingForOffer(meeting, updated, fresh),
+    meetings: presentOfferMeetings(fresh, updated),
+  });
 });
 
 app.post('/api/admin/sales/:id/offer/request-review', salesAuth, async (req, res) => {
@@ -12936,15 +13189,65 @@ app.post('/api/admin/sales/:id/offer/approve-preview', salesAuth, async (req, re
   res.json({ offer: presentOffer(updated) });
 });
 
+function chosenWebsiteTier(client, offer) {
+  return resolveTier(offer?.tierId) || resolveTier(client?.details?.meetingQuote?.tierId) || resolveTier(client?.portalTierId) || null;
+}
+
+async function findClientUserByEmail(email) {
+  const target = normalizeEmail(email);
+  if (!isValidEmail(target)) return null;
+  const user = await store.getUserByUsername(target);
+  if (!user || user.role !== 'client') return null;
+  return user;
+}
+
+function publishSalesOfferToPortal({ salesClient, offer, letterHtml, contractHtml, user, email }) {
+  const tier = chosenWebsiteTier(salesClient, offer);
+  const plan = tier ? toClientWebsitePlan(tier) : null;
+  const previewUrl = getPublicSalesPreviewUrl(salesClient) || '';
+  const portalOffer = offers.upsertPortalOffer({
+    ownerId: salesClient.ownerId || '',
+    salesClientId: salesClient.id,
+    salesOfferId: offer.id,
+    planId: plan?.id || offer.tierId || 'tier-1-standard',
+    planName: plan?.name || '',
+    price: plan?.price || '',
+    note: '',
+    businessName: salesClient.businessName || '',
+    previewUrl,
+    targetUserId: user?.id || '',
+    targetEmail: normalizeEmail(email),
+    letterHtml,
+    contractHtml,
+  });
+  if (user && plan) {
+    clientPortal.setClientSelectedWebsitePlan(user.id, {
+      id: plan.id,
+      name: plan.name,
+      price: plan.price,
+      type: 'standard',
+    });
+    clientPortal.upsertClientProfile(user.id, {
+      websiteBuilder: { salesClientId: salesClient.id, previewUrl },
+    });
+  }
+  return portalOffer;
+}
+
 app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
-  if (!emailLib.canSendEmail()) return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
+  const delivery = sanitizeText(req.body?.delivery) === 'portal' ? 'portal' : 'email';
+  if (delivery === 'email' && !emailLib.canSendEmail()) {
+    return res.status(400).json({ message: salesEmailFailureMessage('smtp-not-configured') });
+  }
 
   let offer = await ensureOfferDraft(client, req);
   if (offer.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.', offer: presentOffer(offer) });
-  const to = sanitizeText(req.body?.to) || offer.party?.contactEmail || client.contactEmail;
+  const to = delivery === 'portal'
+    ? (normalizeEmail(client.clientEmail) || sanitizeText(req.body?.to) || offer.party?.contactEmail || client.contactEmail)
+    : (sanitizeText(req.body?.to) || offer.party?.contactEmail || client.contactEmail);
   const readiness = offerReadiness(client, offer, { to });
   if (!readiness.ready) return res.status(400).json({ message: readiness.message, readiness });
   const blocker = offerSendBlocker(offer);
@@ -12953,10 +13256,34 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
     return res.status(waiting ? 409 : 400).json({ message: blocker, offer: presentOffer(offer) });
   }
   offer = persistOfferDraft(offer, client, req.body, req, { content: false });
-  if (!to) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
+  if (!to || !isValidEmail(to)) return res.status(400).json({ message: salesEmailFailureMessage('missing-email') });
   try {
-    const { buffer, fileName } = await offerContractBuffer(offer, client, { to });
     const { composed } = await composeOfferMessage(offer, client, req, { to });
+    if (delivery === 'portal') {
+      const view = clientWithOfferParty(client, offer, { to });
+      const contractHtml = contractHtmlForOffer(offer, view);
+      if (!contractHtml) return res.status(400).json({ message: 'Velg en tier før tilbudet kan legges på asoldi.com.' });
+      const user = await findClientUserByEmail(to);
+      publishSalesOfferToPortal({
+        salesClient: client,
+        offer,
+        letterHtml: composed.html,
+        contractHtml,
+        user,
+        email: to,
+      });
+      const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to, delivery: 'portal' });
+      if (client.progression?.meetingHeld && !client.progression?.offerSent) {
+        try { sales.setSalesProgress(client.id, 'offerSent', true); } catch { /* checklist can stay manual */ }
+      }
+      return res.json({
+        ok: true,
+        offer: presentOffer(sent),
+        delivery: 'portal',
+        accountFound: Boolean(user),
+      });
+    }
+    const { buffer, fileName } = await offerContractBuffer(offer, client, { to });
     await emailLib.sendEmail({
       to,
       from: composed.from,
@@ -12970,10 +13297,10 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
         { filename: fileName, content: buffer, contentType: 'application/pdf' },
       ],
     });
-    const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to });
-    res.json({ ok: true, offer: presentOffer(sent), copyTo: salesEmailCopyBcc(to), contractFileName: fileName });
+    const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to, delivery: 'email' });
+    res.json({ ok: true, offer: presentOffer(sent), copyTo: salesEmailCopyBcc(to), contractFileName: fileName, delivery: 'email' });
   } catch (error) {
-    res.status(500).json({ message: formatSmtpSendError(error) });
+    res.status(500).json({ message: delivery === 'portal' ? (sanitizeText(error?.message) || 'Kunne ikke legge tilbudet på asoldi.com.') : formatSmtpSendError(error) });
   }
 });
 

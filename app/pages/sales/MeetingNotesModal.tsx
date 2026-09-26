@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Loader2, X } from 'lucide-react';
 import {
   PRICING,
@@ -26,12 +26,31 @@ type Props = {
   quote: unknown;
   saving?: boolean;
   onClose: () => void;
-  onSave: (payload: { notes: string; meetingQuote: MeetingQuoteState }) => void;
+  onPersist: (payload: { notes: string; meetingQuote: MeetingQuoteState }) => Promise<void> | void;
+  onContinue: () => void;
 };
 
-export function MeetingNotesModal({ businessName, notes, quote, saving, onClose, onSave }: Props) {
+export function MeetingNotesModal({ businessName, notes, quote, saving, onClose, onPersist, onContinue }: Props) {
   const [state, setState] = useState<MeetingQuoteState>(() => normalizeMeetingQuote(quote || emptyMeetingQuote()));
   const [notater, setNotater] = useState(notes || '');
+  const [savedLabel, setSavedLabel] = useState('Lagres automatisk');
+  const persistRef = useRef(onPersist);
+  persistRef.current = onPersist;
+  const skipFirst = useRef(true);
+
+  useEffect(() => {
+    if (skipFirst.current) {
+      skipFirst.current = false;
+      return;
+    }
+    setSavedLabel('Lagrer…');
+    const timer = window.setTimeout(() => {
+      void Promise.resolve(persistRef.current({ notes: notater, meetingQuote: state }))
+        .then(() => setSavedLabel('Lagret'))
+        .catch(() => setSavedLabel('Kunne ikke lagre'));
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [notater, state]);
   const selected = useMemo(() => new Set<string>(state.selected), [state.selected]);
   const oneTimeAddOns = useMemo(() => new Set<string>(state.oneTimeAddOns), [state.oneTimeAddOns]);
   const monthly = quotedMonthly(state);
@@ -95,8 +114,8 @@ export function MeetingNotesModal({ businessName, notes, quote, saving, onClose,
       <div className="w-full max-w-[1180px] max-h-[94vh] overflow-hidden rounded-2xl bg-[#1b1b1b] border border-white/10 flex flex-col">
         <div className="flex items-center justify-between gap-3 px-5 py-4 border-b border-white/10">
           <div className="min-w-0">
-            <h3 className="text-white font-semibold truncate">Møte notater — {businessName || 'kunde'}</h3>
-            <p className="text-xs text-gray-400">Kalkulator til venstre. Notater her er det samme feltet som vises på kundekortet.</p>
+            <h3 className="text-white font-semibold truncate">Møte — {businessName || 'kunde'}</h3>
+            <p className="text-xs text-gray-400">Steg 1 av 2 · Notater og kalkulator lagres fortløpende. Neste steg er tilbudet.</p>
           </div>
           <button type="button" onClick={onClose} className="p-2 rounded-lg bg-white/10 text-white hover:bg-white/15">
             <X size={16} />
@@ -287,15 +306,18 @@ export function MeetingNotesModal({ businessName, notes, quote, saving, onClose,
                 />
               </label>
             </div>
-            <div className="p-4 border-t border-white/10">
+            <div className="p-4 border-t border-white/10 space-y-2">
+              <p className="text-[11px] text-gray-500">{saving ? 'Lagrer…' : savedLabel}</p>
               <button
                 type="button"
                 disabled={saving}
-                onClick={() => onSave({ notes: notater, meetingQuote: state })}
+                onClick={() => {
+                  void Promise.resolve(persistRef.current({ notes: notater, meetingQuote: state })).then(() => onContinue());
+                }}
                 className="w-full inline-flex items-center justify-center gap-2 px-4 py-3 rounded-lg bg-[#FF5B00] text-white font-medium hover:bg-[#e55200] disabled:opacity-50"
               >
                 {saving ? <Loader2 size={16} className="animate-spin" /> : null}
-                Lagre møte notater
+                Send tilbud
               </button>
             </div>
           </aside>

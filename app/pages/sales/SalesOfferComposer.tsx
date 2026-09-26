@@ -29,6 +29,7 @@ type OfferClient = {
   businessName: string;
   contactPerson: string;
   contactEmail: string;
+  clientEmail?: string;
   orgNumber: string;
   businessAddress: string;
   meetingPlace: string;
@@ -45,9 +46,10 @@ type MeetingInfo = {
   liveJoined?: boolean;
   manual?: boolean;
   firefliesUrl?: string;
+  durationMinutes?: number | '';
 } | null;
 
-type MeetingMatch = { meetingId: string; title: string; when: string };
+type MeetingMatch = { meetingId: string; title: string; when: string; durationMinutes?: number | ''; selected?: boolean; hasTranscript?: boolean; liveJoined?: boolean };
 
 type PreviewState = {
   preview: OfferPreview;
@@ -74,11 +76,13 @@ export function SalesOfferComposer() {
   const [meeting, setMeeting] = useState<MeetingInfo>(null);
   const [meetingQuery, setMeetingQuery] = useState('');
   const [meetingMatches, setMeetingMatches] = useState<MeetingMatch[]>([]);
+  const [meetings, setMeetings] = useState<MeetingMatch[]>([]);
   const [sender, setSender] = useState<SalesSender | null>(null);
   const [deepseek, setDeepseek] = useState(false);
   const [canSendEmail, setCanSendEmail] = useState(true);
 
   const [to, setTo] = useState('');
+  const [delivery, setDelivery] = useState<'email' | 'portal'>('email');
   const [subject, setSubject] = useState('');
   const [preheader, setPreheader] = useState('');
   const [html, setHtml] = useState('');
@@ -134,6 +138,7 @@ export function SalesOfferComposer() {
         tiers: OfferTier[];
         mergeFields: MergeField[];
         meeting: MeetingInfo;
+        meetings?: MeetingMatch[];
         sender: SalesSender;
         deepseek: boolean;
         canSendEmail: boolean;
@@ -142,6 +147,7 @@ export function SalesOfferComposer() {
       setTiers(Array.isArray(data.tiers) ? data.tiers : []);
       setMergeFields(Array.isArray(data.mergeFields) ? data.mergeFields : []);
       setMeeting(data.meeting || null);
+      setMeetings(Array.isArray(data.meetings) ? data.meetings : []);
       setSender(data.sender || null);
       setDeepseek(Boolean(data.deepseek));
       setCanSendEmail(data.canSendEmail !== false);
@@ -178,20 +184,23 @@ export function SalesOfferComposer() {
   const meetingReady = Boolean(meeting?.hasTranscript || meeting?.hasSummary);
 
   useEffect(() => {
-    if (!clientId || !getSalesToken() || meeting?.manual || meetingReady) return undefined;
+    if (!clientId || !getSalesToken()) return undefined;
+    if (meeting?.manual && meetingReady) return undefined;
     let cancelled = false;
     async function tick() {
       if (document.visibilityState === 'hidden') return;
       try {
-        const data = await getClientOfferMeeting(clientId) as { meeting: MeetingInfo };
+        const data = await getClientOfferMeeting(clientId) as { meeting: MeetingInfo; meetings?: MeetingMatch[] };
         if (cancelled) return;
+        if (Array.isArray(data.meetings)) setMeetings(data.meetings);
         const next = data.meeting || null;
         let becameReady = false;
         setMeeting((current) => {
-          if (current?.manual) return current;
+          if (current?.manual && current.meetingId) return current;
           const same = (current?.meetingId || '') === (next?.meetingId || '')
             && Boolean(current?.hasTranscript) === Boolean(next?.hasTranscript)
-            && Boolean(current?.hasSummary) === Boolean(next?.hasSummary);
+            && Boolean(current?.hasSummary) === Boolean(next?.hasSummary)
+            && (current?.title || '') === (next?.title || '');
           if (same) return current;
           if (next && (next.hasTranscript || next.hasSummary) && !(current?.hasTranscript || current?.hasSummary)) {
             becameReady = true;
@@ -206,6 +215,7 @@ export function SalesOfferComposer() {
     const timer = window.setInterval(() => { void tick(); }, 10_000);
     const onVisible = () => { if (document.visibilityState === 'visible') void tick(); };
     document.addEventListener('visibilitychange', onVisible);
+    void tick();
     return () => {
       cancelled = true;
       window.clearInterval(timer);
@@ -335,6 +345,7 @@ export function SalesOfferComposer() {
       const data = await useClientOfferMeeting(clientId, payload) as {
         offer?: SalesOffer;
         meeting?: MeetingInfo;
+        meetings?: MeetingMatch[];
         matches?: MeetingMatch[];
       };
       if (Array.isArray(data.matches) && data.matches.length > 1) {
@@ -344,6 +355,7 @@ export function SalesOfferComposer() {
       }
       setMeetingMatches([]);
       setMeetingQuery('');
+      if (Array.isArray(data.meetings)) setMeetings(data.meetings);
       if (data.meeting) setMeeting(data.meeting);
       if (data.offer) applyOffer(data.offer);
       setNotice(payload.clear ? 'Bruker det bookede salgsmøtet igjen.' : 'Møtet er valgt som grunnlag for tilbudet.');
@@ -442,10 +454,12 @@ export function SalesOfferComposer() {
     setError('');
     setNotice('');
     try {
-      const payload = { to, party: partyPayload() };
-      const data = await sendClientOffer(clientId, payload) as { offer: SalesOffer; copyTo?: string; contractFileName?: string };
+      const payload = { to, party: partyPayload(), delivery };
+      const data = await sendClientOffer(clientId, payload) as { offer: SalesOffer; copyTo?: string; contractFileName?: string; delivery?: string; accountFound?: boolean };
       applyOffer(data.offer);
-      setNotice(`Tilbud sendt til ${to}${data.contractFileName ? ` med ${data.contractFileName}` : ''}${data.copyTo ? ` · Kopi: ${data.copyTo}` : ''}`);
+      setNotice(data.delivery === 'portal'
+        ? `Tilbudet ligger på asoldi.com for ${client?.clientEmail || to}${data.accountFound ? '' : '. Kontoen finnes ikke enda — tilbudet vises når kunden registrerer seg med den e-posten.'}`
+        : `Tilbud sendt til ${to}${data.contractFileName ? ` med ${data.contractFileName}` : ''}${data.copyTo ? ` · Kopi: ${data.copyTo}` : ''}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sending feilet');
     } finally {
@@ -648,6 +662,7 @@ export function SalesOfferComposer() {
                         <span>
                           Møte: {meeting.title || 'Uten tittel'}
                           {meeting.when ? ` · ${meeting.when}` : ''}
+                          {meeting.durationMinutes ? ` · ${meeting.durationMinutes} min` : ''}
                           {meeting.manual ? ' · valgt manuelt' : ''}
                           {meeting.pendingTranscript ? ' · venter på transkript' : ''}
                           {meeting.tooThin && !meeting.pendingTranscript ? ' · for lite tale til auto-utfylling' : ''}
@@ -704,6 +719,34 @@ export function SalesOfferComposer() {
                       </label>
                     </div>
                   </div>
+
+                  {meetings.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="text-xs text-gray-400">Fireflies-møter (velg hvis et nytt tidspunkt laget et ekstra opptak)</div>
+                      <div className="flex flex-wrap gap-2">
+                        {meetings.map((entry) => (
+                          <button
+                            key={entry.meetingId}
+                            type="button"
+                            disabled={locked || busy === 'meeting'}
+                            onClick={() => void handlePickMeeting({ meetingId: entry.meetingId })}
+                            className={`px-3 py-1.5 rounded-lg text-xs text-left ${
+                              entry.selected || entry.meetingId === meeting?.meetingId
+                                ? 'bg-[#FF5B00]/20 text-white border border-[#FF5B00]/40'
+                                : 'bg-white/10 text-white hover:bg-white/15'
+                            }`}
+                          >
+                            <span className="block">{entry.title || 'Uten tittel'}</span>
+                            <span className="block text-[11px] text-gray-400">
+                              {entry.when || 'Uten tid'}
+                              {entry.durationMinutes ? ` · ${entry.durationMinutes} min` : ' · lengde ukjent'}
+                              {entry.hasTranscript ? '' : ' · uten transkript'}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {!locked && (
                     <div className="flex flex-wrap items-end gap-2">
@@ -811,15 +854,28 @@ export function SalesOfferComposer() {
                       </button>
                     )}
                     {showSendButton && (
+                      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-white/10 px-3 py-2">
+                        <span className="text-xs text-gray-400">Levering</span>
+                        <label className="inline-flex items-center gap-1.5 text-sm">
+                          <input type="radio" name="offer-delivery" checked={delivery === 'email'} onChange={() => setDelivery('email')} />
+                          E-post
+                        </label>
+                        <label className="inline-flex items-center gap-1.5 text-sm" title={client?.clientEmail ? `Legges på kontoen ${client.clientEmail}` : 'Sett klient-e-post på kundekortet'}>
+                          <input type="radio" name="offer-delivery" checked={delivery === 'portal'} onChange={() => setDelivery('portal')} disabled={!client?.clientEmail} />
+                          Asoldi.com{client?.clientEmail ? ` (${client.clientEmail})` : ''}
+                        </label>
+                      </div>
+                    )}
+                    {showSendButton && (
                       <button
                         type="button"
                         onClick={() => void handleSend()}
-                        disabled={busy === 'send' || Boolean(sendDisabledReason)}
-                        title={sendDisabledReason}
+                        disabled={busy === 'send' || Boolean(sendDisabledReason) || (delivery === 'portal' && !client?.clientEmail)}
+                        title={delivery === 'portal' && !client?.clientEmail ? 'Sett klient-e-post på kundekortet' : sendDisabledReason}
                         className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-[#FF5B00] text-white text-sm disabled:opacity-50"
                       >
                         {busy === 'send' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
-                        Send tilbud + kontrakt
+                        {delivery === 'portal' ? 'Legg tilbudet på asoldi.com' : 'Send tilbud + kontrakt'}
                       </button>
                     )}
                     {sendDisabledReason && showSendButton && (

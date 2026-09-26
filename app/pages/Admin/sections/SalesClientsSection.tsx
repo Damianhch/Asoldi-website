@@ -7,7 +7,6 @@ import {
   ChevronDown,
   Copy,
   ExternalLink,
-  FileText,
   Filter,
   Gift,
   Loader2,
@@ -327,6 +326,10 @@ function salesStepBlockedReason(client: SalesClient, key: SalesGoalKey, fastTrac
   }
   if (key === 'paymentReceived' && !client.progression?.contractSigned) return 'Marker kontrakt signert først';
   return '';
+}
+
+function isValidClientEmail(value = '') {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || '').trim());
 }
 
 export function SalesClientsSection({ onMovedToDevelopment }: Props) {
@@ -974,10 +977,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     }
   }
 
-  function openOfferComposer(client: SalesClient) {
-    navigate(`/sales/offer?clientId=${encodeURIComponent(client.id)}`);
-  }
-
   async function saveMeetingNotes(client: SalesClient, payload: { notes: string; meetingQuote?: MeetingQuoteState }) {
     setSavingNoteId(client.id);
     setError('');
@@ -990,13 +989,42 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         }),
       });
       const saved = data?.client as SalesClient | undefined;
-      if (saved?.id) applySavedClient(saved);
+      if (saved?.id) {
+        setClients((prev) => prev.map((entry) => (entry.id === saved.id ? saved : entry)));
+        setMeetingNotesClient((current) => (current?.id === saved.id ? saved : current));
+      }
       setNoteDrafts((prev) => ({ ...prev, [client.id]: payload.notes }));
-      setMeetingNotesClient(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed saving meeting notes');
+      throw err;
     } finally {
       setSavingNoteId((current) => (current === client.id ? null : current));
+    }
+  }
+
+  async function saveClientEmail(client: SalesClient, clientEmail: string) {
+    const next = clientEmail.trim().toLowerCase();
+    if (next === String(client.clientEmail || '').trim().toLowerCase()) return;
+    setError('');
+    const data = await request(`/admin/sales/${client.id}/client-email`, {
+      method: 'PATCH',
+      body: JSON.stringify({ clientEmail: next }),
+    });
+    const saved = data?.client as SalesClient | undefined;
+    if (saved?.id) applySavedClient(saved);
+  }
+
+  async function connectPortalUser(client: SalesClient) {
+    setError('');
+    setNotice('');
+    try {
+      const data = await request(`/admin/sales/${client.id}/connect-portal`, { method: 'POST', body: '{}' });
+      const saved = data?.client as SalesClient | undefined;
+      if (saved?.id) applySavedClient(saved);
+      const tierName = data?.tier?.name || 'valgt tier';
+      setNotice(`Koblet ${data?.user?.email || client.clientEmail} til ${tierName}.`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Kunne ikke koble kundekontoen');
     }
   }
 
@@ -1674,7 +1702,6 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   actionBusy={nextActionBusyId === client.id}
                   onToggleGoal={(key, extra) => void toggleProgress(client, key, extra)}
                   onMutateAction={(body) => mutateNextAction(client, body)}
-                  onOpenOffer={!isWin && !clientIsSsu && meetingHeld ? () => openOfferComposer(client) : undefined}
                   variant={isWin ? 'win' : 'active'}
                 />
 
@@ -1748,28 +1775,15 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   >
                     Rediger først
                   </button>
-                  {!clientIsSsu && meetingHeld && (
+                  {!clientIsSsu && isValidClientEmail(client.clientEmail) && (
                     <button
                       type="button"
-                      onClick={() => openOfferComposer(client)}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-white text-xs hover:bg-white/15"
-                      title="Åpne tilbuds-e-posten med kontrakt (PDF) for denne kunden"
+                      onClick={() => void connectPortalUser(client)}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#FF5B00] text-white text-xs hover:bg-[#e55200]"
+                      title={client.portalConnectedAt ? 'Koble nettsiden til kundekontoen på nytt' : 'Finn kundekontoen og koble valgt tier'}
                     >
-                      <FileText size={13} />
-                      Send tilbud
-                      {client.offerStatus ? (
-                        <span className={`ml-1 rounded-full px-1.5 py-0.5 text-[10px] ${
-                          client.offerStatus === 'sent'
-                            ? 'bg-emerald-500/20 text-emerald-200'
-                            : client.offerStatus === 'verified'
-                              ? 'bg-sky-500/20 text-sky-200'
-                              : client.offerStatus === 'review-requested'
-                                ? 'bg-amber-500/20 text-amber-200'
-                                : 'bg-white/10 text-gray-300'
-                        }`}>
-                          {client.offerStatus === 'sent' ? 'Sendt' : client.offerStatus === 'verified' ? 'Verifisert' : client.offerStatus === 'review-requested' ? 'Hos admin' : 'Utkast'}
-                        </span>
-                      ) : null}
+                      <Users size={13} />
+                      {client.portalUserId ? 'Koblet' : 'Connect'}
                     </button>
                   )}
                   {!clientIsSsu && clientOffers.length > 0 && (
@@ -1887,6 +1901,24 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                         <summary className="cursor-pointer text-white font-medium mb-2">Contact & meeting</summary>
                         <ul className="space-y-1 text-gray-300">
                           <li>Contact email: {client.contactEmail || '—'}</li>
+                          <li>
+                            <label className="block">
+                              Client email
+                              <input
+                                key={`${client.id}:${client.clientEmail || ''}`}
+                                type="email"
+                                defaultValue={client.clientEmail || ''}
+                                placeholder="Kontoen kunden oppretter på asoldi.com"
+                                onBlur={(event) => void saveClientEmail(client, event.target.value).catch((err) => {
+                                  setError(err instanceof Error ? err.message : 'Kunne ikke lagre klient-e-post');
+                                })}
+                                className="mt-1 w-full rounded-md bg-black/30 border border-white/10 text-white text-xs px-2 py-1.5"
+                              />
+                            </label>
+                            {client.portalConnectedAt ? (
+                              <span className="text-[11px] text-emerald-300">Koblet {formatWhen(client.portalConnectedAt)}</span>
+                            ) : null}
+                          </li>
                           <li>
                             Website email:{' '}
                             {client.websiteEmail
@@ -3005,7 +3037,12 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             quote={meetingNotesClient.details?.meetingQuote}
             saving={savingNoteId === meetingNotesClient.id}
             onClose={() => setMeetingNotesClient(null)}
-            onSave={(payload) => void saveMeetingNotes(meetingNotesClient, payload)}
+            onPersist={(payload) => saveMeetingNotes(meetingNotesClient, payload)}
+            onContinue={() => {
+              const id = meetingNotesClient.id;
+              setMeetingNotesClient(null);
+              navigate(`/sales/offer?clientId=${encodeURIComponent(id)}`);
+            }}
           />
         </React.Fragment>
       )}

@@ -345,6 +345,7 @@ function normalizeMeetings(list) {
       when: sanitizeText(raw.when),
       startedAt: sanitizeText(raw.startedAt),
       durationMinutes: raw.durationMinutes === '' || raw.durationMinutes == null ? '' : Number(raw.durationMinutes) || '',
+      meetLink: sanitizeText(raw.meetLink),
       transcriptUrl: sanitizeText(raw.transcriptUrl),
       videoUrl: sanitizeText(raw.videoUrl),
       confidence: ['high', 'medium', 'low', 'manual'].includes(sanitizeText(raw.confidence)) ? sanitizeText(raw.confidence) : 'manual',
@@ -353,6 +354,8 @@ function normalizeMeetings(list) {
       summary: sanitizeText(raw.summary).slice(0, 2000),
       actionItems: Array.isArray(raw.actionItems) ? raw.actionItems.map((item) => sanitizeText(item)).filter(Boolean).slice(0, 20) : [],
       hasTranscript: Boolean(raw.hasTranscript),
+      liveJoinedAt: sanitizeText(raw.liveJoinedAt),
+      source: sanitizeText(raw.source),
       linkedAt: sanitizeText(raw.linkedAt) || nowIso(),
       linkedBy: sanitizeText(raw.linkedBy) || 'auto',
       forSalesMeeting: Boolean(raw.forSalesMeeting),
@@ -408,6 +411,10 @@ function normalizeSalesClient(raw = {}) {
     contactPerson: sanitizeText(raw.contactPerson),
     contactEmail: sanitizeText(raw.contactEmail),
     websiteEmail: normalizeStoredWebsiteEmail(raw.websiteEmail, raw.contactEmail),
+    clientEmail: sanitizeText(raw.clientEmail).toLowerCase(),
+    portalUserId: sanitizeText(raw.portalUserId),
+    portalConnectedAt: sanitizeText(raw.portalConnectedAt),
+    portalTierId: sanitizeText(raw.portalTierId),
     contactPhone: sanitizeText(raw.contactPhone),
     meetingPlace: sanitizeText(raw.meetingPlace),
     // Contract parties block (offer/contract flow): org number + registered business address.
@@ -429,6 +436,7 @@ function normalizeSalesClient(raw = {}) {
     reminders: normalizeReminders(raw.reminders || emptyReminders()),
     calendar: normalizeCalendar(raw.calendar),
     meetings: normalizeMeetings(raw.meetings),
+    lockedOfferMeetingId: sanitizeText(raw.lockedOfferMeetingId),
     websiteImport: product === 'ssu' ? normalizeWebsiteImport() : normalizeWebsiteImport(raw.websiteImport),
     makerRun: product === 'ssu' ? normalizeMakerRun() : normalizeMakerRun(raw.makerRun),
     hubSite: product === 'ssu' ? normalizeHubSite() : normalizeHubSite(raw.hubSite),
@@ -674,10 +682,26 @@ export function setSalesProgress(id, key, value, { fastTrack = false } = {}) {
     error.code = 'PROGRESSION_BLOCKED';
     throw error;
   }
+  const held = Boolean(applied.progression?.meetingHeld);
+  const lockId = held
+    ? (sanitizeText(current.lockedOfferMeetingId) || pickLockedOfferMeetingId(current))
+    : '';
   return updateSalesClient(id, {
     progression: applied.progression,
     nextActions: applied.nextActions,
+    lockedOfferMeetingId: lockId,
   });
+}
+
+export function liveJoinMeetingId(clientId, meetingAt = '') {
+  const when = Date.parse(meetingAt);
+  return `live:${sanitizeText(clientId)}:${Number.isFinite(when) ? when : 'open'}`;
+}
+
+function pickLockedOfferMeetingId(client = {}) {
+  const meetings = Array.isArray(client.meetings) ? client.meetings : [];
+  const salesMeeting = meetings.find((item) => item?.forSalesMeeting);
+  return sanitizeText(salesMeeting?.meetingId || meetings[0]?.meetingId);
 }
 
 export function setSalesNextAction(id, patch = {}) {

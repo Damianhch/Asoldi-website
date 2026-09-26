@@ -44,6 +44,27 @@ function writeOffersFile(list) {
   writeDataJson(OFFERS_PATH, list);
 }
 
+function normalizeAcceptance(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const acceptedAt = sanitizeText(raw.acceptedAt);
+  if (!acceptedAt) return null;
+  const screen = raw.screen && typeof raw.screen === 'object' ? raw.screen : {};
+  return {
+    acceptedAt,
+    userId: sanitizeText(raw.userId),
+    email: sanitizeText(raw.email).toLowerCase(),
+    ip: sanitizeText(raw.ip).slice(0, 80),
+    userAgent: sanitizeText(raw.userAgent).slice(0, 500),
+    language: sanitizeText(raw.language).slice(0, 40),
+    timezone: sanitizeText(raw.timezone).slice(0, 80),
+    platform: sanitizeText(raw.platform).slice(0, 80),
+    screen: {
+      width: Number(screen.width) || 0,
+      height: Number(screen.height) || 0,
+    },
+  };
+}
+
 function normalizeOffer(raw = {}) {
   const createdAt = sanitizeText(raw.createdAt) || nowIso();
   return {
@@ -59,6 +80,10 @@ function normalizeOffer(raw = {}) {
     previewUrl: sanitizeText(raw.previewUrl),
     targetUserId: sanitizeText(raw.targetUserId),
     targetEmail: sanitizeText(raw.targetEmail).toLowerCase(),
+    salesOfferId: sanitizeText(raw.salesOfferId),
+    letterHtml: String(raw.letterHtml || '').slice(0, 600_000),
+    contractHtml: String(raw.contractHtml || '').slice(0, 600_000),
+    acceptance: normalizeAcceptance(raw.acceptance),
     claimed: Boolean(raw.claimed),
     claimedAt: sanitizeText(raw.claimedAt),
     createdAt,
@@ -171,6 +196,56 @@ export function deleteOffer(id) {
   if (next.length === state.length) return false;
   writeOffersFile(next);
   return true;
+}
+
+export function findPortalOfferForSales({ salesOfferId = '', salesClientId = '' } = {}) {
+  const offerId = sanitizeText(salesOfferId);
+  const clientId = sanitizeText(salesClientId);
+  const list = listOffers();
+  if (offerId) {
+    const byOffer = list.find((entry) => entry.salesOfferId === offerId);
+    if (byOffer) return byOffer;
+  }
+  if (!clientId) return null;
+  return list.find((entry) => entry.salesClientId === clientId && entry.salesOfferId) || null;
+}
+
+export function upsertPortalOffer(input = {}) {
+  const salesOfferId = sanitizeText(input.salesOfferId);
+  const existing = findPortalOfferForSales({
+    salesOfferId,
+    salesClientId: input.salesClientId,
+  });
+  if (!existing) return createOffer(input);
+  return updateOffer(existing.id, {
+    ...input,
+    acceptance: existing.acceptance,
+    claimed: existing.claimed,
+    claimedAt: existing.claimedAt,
+  });
+}
+
+export function recordOfferAcceptance(id, evidence = {}) {
+  const current = getOfferById(id);
+  if (!current) return null;
+  if (current.acceptance?.acceptedAt) return current;
+  return updateOffer(id, {
+    acceptance: {
+      acceptedAt: nowIso(),
+      userId: evidence.userId,
+      email: evidence.email,
+      ip: evidence.ip,
+      userAgent: evidence.userAgent,
+      language: evidence.language,
+      timezone: evidence.timezone,
+      platform: evidence.platform,
+      screen: evidence.screen,
+    },
+    targetUserId: sanitizeText(evidence.userId) || current.targetUserId,
+    targetEmail: sanitizeText(evidence.email).toLowerCase() || current.targetEmail,
+    claimed: true,
+    claimedAt: current.claimedAt || nowIso(),
+  });
 }
 
 export function claimOffer(id, { userId = '', email = '' } = {}) {

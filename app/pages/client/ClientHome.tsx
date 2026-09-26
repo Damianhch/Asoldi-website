@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Helmet } from 'react-helmet-async';
-import { ArrowRight, Check, Gift, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
+import { ArrowRight, Check, ChevronDown, Gift, Loader2, RotateCcw, Sparkles, X } from 'lucide-react';
 import { ClientRouteGuard } from '../../components/client/ClientRouteGuard';
 import { ClientPortalLayout } from '../../components/client/ClientPortalLayout';
 import { useClientAuth } from '../../contexts/ClientAuthContext';
@@ -34,6 +34,8 @@ type ClientOffer = {
   price: string;
   note: string;
   previewUrl: string;
+  accepted?: boolean;
+  acceptedAt?: string;
 } | null;
 
 type TodoEntry = DashboardTodo & { accent?: boolean };
@@ -103,14 +105,14 @@ export const ClientHome = () => {
 
   const todos = useMemo<TodoEntry[]>(() => {
     const baseTodos = (data?.dashboard?.todoList || []) as TodoEntry[];
-    if (!offer) return baseTodos;
+    if (!offer || offer.accepted) return baseTodos;
     const offerPlanName = offer.planName || findWebsitePlan(offer.planId)?.name || 'nettsideplan';
     const offerTodo: TodoEntry = {
       id: `offer-${offer.id}`,
       title: `Tilbud klart: ${offerPlanName}`,
-      description: 'Vi har satt opp et nettsideforslag til deg. Se tilbudet og fullfør i handlekurven.',
+      description: 'Les tilbudet og kontrakten. Du aksepterer nederst når du har lest gjennom.',
       actionLabel: 'Se tilbud',
-      route: '/kunde/tjenester/nettside/planer',
+      route: '/kunde/tilbud',
       accent: true,
     };
     return [offerTodo, ...baseTodos];
@@ -229,6 +231,23 @@ export const ClientHome = () => {
                     </div>
                   );
                 })}
+
+                {offer?.accepted ? (
+                  <details className="rounded-2xl border border-[#E7E9EE] bg-white px-5 py-4">
+                    <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold text-[#111827]">
+                      Betaling
+                      <ChevronDown size={16} className="text-[#9CA3AF]" />
+                    </summary>
+                    <button
+                      type="button"
+                      onClick={() => navigate('/kunde/tjenester/nettside/checkout')}
+                      className="mt-3 w-full rounded-xl border border-[#E7E9EE] bg-[#F4F5F7] px-4 py-3 text-left opacity-60 hover:opacity-80"
+                    >
+                      <p className="text-sm font-semibold text-[#6B7280]">Gå til betaling</p>
+                      <p className="mt-0.5 text-xs text-[#9CA3AF]">Du kan betale når du vil. Oppsettet av nettsiden kommer først.</p>
+                    </button>
+                  </details>
+                ) : null}
 
                 {todos.every((todo) => dismissed.includes(todo.id)) ? (
                   <div className="rounded-2xl border border-dashed border-[#E0E3E9] bg-[#FBFCFD] px-5 py-8 text-center text-sm text-[#9CA3AF]">

@@ -174,6 +174,7 @@ export function normalizeSalesOffer(raw = {}) {
     sentAt: sanitizeText(raw.sentAt),
     sentTo: sanitizeText(raw.sentTo),
     sentBy: sanitizeText(raw.sentBy),
+    delivery: sanitizeText(raw.delivery) === 'portal' ? 'portal' : 'email',
     createdAt,
     updatedAt: sanitizeText(raw.updatedAt) || createdAt,
   };
@@ -308,16 +309,18 @@ export function reopenSalesOffer(id, { actor = '', note = '', toDraft = false } 
   }, { actor, action: toDraft ? 'returned-to-sales' : 'reopened', note });
 }
 
-export function markSalesOfferSent(id, { actor = '', to = '', pdfPath = '' } = {}) {
+export function markSalesOfferSent(id, { actor = '', to = '', pdfPath = '', delivery = 'email' } = {}) {
   const current = getSalesOfferById(id);
   if (!current) return null;
+  const channel = sanitizeText(delivery) === 'portal' ? 'portal' : 'email';
   return updateSalesOffer(id, {
     status: 'sent',
     sentAt: nowIso(),
     sentTo: sanitizeText(to),
     sentBy: sanitizeText(actor),
+    delivery: channel,
     contract: { ...current.contract, pdfPath: sanitizeText(pdfPath) || current.contract.pdfPath },
-  }, { actor, action: 'sent', note: sanitizeText(to) });
+  }, { actor, action: 'sent', note: `${channel}:${sanitizeText(to)}` });
 }
 
 export function deleteSalesOffer(id) {

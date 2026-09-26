@@ -353,6 +353,7 @@ export type SalesClientMeeting = {
   when: string;
   startedAt: string;
   durationMinutes: number | '';
+  meetLink?: string;
   transcriptUrl: string;
   videoUrl: string;
   confidence: 'high' | 'medium' | 'low' | 'manual';
@@ -361,8 +362,11 @@ export type SalesClientMeeting = {
   summary: string;
   actionItems: string[];
   hasTranscript: boolean;
+  liveJoinedAt?: string;
+  source?: string;
   linkedAt: string;
   linkedBy: string;
+  forSalesMeeting?: boolean;
 };
 
 export type OfferProduct = {
@@ -421,6 +425,7 @@ export type SalesOffer = {
   sentAt: string;
   sentTo: string;
   sentBy: string;
+  delivery?: 'email' | 'portal';
   createdAt: string;
   updatedAt: string;
   /** Server-side presentation flags (presentOffer). */
@@ -439,6 +444,11 @@ export type SalesClient = {
   businessName: string;
   contactPerson: string;
   contactEmail: string;
+  /** Account email on asoldi.com. Separate from the contact email used for meeting mail. */
+  clientEmail?: string;
+  portalUserId?: string;
+  portalConnectedAt?: string;
+  portalTierId?: string;
   /** Public website email. Empty means use contactEmail until the Maker draft adds another. */
   websiteEmail?: string;
   contactPhone: string;
@@ -466,6 +476,7 @@ export type SalesClient = {
   calendar: SalesCalendarMeta;
   /** Fireflies meetings linked to this client (auto-matched or linked by admin). */
   meetings?: SalesClientMeeting[];
+  lockedOfferMeetingId?: string;
   websiteImport: SalesWebsiteImportMeta;
   makerRun: SalesMakerRunMeta;
   hubSite?: {
