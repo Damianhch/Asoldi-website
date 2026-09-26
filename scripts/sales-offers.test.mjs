@@ -13,6 +13,7 @@ const readiness = await import('../lib/offer-readiness.js');
 const contractPdf = await import('../lib/offer-contract-pdf.js');
 const matcher = await import('../lib/fireflies-client-match.js');
 const offerAi = await import('../lib/offer-ai.js');
+const quoteOffer = await import('../lib/offer-from-quote.js');
 const store = await import('../data/sales-offers.js');
 
 const CLIENT = {
@@ -277,7 +278,7 @@ test('offer AI: transcript fill and contract reflection go through the injected 
   assert.doesNotMatch(fillCall.system, /Kunden vil at …/);
   assert.doesNotMatch(fillCall.system, /Vi kommer til å fokusere på/);
   assert.match(fillCall.user, /Takk for samtalen om \{\{need\}\}/);
-  assert.match(fillCall.system, /Sannhet: bare det transkriptet sier|bare det transkriptet sier/i);
+  assert.match(fillCall.system, /transkriptet og produktnotatene veier likt/i);
   assert.match(fillCall.system, /Kall mottakeren "kunden"/i);
   assert.doesNotMatch(fillCall.system, /Kunden vil at …/);
   const letter = offerEmail.offerLetterAlreadyWritten();
@@ -474,4 +475,59 @@ test('users store + sender: phone is normalized, formatted and flows into {{sign
   const updated = await users.updateUserProfile(created.user.id, { phone: '+47 999 88 777' });
   assert.equal(updated.user.phone, '+4799988777', 'admin edit wins over the seed');
   assert.equal((await users.getUserByUsername('alexander@asoldi.com')).phone, '+4799988777', 'seed does not overwrite an existing number');
+});
+
+test('meeting quote sets tier pages, one-time host, and workshop date on the offer', () => {
+  const starter = quoteOffer.buildOfferFromMeetingQuote({
+    tierId: 'starter',
+    pages: 5,
+    selected: ['hosting', 'contact', 'changes', 'blog'],
+    oneTimeAddOns: [],
+  });
+  assert.equal(starter.tierId, 'tier-1-standard');
+  assert.equal(starter.billing, 'month');
+  assert.equal(starter.products[0].pages, 5);
+  assert.equal(starter.products[0].priceExMva, 999);
+
+  const extraPage = quoteOffer.buildOfferFromMeetingQuote({
+    tierId: 'starter',
+    pages: 6,
+    selected: ['hosting', 'contact', 'changes', 'blog'],
+    oneTimeAddOns: [],
+  });
+  assert.ok(extraPage.products[0].priceExMva > 999);
+  assert.match(extraPage.products[0].includes.join(' '), /1 ekstra side utover 5 inkludert/);
+
+  const seo = quoteOffer.buildOfferFromMeetingQuote({
+    tierId: 'seo',
+    pages: 7,
+    selected: ['hosting', 'seo', 'blog'],
+    oneTimeAddOns: [],
+  });
+  assert.equal(seo.products[0].pages, 7);
+  assert.equal(seo.products[0].priceExMva, 1499);
+
+  const shop = quoteOffer.buildOfferFromMeetingQuote({
+    tierId: 'nettbutikk',
+    pages: 10,
+    selected: [],
+    oneTimeAddOns: [],
+  });
+  assert.equal(shop.products[0].priceExMva, 1999);
+
+  const hosted = quoteOffer.buildOfferFromMeetingQuote({
+    tierId: 'starter',
+    pages: 5,
+    selected: ['hosting'],
+    oneTimeAddOns: ['thirdpartyhost'],
+  });
+  assert.equal(hosted.billing, 'once');
+  assert.equal(hosted.products[0].priceExMva, 999 * 9 + 2500);
+  assert.match(hosted.products[0].includes.join(' '), /tredjeparts host/i);
+
+  assert.equal(offerEmail.workshopStartSentence(''), 'Startdato for workshop: Vi avtaler startdato for workshop senere.');
+  assert.match(offerEmail.workshopStartSentence('2026-10-15'), /15\. oktober 2026/);
+  const html = offerEmail.ensureWorkshopSentence('<h2>Hva som skjer fremover</h2>', offerEmail.workshopStartSentence('2026-10-15'));
+  assert.match(html, /data-offer-slot="workshop"/);
+  assert.match(html, /15\. oktober 2026/);
 });

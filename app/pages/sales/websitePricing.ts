@@ -17,6 +17,7 @@ export type MeetingQuoteState = {
   oneTimeAddOns: string[];
   customSections: string;
   startDate: string;
+  productNotes: string;
   productGoal: string;
   identity: string;
 };
@@ -90,6 +91,7 @@ export function emptyMeetingQuote(): MeetingQuoteState {
     oneTimeAddOns: [],
     customSections: '',
     startDate: '',
+    productNotes: '',
     productGoal: '',
     identity: '',
   };
@@ -114,6 +116,7 @@ export function normalizeMeetingQuote(value: unknown): MeetingQuoteState {
     oneTimeAddOns,
     customSections: String(input.customSections || ''),
     startDate: String(input.startDate || ''),
+    productNotes: String(input.productNotes || ''),
     productGoal: String(input.productGoal || ''),
     identity: String(input.identity || ''),
   };

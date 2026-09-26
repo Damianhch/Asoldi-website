@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { composeEmailForClient } from '../lib/email-templates-store.js';
-import { deriveReminderSchedule } from '../data/sales.js';
+import { deriveReminderSchedule, salesReminderIsDue } from '../data/sales.js';
 import { buildSalesSender } from '../lib/sales-sender.js';
 import {
   buildSalesCalendarInvite,
@@ -134,6 +134,16 @@ test('3-day reminder is only scheduled when the meeting is more than 3 days away
   assert.equal(soon.reminder3dAt, '');
   assert.ok(soon.reminder24hAt);
   assert.ok(soon.reminder1hAt);
+});
+
+test('due reminders still send after the old 6-hour catch-up window, until the meeting starts', () => {
+  const now = Date.parse('2026-09-19T14:00:00.000Z');
+  const meetingAt = '2026-09-20T12:00:00.000Z';
+  const overdue = '2026-09-17T12:00:00.000Z';
+  assert.equal(salesReminderIsDue(overdue, '', { nowMs: now, meetingAt }), true);
+  assert.equal(salesReminderIsDue(overdue, '2026-09-17T12:05:00.000Z', { nowMs: now, meetingAt }), false);
+  assert.equal(salesReminderIsDue('2026-09-19T18:00:00.000Z', '', { nowMs: now, meetingAt }), false);
+  assert.equal(salesReminderIsDue(overdue, '', { nowMs: Date.parse('2026-09-20T13:00:00.000Z'), meetingAt }), false);
 });
 
 test('thank-you attaches an ICS invite by default', () => {

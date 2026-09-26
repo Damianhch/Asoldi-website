@@ -14,6 +14,7 @@ import {
   getSalesGoalKeys,
   getVisibleGoalKeys,
   GOAL_PRESETS,
+  FOLLOW_UP_1M_NOTE,
   defaultAddToCalendar,
   defaultFormatForPreset,
   presetNeedsMeeting,
@@ -107,7 +108,7 @@ export function SalesGoalTimeline({
     setDraft({
       presetKey,
       name: formatPresetLabel(presetKey) === 'Custom' ? '' : formatPresetLabel(presetKey),
-      note: '',
+      note: presetKey === 'oppfolging1mnd' ? FOLLOW_UP_1M_NOTE : '',
       format: defaultFormatForPreset(presetKey) as SalesActionFormat,
       dueAt: toDateTimeLocal(suggested),
       addToCalendar: defaultAddToCalendar(presetKey, client),

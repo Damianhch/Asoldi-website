@@ -174,7 +174,7 @@ export type ManageClientsView = 'clients' | 'development' | 'sales';
 
 export type SalesGoalKey = 'meetingHeld' | 'offerSent' | 'contractSigned' | 'paymentReceived';
 
-export type SalesNextActionPreset = 'meeting' | 'meetingBooked' | 'findMeetingTime' | 'sms24h' | 'sms1h' | 'call2h' | 'sendOffer' | 'checkIn' | 'upsell' | 'oppgrader' | 'oppfolging' | 'custom';
+export type SalesNextActionPreset = 'meeting' | 'meetingBooked' | 'findMeetingTime' | 'sms24h' | 'sms1h' | 'call2h' | 'sendOffer' | 'checkIn' | 'upsell' | 'oppgrader' | 'oppfolging' | 'oppfolging1mnd' | 'custom';
 
 export type SalesActionFormat = 'email' | 'sms' | 'ring' | 'mote';
 
@@ -317,6 +317,7 @@ export type SalesClientDetails = {
     oneTimeAddOns: string[];
     customSections: string;
     startDate: string;
+    productNotes?: string;
     productGoal: string;
     identity: string;
   };
@@ -426,6 +427,7 @@ export type SalesOffer = {
   sentTo: string;
   sentBy: string;
   delivery?: 'email' | 'portal';
+  websiteCode?: string;
   createdAt: string;
   updatedAt: string;
   /** Server-side presentation flags (presentOffer). */

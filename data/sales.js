@@ -6,6 +6,7 @@ import {
   applyNextActionMutation,
   applyProgressionChange,
   applyMeetingHeldOrphanReset,
+  clientIsSalesWin,
   decorateNextActions,
   getSalesGoalKeys,
   inferMeetingHeld,
@@ -268,6 +269,7 @@ function normalizeMeetingQuote(value = {}) {
     oneTimeAddOns,
     customSections: sanitizeText(input.customSections).slice(0, MAX_SALES_NOTES_LENGTH),
     startDate: sanitizeText(input.startDate),
+    productNotes: sanitizeText(input.productNotes).slice(0, MAX_SALES_NOTES_LENGTH),
     productGoal: sanitizeText(input.productGoal).slice(0, MAX_SALES_NOTES_LENGTH),
     identity: sanitizeText(input.identity).slice(0, MAX_SALES_NOTES_LENGTH),
   };
@@ -452,7 +454,13 @@ function normalizeSalesClient(raw = {}) {
 function readState() {
   const previous = readSalesFile();
   const list = previous.map(normalizeSalesClient);
-  if (previous.length && previous.some((raw) => !raw?.salesMigrations?.meetingHeldOrphansV1)) {
+  const needsOrphanWrite = previous.some((raw) => !raw?.salesMigrations?.meetingHeldOrphansV1);
+  const needsFollowUpWrite = previous.some((raw, index) => {
+    if (!clientIsSalesWin(list[index])) return false;
+    const stored = Array.isArray(raw?.nextActions) ? raw.nextActions : [];
+    return !stored.some((action) => action?.presetKey === 'oppfolging1mnd');
+  });
+  if (previous.length && (needsOrphanWrite || needsFollowUpWrite)) {
     writeSalesFile(list);
   }
   return list;
@@ -484,6 +492,16 @@ export function deriveReminderSchedule({ agreedTime, meetingAt }, nowMs = Date.n
     reminder1hAt: diffMs > hourMs ? new Date(meetingMs - hourMs).toISOString() : '',
     skipDueToShortNotice: diffMs <= hourMs,
   };
+}
+
+/** True when this reminder should go out now: due time has passed, it is unsent, and the meeting has not started. */
+export function salesReminderIsDue(atIso, sentAt, { nowMs = Date.now(), meetingAt = '' } = {}) {
+  if (sentAt) return false;
+  const at = atIso ? new Date(atIso).getTime() : 0;
+  if (!at || nowMs < at) return false;
+  const meetingMs = meetingAt ? new Date(meetingAt).getTime() : 0;
+  if (Number.isFinite(meetingMs) && meetingMs > 0 && meetingMs <= nowMs) return false;
+  return true;
 }
 
 export function getSalesClients() {
@@ -652,10 +670,14 @@ export function findSalesClientByMeetingId(meetingId) {
 export function setSalesNotes(id, notes, meetingQuote) {
   const current = getSalesClientById(id);
   if (!current) return null;
-  const updates = { notes: sanitizeSalesNotes(notes) };
+  const updates = {};
+  if (notes !== undefined && notes !== null) updates.notes = sanitizeSalesNotes(notes);
   if (meetingQuote && typeof meetingQuote === 'object') {
-    updates.details = { meetingQuote };
+    updates.details = {
+      meetingQuote: { ...(current.details?.meetingQuote || {}), ...meetingQuote },
+    };
   }
+  if (!Object.keys(updates).length) return current;
   return updateSalesClient(id, updates);
 }
 

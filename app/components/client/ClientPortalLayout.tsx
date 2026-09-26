@@ -1,7 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Gift, MessageSquare, Search, UserCircle2, ChevronRight, LogOut, Settings, CreditCard } from 'lucide-react';
+import { Gift, MessageSquare, UserCircle2, ChevronRight, LogOut, Settings, CreditCard } from 'lucide-react';
 import { useClientAuth } from '../../contexts/ClientAuthContext';
+import { ClientReferralModal } from './ClientReferralModal';
+import { REFERRAL_REWARD_LABEL } from '../../../lib/client-referral.js';
 
 type Props = {
   children: React.ReactNode;
@@ -38,6 +40,7 @@ export function ClientPortalLayout({ children, title, subtitle }: Props) {
   const navigate = useNavigate();
   const { profile, clearClientSession } = useClientAuth();
   const [profileMenuOpen, setProfileMenuOpen] = useState(false);
+  const [referralOpen, setReferralOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
 
   const isHome = location.pathname === '/kunde' || location.pathname === '/kunde/hjem';
@@ -100,16 +103,17 @@ export function ClientPortalLayout({ children, title, subtitle }: Props) {
               {subtitle ? <p className="text-xs text-[#6B7280]">{subtitle}</p> : null}
             </div>
             <div className="flex items-center gap-3">
-              <button type="button" className="inline-flex items-center gap-2 rounded-full bg-[#FFE7DA] px-4 py-2 text-sm text-[#FF5B00]">
+              <button
+                type="button"
+                onClick={() => setReferralOpen(true)}
+                className="inline-flex items-center gap-2 rounded-full bg-[#FFE7DA] px-4 py-2 text-sm text-[#FF5B00]"
+              >
                 <Gift size={14} />
-                Verv og tjen 3.000,-
+                Verv og tjen {REFERRAL_REWARD_LABEL}
               </button>
               <button type="button" className="inline-flex items-center gap-2 rounded-full border border-[#E5E7EB] px-3 py-2 text-sm bg-white">
                 <MessageSquare size={14} />
                 Chat
-              </button>
-              <button type="button" className="rounded-full border border-[#E5E7EB] p-2 bg-white" aria-label="Søk">
-                <Search size={16} />
               </button>
               <div className="relative" ref={profileMenuRef}>
                 <button
@@ -159,6 +163,7 @@ export function ClientPortalLayout({ children, title, subtitle }: Props) {
           <main className="p-6">{children}</main>
         </div>
       </div>
+      <ClientReferralModal open={referralOpen} onClose={() => setReferralOpen(false)} />
     </div>
   );
 }

@@ -45,6 +45,8 @@ export function OfferProductsCard({
   onEdit?: (product: OfferProduct) => void;
 }) {
   const totals = offerTotals(products, { mvaIncluded });
+  const once = products.some((item) => /engangsbetaling/i.test(item.note || ''));
+  const unit = once ? 'engang' : '/ mnd';
   return (
     <div className="rounded-xl border border-white/10 bg-[#161616] p-4 text-sm text-gray-200">
       <div className="flex items-center justify-between gap-2 mb-2">
@@ -62,13 +64,13 @@ export function OfferProductsCard({
                   <div className="text-white font-medium truncate">{item.name}</div>
                   <div className="text-xs text-gray-400">
                     {item.pages ? `Opp til ${item.pages} sider · ` : ''}{item.includes.length} punkter{item.deliveryWeeks ? ` · ${item.deliveryWeeks} uker` : ''}
-                    {item.kind === 'tier' ? ' · tier' : ' · skreddersydd'}
+                    {item.kind === 'tier' ? ' · pakke' : ' · skreddersydd'}
                   </div>
                   {item.note && <div className="text-xs text-gray-400 mt-1 italic">{item.note}</div>}
                 </div>
                 <div className="text-right shrink-0">
                   <div className="text-white">{formatKr(item.priceExMva)}</div>
-                  <div className="text-[11px] text-gray-500">{mvaIncluded ? 'inkl. mva/mnd' : 'eks. mva/mnd'}</div>
+                  <div className="text-[11px] text-gray-500">{mvaIncluded ? `inkl. mva ${unit}` : `eks. mva ${unit}`}</div>
                   {(onEdit || onRemove) && (
                     <div className="mt-1 flex gap-2 justify-end">
                       {onEdit && (
@@ -86,9 +88,9 @@ export function OfferProductsCard({
         </ul>
       )}
       <div className="mt-3 border-t border-white/10 pt-2 text-xs text-gray-300 space-y-0.5">
-        <div className="flex justify-between"><span>Eks. mva</span><span>{formatKr(totals.exMva)} / mnd</span></div>
+        <div className="flex justify-between"><span>Eks. mva</span><span>{formatKr(totals.exMva)} {unit}</span></div>
         <div className="flex justify-between"><span>{mvaIncluded ? 'Herav MVA 25 %' : 'MVA 25 %'}</span><span>{formatKr(totals.mva)}</span></div>
-        <div className="flex justify-between text-white font-semibold"><span>Inkl. mva</span><span>{formatKr(totals.inclMva)} / mnd</span></div>
+        <div className="flex justify-between text-white font-semibold"><span>Inkl. mva</span><span>{formatKr(totals.inclMva)} {unit}</span></div>
         <div className="flex justify-between text-gray-500"><span>Leveringstid</span><span>{totals.deliveryWeeks} uker</span></div>
       </div>
     </div>
@@ -99,7 +101,7 @@ export function ContractSummaryCard({ summary, mvaIncluded = false }: { summary:
   if (!summary) {
     return (
       <div className="rounded-xl border border-dashed border-white/15 bg-[#161616] p-4 text-xs text-gray-500">
-        Ingen kontraktsammendrag enda. For tier 1–3 brukes standardkontrakten; for skreddersydd må admin speile e-posten i kontrakten.
+        Ingen kontraktsammendrag enda. For pakke 1–3 brukes standardkontrakten. For skreddersydd må admin speile e-posten i kontrakten.
       </div>
     );
   }

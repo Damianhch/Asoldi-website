@@ -45,6 +45,11 @@ import {
 } from './lib/preview-bundle-assets.js';
 import * as emailLib from './lib/email.js';
 import {
+  REFERRAL_INBOX_EMAIL,
+  buildReferralLeadEmail,
+  normalizeReferralLead,
+} from './lib/client-referral.js';
+import {
   buildPasswordResetEmail,
   canIssuePasswordReset,
   passwordResetPathForRole,
@@ -88,6 +93,7 @@ import {
 import * as salesOffers from './data/sales-offers.js';
 import {
   applyOfferProducts,
+  ensureWorkshopSentence,
   escapeHtml as escapeOfferHtml,
   fillOfferSlots,
   findOfferPlaceholders,
@@ -95,8 +101,10 @@ import {
   productsWithTier,
   refreshOfferShell,
   resolveOfferIdentityTags,
+  workshopStartSentence,
   summarizeOfferProducts,
 } from './lib/offer-email.js';
+import { buildOfferFromMeetingQuote } from './lib/offer-from-quote.js';
 import { clientWithOfferParty, offerMissingFields, offerReadinessMessage } from './lib/offer-readiness.js';
 import { buildContractPdf, contractFileName, contractInputsForOffer, offerContractIsAvailable } from './lib/offer-contract-pdf.js';
 import { contractHtmlForOffer } from './lib/offer-contract-html.js';
@@ -506,6 +514,14 @@ function parsePlanAmount(value = '') {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function withDeadline(promise, timeoutMs, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 function unixToIso(value) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return '';
@@ -572,16 +588,24 @@ async function buildClientBillingOverview(profile = {}) {
     try {
       const stripe = getStripe();
       if (summary.stripeCustomerId) {
-        const invoiceList = await stripe.invoices.list({
-          customer: summary.stripeCustomerId,
-          limit: 30,
-        });
+        const invoiceList = await withDeadline(
+          stripe.invoices.list({
+            customer: summary.stripeCustomerId,
+            limit: 30,
+          }),
+          8000,
+          'Stripe-fakturaer svarte ikke i tide.'
+        );
         invoices = Array.isArray(invoiceList?.data) ? invoiceList.data.map(mapStripeInvoiceRecord) : [];
       }
       if (summary.stripeSubscriptionId) {
-        const stripeSub = await stripe.subscriptions.retrieve(summary.stripeSubscriptionId, {
-          expand: ['items.data.price'],
-        });
+        const stripeSub = await withDeadline(
+          stripe.subscriptions.retrieve(summary.stripeSubscriptionId, {
+            expand: ['items.data.price'],
+          }),
+          8000,
+          'Stripe-abonnementet svarte ikke i tide.'
+        );
         const priceId = sanitizeText(stripeSub?.items?.data?.[0]?.price?.id);
         const inferredPlanId = planIdForStripePriceId(priceId) || summary.planId;
         const inferredPlan = findWebsitePlan(inferredPlanId);
@@ -8239,6 +8263,8 @@ async function sendSalesThankYou(client, { force = false, actorAccountKey = '', 
   const liveJoin = isOnline ? await maybeJoinFirefliesLive(client, { ignoreRetryWait: true }) : { joined: false };
   if (liveJoin.client) client = liveJoin.client;
   const warnings = [...(syncResult.warnings || []), ...(liveJoin.warnings || [])];
+  await sendDueRemindersForClient(client);
+  client = sales.getSalesClientById(client.id) || client;
   return {
     sent: true,
     client,
@@ -8351,6 +8377,32 @@ function formatSmtpSendError(error) {
   return raw || 'Failed sending welcome email.';
 }
 
+async function sendDueRemindersForClient(client, { nowMs = Date.now(), generalOwners = null } = {}) {
+  if (!SALES_EMAIL_AUTOSEND_ENABLED) return;
+  if (!client) return;
+  if (sanitizeText(client.status) === 'not-sold') return;
+  if (!isSalesRepAccountKey(client.ownerId)) return;
+  if (generalOwners?.has(sanitizeText(client.ownerId))) return;
+  if (!client.reminders?.thankYouSentAt) return;
+  if (!client.agreedTime || !client.meetingAt) return;
+  const meetingMs = new Date(client.meetingAt).getTime();
+  if (!Number.isFinite(meetingMs) || meetingMs <= nowMs) return;
+
+  const due = (atIso, sentAt) => sales.salesReminderIsDue(atIso, sentAt, { nowMs, meetingAt: client.meetingAt });
+  let current = client;
+  if (due(current.reminders?.reminder3dAt, current.reminders?.reminder3dSentAt)) {
+    await sendSalesReminderNow(current, '3d', { actorAccountKey: current.ownerId });
+    current = sales.getSalesClientById(current.id) || current;
+  }
+  if (due(current.reminders?.reminder24hAt, current.reminders?.reminder24hSentAt)) {
+    await sendSalesReminderNow(current, '24h', { actorAccountKey: current.ownerId });
+    current = sales.getSalesClientById(current.id) || current;
+  }
+  if (due(current.reminders?.reminder1hAt, current.reminders?.reminder1hSentAt)) {
+    await sendSalesReminderNow(current, '1h', { actorAccountKey: current.ownerId });
+  }
+}
+
 async function sendDueSalesReminders() {
   if (!SALES_EMAIL_AUTOSEND_ENABLED) return;
   if (salesReminderLoopRunning) return;
@@ -8358,38 +8410,13 @@ async function sendDueSalesReminders() {
   salesReminderLoopRunning = true;
   try {
     const nowMs = Date.now();
-    const catchupMs = 6 * 60 * 60 * 1000;
-    const clients = sales.getSalesClients();
     const salesUsers = await listSalesUsers();
     const generalOwners = generalSalesOwnerKeys({
       salesUsers,
       defaultOwnerKey: MYPHONER_DEFAULT_SALES_OWNER_KEY,
     });
-    for (const client of clients) {
-      if (!isSalesRepAccountKey(client.ownerId)) continue;
-      if (generalOwners.has(sanitizeText(client.ownerId))) continue;
-      if (!client.agreedTime || !client.meetingAt) continue;
-      const meetingMs = new Date(client.meetingAt).getTime();
-      if (!Number.isFinite(meetingMs) || meetingMs <= nowMs) continue;
-
-      const due = (atIso, sentAt) => {
-        const at = atIso ? new Date(atIso).getTime() : 0;
-        if (!at || sentAt) return false;
-        if (nowMs < at) return false;
-        return nowMs - at <= catchupMs;
-      };
-
-      if (due(client.reminders?.reminder3dAt, client.reminders?.reminder3dSentAt)) {
-        await sendSalesReminderNow(client, '3d', { actorAccountKey: client.ownerId });
-      }
-
-      if (due(client.reminders?.reminder24hAt, client.reminders?.reminder24hSentAt)) {
-        await sendSalesReminderNow(client, '24h', { actorAccountKey: client.ownerId });
-      }
-
-      if (due(client.reminders?.reminder1hAt, client.reminders?.reminder1hSentAt)) {
-        await sendSalesReminderNow(client, '1h', { actorAccountKey: client.ownerId });
-      }
+    for (const client of sales.getSalesClients()) {
+      await sendDueRemindersForClient(client, { nowMs, generalOwners });
     }
   } catch (error) {
     console.error('Sales reminder loop failed:', error);
@@ -9597,6 +9624,41 @@ app.put('/api/client/profile', clientAuth, async (req, res) => {
     onboardingCompleted: parseBoolean(body.onboardingCompleted, true),
   });
   return res.json({ profile });
+});
+
+app.post('/api/client/referrals', clientAuth, async (req, res) => {
+  const user = await store.getUserById(req.client.userId);
+  if (!user || user.role !== 'client') return res.status(401).json({ message: 'Unauthorized' });
+  const parsed = normalizeReferralLead(req.body || {});
+  if (!parsed.ok) return res.status(400).json({ message: parsed.message });
+  if (!emailLib.canSendEmail()) {
+    return res.status(503).json({ message: 'E-post er ikke konfigurert.' });
+  }
+  const profile = clientPortal.ensureClientProfileForUser(user);
+  const email = buildReferralLeadEmail({
+    referrer: {
+      name: profile?.name,
+      email: profile?.email || user.username,
+      businessName: profile?.businessName,
+      businessOrgNumber: profile?.businessOrgNumber,
+      userId: profile?.userId || user.id,
+    },
+    lead: parsed.lead,
+  });
+  const inbox = sanitizeText(process.env.REFERRAL_INBOX_EMAIL) || REFERRAL_INBOX_EMAIL;
+  try {
+    await emailLib.sendEmail({
+      to: inbox,
+      subject: email.subject,
+      text: email.text,
+      html: email.html,
+      replyTo: parsed.lead.email,
+    });
+  } catch (error) {
+    console.error('Referral lead email error:', error);
+    return res.status(500).json({ message: 'Kunne ikke sende vervingen. Prøv igjen.' });
+  }
+  return res.json({ ok: true });
 });
 
 app.get('/api/client/settings', clientAuth, async (req, res) => {
@@ -12249,10 +12311,16 @@ app.patch('/api/admin/sales/:id/notes', salesAuth, (req, res) => {
   const existing = sales.getSalesClientById(req.params.id);
   if (!existing) return res.status(404).json({ message: 'Sales client not found.' });
   if (!canAccessSalesClient(req, existing)) return res.status(403).json({ message: 'Not your sales client.' });
-  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'notes')) {
+  const hasNotes = Object.prototype.hasOwnProperty.call(req.body || {}, 'notes');
+  const hasQuote = req.body?.meetingQuote && typeof req.body.meetingQuote === 'object';
+  if (!hasNotes && !hasQuote) {
     return res.status(400).json({ message: 'Notes are required.' });
   }
-  const updated = sales.setSalesNotes(req.params.id, req.body?.notes, req.body?.meetingQuote);
+  const updated = sales.setSalesNotes(
+    req.params.id,
+    hasNotes ? req.body?.notes : undefined,
+    hasQuote ? req.body.meetingQuote : undefined,
+  );
   if (!updated) return res.status(404).json({ message: 'Sales client not found.' });
   res.json({ client: updated });
 });
@@ -12493,6 +12561,9 @@ function compactOfferClient(client = {}) {
     meetingPlace: client.meetingPlace || '',
     industry: client.industry || '',
     websiteDomain: client.websiteDomain || '',
+    hasSalesNotes: Boolean(String(client.notes || '').trim()),
+    hasProductNotes: Boolean(sanitizeText(client?.details?.meetingQuote?.productNotes)),
+    workshopStartDate: sanitizeText(client?.details?.meetingQuote?.startDate),
     meetingAt: client.meetingAt || '',
     meetings: Array.isArray(client.meetings) ? client.meetings : [],
   };
@@ -12500,8 +12571,13 @@ function compactOfferClient(client = {}) {
 
 function presentOffer(offer) {
   if (!offer) return null;
+  const portal = offers.findPortalOfferForSales({
+    salesOfferId: offer.id,
+    salesClientId: offer.salesClientId,
+  });
   return {
     ...offer,
+    websiteCode: portal?.code || '',
     needsVerification: salesOffers.offerNeedsVerification(offer),
     canSend: salesOffers.offerCanBeSentBySales(offer),
     contractAvailable: offerContractIsAvailable(offer),
@@ -12694,7 +12770,7 @@ function presentMeetingForOffer(meeting, offer, client = null) {
     durationMinutes: meeting.durationMinutes === '' || meeting.durationMinutes == null ? '' : Number(meeting.durationMinutes),
     hasTranscript,
     hasSummary,
-    tooThin: meetingContextIsTooThin(meeting),
+    tooThin: meetingContextIsTooThin(meeting, { notes: offerProductNotes(client) }),
     pendingTranscript: !hasTranscript && !hasSummary,
     liveJoined: Boolean(meeting.liveJoinedAt) || String(meeting.meetingId || '').startsWith('live:') || Boolean(sanitizeText(client?.calendar?.firefliesLiveJoinedAt)),
     manual: sanitizeText(offer?.meetingSource) === 'manual',
@@ -12730,6 +12806,39 @@ function withResolvedOfferIdentity(email = {}, values = {}) {
   };
 }
 
+function quoteMatchesOffer(offer, built, sentence) {
+  const product = Array.isArray(offer?.products) ? offer.products[0] : null;
+  const next = built?.products?.[0];
+  if (!product || !next || offer.tierId !== built.tierId) return false;
+  if (product.priceExMva !== next.priceExMva || product.pages !== next.pages) return false;
+  if (sanitizeText(product.note) !== sanitizeText(next.note)) return false;
+  const html = offer.email?.html || '';
+  if (!html.includes(sentence)) return false;
+  const once = built.billing === 'once';
+  if (once && !html.includes('data-billing="once"')) return false;
+  if (!once && html.includes('data-billing="once"')) return false;
+  return true;
+}
+
+function applyMeetingQuoteToOffer(offer, client) {
+  if (!offer || offer.status !== 'draft' || salesOffers.offerPreviewIsCurrent(offer)) return offer;
+  const built = buildOfferFromMeetingQuote(client?.details?.meetingQuote);
+  if (!built) return offer;
+  const sentence = workshopStartSentence(client?.details?.meetingQuote?.startDate);
+  if (quoteMatchesOffer(offer, built, sentence)) return offer;
+  const html = applyOfferProducts(
+    ensureWorkshopSentence(offer.email?.html || '', sentence),
+    built.products,
+    { mvaIncluded: Boolean(offer.mvaIncluded), billing: built.billing, oneTimeFees: built.oneTimeFees },
+  );
+  return salesOffers.updateSalesOffer(offer.id, {
+    tierId: built.tierId,
+    products: built.products,
+    reviewRequested: built.tierId === CUSTOM_TIER_ID ? true : (offer.tierId === CUSTOM_TIER_ID ? false : offer.reviewRequested),
+    email: { html },
+  }, { actor: 'meeting-quote', action: '' }) || offer;
+}
+
 async function ensureOfferDraft(client, req) {
   const existing = salesOffers.getOfferForClient(client.id);
   if (existing) {
@@ -12738,22 +12847,31 @@ async function ensureOfferDraft(client, req) {
     const refreshed = refreshStoredOfferShell(existing, req);
     const values = await offerIdentityValues(client, req);
     const email = withResolvedOfferIdentity(refreshed?.email || {}, values);
-    if (email.subject === (refreshed?.email?.subject || '') && email.html === (refreshed?.email?.html || '')) {
-      return refreshed;
-    }
-    return salesOffers.updateSalesOffer(refreshed.id, { email }, { actor: offerActor(req), action: '' }) || refreshed;
+    const withIdentity = email.subject === (refreshed?.email?.subject || '') && email.html === (refreshed?.email?.html || '')
+      ? refreshed
+      : (salesOffers.updateSalesOffer(refreshed.id, { email }, { actor: offerActor(req), action: '' }) || refreshed);
+    return applyMeetingQuoteToOffer(withIdentity, client);
   }
   const sender = await resolveSalesSenderForAccount(req.salesUser);
+  const built = buildOfferFromMeetingQuote(client?.details?.meetingQuote);
+  const sentence = workshopStartSentence(client?.details?.meetingQuote?.startDate);
   const email = withResolvedOfferIdentity(
-    buildOfferEmailForClient(client, {}, { sender }),
+    buildOfferEmailForClient(client, {
+      products: built?.products || [],
+      billing: built?.billing || 'month',
+      oneTimeFees: built?.oneTimeFees || [],
+      nuances: { workshop: sentence },
+      tierId: built?.tierId || '',
+    }, { sender }),
     salesEmailMergeMap(client, client?.calendar || {}, sender)
   );
   return salesOffers.createSalesOffer({
     salesClientId: client.id,
     ownerId: sanitizeText(client.ownerId) || sanitizeText(req.salesUser?.accountKey),
     email: { subject: email.subject, preheader: email.preheader, html: email.html },
-    products: [],
-    tierId: '',
+    products: built?.products || [],
+    tierId: built?.tierId || '',
+    reviewRequested: built?.tierId === CUSTOM_TIER_ID,
     meetingId: salesMeetingRef(client)?.meetingId || '',
   }, { actor: offerActor(req) });
 }
@@ -12864,23 +12982,49 @@ async function offerContractBuffer(offer, client, { to = '' } = {}) {
   return { buffer, fileName };
 }
 
-/** Writes the sales-meeting transcript into still-empty offer slots (need, project, terms, benefits). */
+function offerProductNotes(client) {
+  return sanitizeText(client?.details?.meetingQuote?.productNotes);
+}
+
+function clientForOfferFill(client) {
+  return { ...client, notes: offerProductNotes(client) };
+}
+
+function workshopSentenceForClient(client, workshopStart = '') {
+  const direct = sanitizeText(client?.details?.meetingQuote?.startDate);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(direct)) return workshopStartSentence(direct);
+  const fromTalk = sanitizeText(workshopStart).replace(/^startdato for workshop:\s*/i, '').replace(/\.$/, '');
+  if (fromTalk) return `Startdato for workshop: ${fromTalk}.`;
+  return workshopStartSentence('');
+}
+
+function offerContextBlocker(client, meeting) {
+  const notes = offerProductNotes(client);
+  const hasTalk = Boolean(meeting && (sanitizeText(meeting.transcript) || sanitizeText(meeting.summary)));
+  if (!hasTalk && notes.length < 15) return 'Ingen møtedata eller produktnotater å fylle tilbudet med.';
+  if (meetingContextIsTooThin(meeting || {}, { notes })) return 'Opptaket har under 10 linjer, og produktnotatene er for korte til å fylle tilbudet.';
+  return '';
+}
+
+/** Writes the meeting transcript and sales notes into still-empty offer slots. */
 async function fillOpenOfferSlotsFromSalesMeeting(offer, client, req) {
   if (!offer || offer.status === 'sent') return offer;
   const html = offer.email?.html || '';
   const open = ['need', 'project', 'terms', 'benefits'].some((slot) => offerSlotIsOpen(html, slot));
   if (!open) return offer;
   const meeting = meetingForOffer(client, offer);
-  if (!meeting || meetingContextIsTooThin(meeting)) return offer;
-  if (!sanitizeText(meeting.transcript) && !sanitizeText(meeting.summary)) return offer;
+  if (offerContextBlocker(client, meeting)) return offer;
   if (!isDeepseekConfigured()) return offer;
-  const nuances = await fillOfferFromTranscript({ client, meeting, products: offer.products, tierId: offer.tierId });
-  const filled = refreshOfferShell(fillOfferSlots(html, nuances, { onlyOpen: true }));
+  const nuances = await fillOfferFromTranscript({ client: clientForOfferFill(client), meeting: meeting || {}, products: offer.products, tierId: offer.tierId });
+  const filled = refreshOfferShell(fillOfferSlots(html, {
+    ...nuances,
+    workshop: workshopSentenceForClient(client, nuances.workshopStart),
+  }, { onlyOpen: true }));
   if (filled === html) return offer;
   return salesOffers.updateSalesOffer(offer.id, {
     email: { html: filled },
-    meetingId: sanitizeText(meeting.meetingId),
-  }, { actor: offerActor(req), action: 'ai-filled', note: sanitizeText(meeting.title) }) || offer;
+    meetingId: sanitizeText(meeting?.meetingId),
+  }, { actor: offerActor(req), action: 'ai-filled', note: sanitizeText(meeting?.title) }) || offer;
 }
 
 /** The exact message the client receives (merge fields resolved, hosted assets), used for preview and send. */
@@ -13002,16 +13146,15 @@ app.post('/api/admin/sales/:id/offer/fill', salesAuth, async (req, res) => {
   const current = await ensureOfferDraft(client, req);
   if (current.status === 'sent') return res.status(409).json({ message: 'Tilbudet er allerede sendt.' });
   const meeting = meetingForOffer(client, current);
-  if (!meeting || (!sanitizeText(meeting.transcript) && !sanitizeText(meeting.summary))) {
-    return res.status(400).json({ message: 'Ingen møtedata (Fireflies) er koblet til denne kunden enda.' });
-  }
-  if (meetingContextIsTooThin(meeting)) {
-    return res.status(400).json({ message: 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.' });
-  }
+  const contextBlocker = offerContextBlocker(client, meeting);
+  if (contextBlocker) return res.status(400).json({ message: contextBlocker });
   try {
     const html = typeof req.body?.html === 'string' ? req.body.html : current.email.html;
-    const nuances = await fillOfferFromTranscript({ client, meeting, products: current.products, tierId: current.tierId });
-    const filled = fillOfferSlots(html, nuances);
+    const nuances = await fillOfferFromTranscript({ client: clientForOfferFill(client), meeting: meeting || {}, products: current.products, tierId: current.tierId });
+    const filled = fillOfferSlots(html, {
+      ...nuances,
+      workshop: workshopSentenceForClient(client, nuances.workshopStart),
+    });
     const updated = salesOffers.updateSalesOffer(current.id, {
       email: { html: filled },
       meetingId: sanitizeText(meeting.meetingId),
@@ -13234,6 +13377,32 @@ function publishSalesOfferToPortal({ salesClient, offer, letterHtml, contractHtm
   return portalOffer;
 }
 
+async function attachWebsiteCodeToSentOffer(salesClient, offer, { letterHtml = '', to = '' } = {}) {
+  const view = clientWithOfferParty(salesClient, offer, { to });
+  let contractHtml = '';
+  try {
+    contractHtml = contractHtmlForOffer(offer, view) || '';
+  } catch {
+    contractHtml = '';
+  }
+  const email = normalizeEmail(salesClient.clientEmail) || normalizeEmail(to);
+  const user = await findClientUserByEmail(email);
+  return publishSalesOfferToPortal({
+    salesClient,
+    offer,
+    letterHtml,
+    contractHtml,
+    user,
+    email,
+  });
+}
+
+function markOfferSentProgress(client) {
+  if (client?.progression?.meetingHeld && !client.progression?.offerSent) {
+    try { sales.setSalesProgress(client.id, 'offerSent', true); } catch { /* checklist can stay manual */ }
+  }
+}
+
 app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
   const client = sales.getSalesClientById(req.params.id);
   if (!client) return res.status(404).json({ message: 'Sales client not found.' });
@@ -13263,24 +13432,15 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
       const view = clientWithOfferParty(client, offer, { to });
       const contractHtml = contractHtmlForOffer(offer, view);
       if (!contractHtml) return res.status(400).json({ message: 'Velg en tier før tilbudet kan legges på asoldi.com.' });
-      const user = await findClientUserByEmail(to);
-      publishSalesOfferToPortal({
-        salesClient: client,
-        offer,
-        letterHtml: composed.html,
-        contractHtml,
-        user,
-        email: to,
-      });
       const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to, delivery: 'portal' });
-      if (client.progression?.meetingHeld && !client.progression?.offerSent) {
-        try { sales.setSalesProgress(client.id, 'offerSent', true); } catch { /* checklist can stay manual */ }
-      }
+      const portalOffer = await attachWebsiteCodeToSentOffer(client, sent, { letterHtml: composed.html, to });
+      markOfferSentProgress(client);
       return res.json({
         ok: true,
         offer: presentOffer(sent),
         delivery: 'portal',
-        accountFound: Boolean(user),
+        websiteCode: portalOffer?.code || '',
+        accountFound: Boolean(await findClientUserByEmail(normalizeEmail(client.clientEmail) || to)),
       });
     }
     const { buffer, fileName } = await offerContractBuffer(offer, client, { to });
@@ -13298,7 +13458,16 @@ app.post('/api/admin/sales/:id/offer/send', salesAuth, async (req, res) => {
       ],
     });
     const sent = salesOffers.markSalesOfferSent(offer.id, { actor: offerActor(req), to, delivery: 'email' });
-    res.json({ ok: true, offer: presentOffer(sent), copyTo: salesEmailCopyBcc(to), contractFileName: fileName, delivery: 'email' });
+    const portalOffer = await attachWebsiteCodeToSentOffer(client, sent, { letterHtml: composed.html, to });
+    markOfferSentProgress(client);
+    res.json({
+      ok: true,
+      offer: presentOffer(sent),
+      copyTo: salesEmailCopyBcc(to),
+      contractFileName: fileName,
+      delivery: 'email',
+      websiteCode: portalOffer?.code || '',
+    });
   } catch (error) {
     res.status(500).json({ message: delivery === 'portal' ? (sanitizeText(error?.message) || 'Kunne ikke legge tilbudet på asoldi.com.') : formatSmtpSendError(error) });
   }

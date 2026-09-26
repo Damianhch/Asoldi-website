@@ -146,6 +146,10 @@ export function ClientAuthProvider({ children }: { children: React.ReactNode }) 
     window.dispatchEvent(new Event(CLIENT_AUTH_EVENT));
   }, []);
 
+  const updateProfileState = useCallback((next: ClientProfile | null) => {
+    setProfile(next);
+  }, []);
+
   const setClientSession = useCallback(async (nextToken: string) => {
     if (!nextToken) {
       clearClientSession();
@@ -188,8 +192,8 @@ export function ClientAuthProvider({ children }: { children: React.ReactNode }) 
     clearClientSession,
     refreshClientSession,
     authHeaders: () => (token ? { Authorization: `Bearer ${token}` } : {}),
-    updateProfileState: (next) => setProfile(next),
-  }), [loading, user, profile, token, setClientSession, clearClientSession, refreshClientSession]);
+    updateProfileState,
+  }), [loading, user, profile, token, setClientSession, clearClientSession, refreshClientSession, updateProfileState]);
 
   return (
     <ClientAuthContext.Provider value={value}>

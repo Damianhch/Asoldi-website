@@ -111,6 +111,13 @@ export function useClientOfferMeeting(clientId: string, payload: { title?: strin
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/use-meeting`, { method: 'POST', body: JSON.stringify(payload) });
 }
 
+export function saveClientWorkshopStart(clientId: string, startDate: string) {
+  return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/notes`, {
+    method: 'PATCH',
+    body: JSON.stringify({ meetingQuote: { startDate } }),
+  });
+}
+
 export function fillClientOffer(clientId: string, payload: Record<string, unknown>) {
   return emailRequest(`/admin/sales/${encodeURIComponent(clientId)}/offer/fill`, { method: 'POST', body: JSON.stringify(payload) });
 }

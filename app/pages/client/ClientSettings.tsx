@@ -445,7 +445,6 @@ export const ClientSettings = () => {
     let active = true;
     async function loadSettings() {
       if (!token) return;
-      setLoading(true);
       setError('');
       try {
         const response = await fetch('/api/client/settings', {
@@ -747,7 +746,7 @@ export const ClientSettings = () => {
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
       <ClientPortalLayout title="Innstillinger" subtitle="Administrer kundedata, fakturering og konto">
-        {loading ? (
+        {!profile && loading ? (
           <div className="min-h-[320px] flex items-center justify-center text-[#6B7280]">
             <Loader2 size={18} className="animate-spin mr-2" />
             Laster innstillinger...
@@ -1574,6 +1573,12 @@ export const ClientSettings = () => {
             ) : null}
 
             {activeSection === 'fakturering' ? (
+              loading && !billing ? (
+                <div className="min-h-[240px] flex items-center justify-center text-[#6B7280]">
+                  <Loader2 size={18} className="animate-spin mr-2" />
+                  Laster fakturering...
+                </div>
+              ) : (
               <div className="space-y-5">
                 <section className="rounded-2xl border border-[#E5E7EB] bg-white p-5">
                   <h2 className="text-lg font-semibold text-[#111827]">Abonnement og fakturering</h2>
@@ -1721,6 +1726,7 @@ export const ClientSettings = () => {
                   )}
                 </section>
               </div>
+              )
             ) : null}
 
             {activeSection === 'konto' ? (

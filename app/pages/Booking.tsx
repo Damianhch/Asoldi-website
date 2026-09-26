@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { Mail, Phone, Star, ArrowRight, CheckCircle2, ArrowLeft } from 'lucide-react';
 import { SEO } from '../components/SEO';
 import { getContactPageSchema } from '../structuredData';
+import { REFERRAL_SERVICES } from '../../lib/client-referral.js';
 
 export const Booking = () => {
   const [activeReview, setActiveReview] = useState(0);
@@ -300,11 +301,9 @@ export const Booking = () => {
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-black/70 ml-1">Tjeneste</label>
                   <select value={formData.service} onChange={(e) => updateField('service', e.target.value)} className="w-full px-6 py-4 bg-gray-50 border border-gray-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-[#FF5B00]/20 focus:border-[#FF5B00] transition-all text-black appearance-none">
-                    <option>Nettsideutvikling</option>
-                    <option>Sosiale Medier Marketing</option>
-                    <option>Innholdsproduksjon</option>
-                    <option>E-post Markedsføring</option>
-                    <option>Annet</option>
+                    {REFERRAL_SERVICES.map((service) => (
+                      <option key={service}>{service}</option>
+                    ))}
                   </select>
                 </div>
 

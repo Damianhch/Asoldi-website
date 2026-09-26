@@ -420,7 +420,25 @@ test('sold clients can add upsell, upgrade, and follow-up without replacing each
     assert.equal(created.error, undefined);
     current = { ...sold, nextActions: created.nextActions };
   }
-  const live = current.nextActions.filter((action) => !action.doneAt);
+  const live = current.nextActions.filter((action) => !action.doneAt && action.presetKey !== 'oppfolging1mnd');
   assert.deepEqual(live.map((action) => action.presetKey).sort(), ['oppfolging', 'oppgrader', 'upsell']);
   assert.equal(live.every((action) => action.addToCalendar && action.format === 'mote'), true);
+});
+
+test('a sold client gets oppfølging 1mnd as a call, and stays out of the ranked next-action list', () => {
+  const sold = client({
+    progression: { meetingHeld: true, offerSent: true, contractSigned: true },
+  });
+  const actions = decorateNextActions(sold);
+  const follow = actions.find((action) => action.presetKey === 'oppfolging1mnd');
+  assert.ok(follow);
+  assert.equal(follow.format, 'ring');
+  assert.equal(follow.addToCalendar, false);
+  assert.match(follow.note, /spørr om review/);
+  const delta = Date.parse(follow.dueAt) - Date.now();
+  assert.ok(Math.abs(delta - 30 * 24 * HOUR_MS) < 60 * 1000);
+  const grouped = groupSalesClientsByNextAction([{ ...sold, nextActions: actions }], Date.now());
+  assert.equal(grouped.upcoming.length, 0);
+  assert.equal(grouped.recentPastDue.length, 0);
+  assert.equal(grouped.pastDue.length, 0);
 });

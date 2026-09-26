@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Helmet } from 'react-helmet-async';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, ExternalLink, Eye, FileText, Loader2, Paperclip, RefreshCw, Send, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { AlertTriangle, Copy, ExternalLink, Eye, FileText, Loader2, Paperclip, RefreshCw, Send, ShieldCheck, X } from 'lucide-react';
 import { EmailVisualEditor } from './EmailVisualEditor';
 import {
   approveClientOfferPreview,
@@ -13,15 +13,16 @@ import {
   previewClientOffer,
   requestClientOfferReview,
   saveClientOffer,
+  saveClientWorkshopStart,
   sendClientOffer,
   startNewClientOffer,
   type MergeField,
   type OfferPreview,
   type OfferReadiness,
-  type OfferTier,
 } from './emailApi';
 import { getSalesToken, type SalesOffer, type SalesSender } from '../Admin/shared';
 import { ContractSummaryCard, HtmlPreview, OfferProductsCard, OfferStatusChip } from './offerUi';
+import { SalesFlowSteps } from './SalesFlowSteps';
 import { clientCardParty, offerMissingFields, offerReadinessMessage } from '../../../lib/offer-readiness.js';
 
 type OfferClient = {
@@ -30,6 +31,8 @@ type OfferClient = {
   contactPerson: string;
   contactEmail: string;
   clientEmail?: string;
+  hasProductNotes?: boolean;
+  workshopStartDate?: string;
   orgNumber: string;
   businessAddress: string;
   meetingPlace: string;
@@ -59,10 +62,16 @@ type PreviewState = {
 
 const AUTOSAVE_MS = 1500;
 
-export function SalesOfferComposer() {
+type ComposerProps = {
+  embedded?: boolean;
+  clientId?: string;
+  autoFillToken?: number;
+};
+
+export function SalesOfferComposer({ embedded = false, clientId: clientIdProp = '', autoFillToken = 0 }: ComposerProps = {}) {
   const navigate = useNavigate();
   const [params] = useSearchParams();
-  const clientId = params.get('clientId') || '';
+  const clientId = clientIdProp || params.get('clientId') || '';
 
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'' | 'tier' | 'mva' | 'review-toggle' | 'fill' | 'review' | 'send' | 'contract' | 'new' | 'save' | 'preview' | 'approve' | 'meeting'>('');
@@ -71,7 +80,6 @@ export function SalesOfferComposer() {
   const [offer, setOffer] = useState<SalesOffer | null>(null);
   const [client, setClient] = useState<OfferClient | null>(null);
   const [party, setParty] = useState({ businessName: '', orgNumber: '', address: '', contactPerson: '' });
-  const [tiers, setTiers] = useState<OfferTier[]>([]);
   const [mergeFields, setMergeFields] = useState<MergeField[]>([]);
   const [meeting, setMeeting] = useState<MeetingInfo>(null);
   const [meetingQuery, setMeetingQuery] = useState('');
@@ -82,6 +90,10 @@ export function SalesOfferComposer() {
   const [canSendEmail, setCanSendEmail] = useState(true);
 
   const [to, setTo] = useState('');
+  const [startDate, setStartDate] = useState('');
+  const [meetingsOpen, setMeetingsOpen] = useState(false);
+  const [fillPhase, setFillPhase] = useState<'' | 'running' | 'done' | 'error'>('');
+  const [fillMessage, setFillMessage] = useState('');
   const [delivery, setDelivery] = useState<'email' | 'portal'>('email');
   const [subject, setSubject] = useState('');
   const [preheader, setPreheader] = useState('');
@@ -92,6 +104,7 @@ export function SalesOfferComposer() {
   const [previewState, setPreviewState] = useState<PreviewState | null>(null);
   const dirtyRef = useRef(false);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const startDateTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const htmlRef = useRef(html);
   const subjectRef = useRef(subject);
   const preheaderRef = useRef(preheader);
@@ -135,7 +148,6 @@ export function SalesOfferComposer() {
         offer: SalesOffer;
         client: OfferClient;
         readiness: OfferReadiness;
-        tiers: OfferTier[];
         mergeFields: MergeField[];
         meeting: MeetingInfo;
         meetings?: MeetingMatch[];
@@ -144,7 +156,6 @@ export function SalesOfferComposer() {
         canSendEmail: boolean;
       };
       setClient(data.client);
-      setTiers(Array.isArray(data.tiers) ? data.tiers : []);
       setMergeFields(Array.isArray(data.mergeFields) ? data.mergeFields : []);
       setMeeting(data.meeting || null);
       setMeetings(Array.isArray(data.meetings) ? data.meetings : []);
@@ -160,6 +171,7 @@ export function SalesOfferComposer() {
         contactPerson: stored?.contactPerson || card.contactPerson,
       });
       setTo(stored?.contactEmail || card.contactEmail);
+      setStartDate(data.client.workshopStartDate || '');
       applyOffer(data.offer);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Kunne ikke åpne tilbudet');
@@ -289,23 +301,6 @@ export function SalesOfferComposer() {
     return data.offer;
   }
 
-  async function chooseTier(tierId: string) {
-    setBusy('tier');
-    setError('');
-    try {
-      // No reviewRequested here: the server forces it on for custom and resets it when leaving custom.
-      const data = await saveClientOffer(clientId, { tierId, html, subject, preheader, to, party: partyPayload() }) as { offer: SalesOffer };
-      applyOffer(data.offer);
-      setNotice(tierId === 'custom'
-        ? 'Skreddersydd valgt – tilbudet må kjøres via admin før det kan sendes.'
-        : tierId ? 'Pakken er lagt inn under «Hva er inkludert».' : 'Pakke fjernet.');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Kunne ikke velge tier');
-    } finally {
-      setBusy('');
-    }
-  }
-
   async function toggleReviewFirst(next: boolean) {
     if (!offer || locked || isCustom) return;
     setBusy('review-toggle');
@@ -367,15 +362,25 @@ export function SalesOfferComposer() {
   }
 
   async function handleFill() {
+    if (fillDisabledReason) {
+      setFillPhase('error');
+      setFillMessage(fillDisabledReason);
+      return;
+    }
     setBusy('fill');
+    setFillPhase('running');
+    setFillMessage('Fyller ut e-posten…');
     setError('');
-    setNotice('');
     try {
       const data = await fillClientOffer(clientId, { html, meetingId: meeting?.meetingId || '' }) as { offer: SalesOffer };
       applyOffer(data.offer);
-      setNotice('E-posten er fylt ut med detaljer fra møtet. Les gjennom før du sender.');
+      setFillPhase('done');
+      setFillMessage('E-posten er fylt ut fra møtet og produktnotatene.');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'AI-utfylling feilet');
+      const message = err instanceof Error ? err.message : 'AI-utfylling feilet';
+      setFillPhase('error');
+      setFillMessage(message);
+      setError(message);
     } finally {
       setBusy('');
     }
@@ -455,11 +460,20 @@ export function SalesOfferComposer() {
     setNotice('');
     try {
       const payload = { to, party: partyPayload(), delivery };
-      const data = await sendClientOffer(clientId, payload) as { offer: SalesOffer; copyTo?: string; contractFileName?: string; delivery?: string; accountFound?: boolean };
+      const data = await sendClientOffer(clientId, payload) as {
+        offer: SalesOffer;
+        copyTo?: string;
+        contractFileName?: string;
+        delivery?: string;
+        accountFound?: boolean;
+        websiteCode?: string;
+      };
       applyOffer(data.offer);
+      const code = data.websiteCode || data.offer?.websiteCode || '';
+      const codeNote = code ? ` Nettsidekode: ${code} — lim inn på asoldi.com for å aktivere nettsiden.` : '';
       setNotice(data.delivery === 'portal'
-        ? `Tilbudet ligger på asoldi.com for ${client?.clientEmail || to}${data.accountFound ? '' : '. Kontoen finnes ikke enda — tilbudet vises når kunden registrerer seg med den e-posten.'}`
-        : `Tilbud sendt til ${to}${data.contractFileName ? ` med ${data.contractFileName}` : ''}${data.copyTo ? ` · Kopi: ${data.copyTo}` : ''}`);
+        ? `Tilbudet ligger på asoldi.com for ${client?.clientEmail || to}${data.accountFound ? '' : '. Kontoen finnes ikke enda — tilbudet vises når kunden registrerer seg med den e-posten.'}${codeNote}`
+        : `Tilbud sendt til ${to}${data.contractFileName ? ` med ${data.contractFileName}` : ''}${data.copyTo ? ` · Kopi: ${data.copyTo}` : ''}.${codeNote}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sending feilet');
     } finally {
@@ -490,13 +504,39 @@ export function SalesOfferComposer() {
   }
 
   const fillDisabledReason = useMemo(() => {
-    if (!deepseek) return 'AI-utfylling er ikke aktivert på serveren enda (DeepSeek-nøkkel mangler). Du kan fylle ut feltene manuelt i editoren.';
-    if (!meeting) return 'Venter på Fireflies-transkript (vanligvis 5–10 min etter møtet). Siden oppdateres automatisk.';
-    if (meeting.pendingTranscript) return 'Fireflies var i Meet. Transkriptet er ikke klart ennå, eller møtet hadde for lite tale.';
-    if (!meeting.hasTranscript && !meeting.hasSummary) return 'Møtet mangler transkript/sammendrag.';
-    if (meeting.tooThin) return 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.';
+    if (!deepseek) return 'AI-utfylling er ikke aktivert på serveren enda. Du kan skrive feltene i editoren.';
+    if (client?.hasProductNotes) return '';
+    if (!meeting) return 'Venter på Fireflies-transkript, eller skriv produktnotater på forrige side.';
+    if (meeting.pendingTranscript) return 'Fireflies var i Meet. Transkriptet er ikke klart ennå.';
+    if (!meeting.hasTranscript && !meeting.hasSummary) return 'Møtet mangler transkript og sammendrag.';
+    if (meeting.tooThin) return 'Opptaket har under 10 linjer, og produktnotatene er for korte.';
     return '';
-  }, [deepseek, meeting]);
+  }, [deepseek, meeting, client?.hasProductNotes]);
+
+  const handleFillRef = useRef(handleFill);
+  handleFillRef.current = handleFill;
+  const fillRunRef = useRef(0);
+  useEffect(() => {
+    if (!autoFillToken || loading || locked) return;
+    if (fillRunRef.current === autoFillToken) return;
+    if (fillDisabledReason) {
+      setFillPhase('error');
+      setFillMessage(fillDisabledReason);
+      return;
+    }
+    fillRunRef.current = autoFillToken;
+    void handleFillRef.current();
+  }, [autoFillToken, loading, locked, fillDisabledReason, offer?.id]);
+
+  function onStartDateChange(value: string) {
+    setStartDate(value);
+    if (startDateTimer.current) clearTimeout(startDateTimer.current);
+    startDateTimer.current = setTimeout(() => {
+      void saveClientWorkshopStart(clientId, value).catch((err) => {
+        setError(err instanceof Error ? err.message : 'Kunne ikke lagre startdato');
+      });
+    }, 400);
+  }
 
   const card = useMemo(() => clientCardParty(client || {}), [client]);
   const readiness = useMemo(() => {
@@ -525,7 +565,7 @@ export function SalesOfferComposer() {
   }, [offer, canSendEmail, readiness, to, status, needsReview, placeholders.length, previewApproved]);
 
   const showSendButton = status !== 'sent' && (!needsReview || status === 'verified');
-  const title = 'Send tilbud';
+  const title = 'Se gjennom tilbud';
 
   return (
     <>
@@ -533,25 +573,40 @@ export function SalesOfferComposer() {
         <title>{title} – Asoldi</title>
         <meta name="robots" content="noindex,nofollow" />
       </Helmet>
-      <div className="staff-light min-h-screen bg-[#1a1a1a] text-white">
+      <div className={embedded ? 'text-white' : 'staff-light min-h-screen bg-[#1a1a1a] text-white'}>
+        {!embedded && (
         <header className="border-b border-white/10 bg-[#222]">
-          <div className="max-w-[1400px] mx-auto px-6 py-4 flex items-center justify-between gap-4">
+          <div className="max-w-[1400px] mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
             <div className="min-w-0">
               <div className="flex items-center gap-2">
                 <h1 className="text-lg font-semibold">{title}</h1>
                 {offer && <OfferStatusChip status={offer.status} />}
               </div>
               <p className="text-xs text-gray-400 truncate">
-                {client?.businessName || 'Kunde'}{client?.contactPerson ? ` · ${client.contactPerson}` : ''} · tilbuds-e-post + kontrakt (PDF) sendes sammen
+                {client?.businessName || 'Kunde'}{client?.contactPerson ? ` · ${client.contactPerson}` : ''} · tilbuds-e-post og kontrakt (PDF) sendes sammen
               </p>
             </div>
             <div className="flex items-center gap-2">
               <Link to="/sales/email/templates" className="px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15">Maler</Link>
-              <Link to="/sales" className="px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15">Tilbake</Link>
+              <Link to="/sales" className="px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15">Tilbake til salg</Link>
             </div>
           </div>
         </header>
+        )}
 
+        {!embedded && (
+        <div className="bg-white text-[#111827] border-b border-[#E6E9EF]">
+          <div className="max-w-[1400px] mx-auto px-6 py-3">
+            <SalesFlowSteps
+              step={3}
+              onStep={(step) => {
+                if (!clientId || step === 3) return;
+                navigate(`/sales?flow=${encodeURIComponent(clientId)}&step=${step}`);
+              }}
+            />
+          </div>
+        </div>
+        )}
         <main className="max-w-[1400px] mx-auto px-6 py-6 flex flex-col gap-4">
           {error && <p className="text-red-300 text-sm">{error}</p>}
           {notice && <p className="text-emerald-200 text-sm">{notice}</p>}
@@ -560,17 +615,7 @@ export function SalesOfferComposer() {
             <div className="flex items-center gap-2 text-gray-400"><Loader2 className="animate-spin" size={18} /> Åpner tilbudet…</div>
           ) : (
             <>
-              {!readiness.ready && (
-                <div className="flex items-start gap-3 rounded-xl border border-amber-400/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
-                  <AlertTriangle size={18} className="shrink-0 mt-0.5" />
-                  <div>
-                    <div className="font-medium">Kontrakten mangler data</div>
-                    <div className="text-amber-200">{readiness.message} Fyll inn feltene under Kontraktdata, eller legg proff.no-lenke og adresse på kundekortet.</div>
-                  </div>
-                </div>
-              )}
-
-              {sender && !sender.phone && (
+              {(sender && !sender.phone) && (
                 <div className="flex items-start gap-3 rounded-xl border border-amber-400/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
                   <AlertTriangle size={18} className="shrink-0 mt-0.5" />
                   <div>
@@ -579,7 +624,6 @@ export function SalesOfferComposer() {
                   </div>
                 </div>
               )}
-
               {status === 'review-requested' && (
                 <div className="rounded-xl border border-amber-400/30 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
                   Tilbudet ligger hos admin for gjennomgang. Du får e-post når det er verifisert – da kan du sende det herfra.
@@ -596,33 +640,37 @@ export function SalesOfferComposer() {
                 </div>
               )}
               {status === 'sent' && (
-                <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-400/30 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-200">
-                  <span>Sendt {offer.sentAt ? new Date(offer.sentAt).toLocaleString('nb-NO') : ''} til {offer.sentTo}.</span>
-                  <button type="button" onClick={() => void handleNewOffer()} disabled={busy === 'new'} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 text-xs hover:bg-white/15 disabled:opacity-50">
-                    {busy === 'new' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Nytt tilbud
-                  </button>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-400/30 bg-emerald-900/20 px-4 py-3 text-sm text-emerald-200">
+                    <span>Sendt {offer.sentAt ? new Date(offer.sentAt).toLocaleString('nb-NO') : ''} til {offer.sentTo}.</span>
+                    <button type="button" onClick={() => void handleNewOffer()} disabled={busy === 'new'} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/10 text-xs hover:bg-white/15 disabled:opacity-50">
+                      {busy === 'new' ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />} Nytt tilbud
+                    </button>
+                  </div>
+                  {offer.websiteCode && (
+                    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-white/10 bg-[#161616] px-4 py-3 text-sm">
+                      <span className="text-gray-400">Nettsidekode</span>
+                      <span className="font-mono tracking-[0.3em] text-lg text-white">{offer.websiteCode}</span>
+                      <button
+                        type="button"
+                        onClick={() => void navigator.clipboard.writeText(offer.websiteCode || '').then(
+                          () => setNotice(`Kopiert ${offer.websiteCode}`),
+                          () => setError('Kunne ikke kopiere koden')
+                        )}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/10 text-xs hover:bg-white/15"
+                      >
+                        <Copy size={12} /> Kopier
+                      </button>
+                      <span className="text-xs text-gray-500">Kunden limer inn koden på asoldi.com for å aktivere nettsiden.</span>
+                    </div>
+                  )}
                 </div>
               )}
 
               <div className="grid xl:grid-cols-[minmax(0,1fr)_320px] gap-4">
                 <div className="flex flex-col gap-4 min-w-0">
-                  <div className="grid md:grid-cols-4 gap-3">
-                    <label className="text-xs text-gray-400">
-                      Velg nettside tier
-                      <select
-                        value={offer.tierId || ''}
-                        disabled={locked || busy === 'tier'}
-                        onChange={(event) => void chooseTier(event.target.value)}
-                        className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50"
-                      >
-                        <option value="">— ikke valgt —</option>
-                        {tiers.map((tier) => (
-                          <option key={tier.id} value={tier.id}>{tier.name} · {tier.pages} sider · {tier.monthlyExMva} kr{mvaIncluded ? '' : ' eks. mva'}</option>
-                        ))}
-                        <option value="custom">Skreddersydd (kjøres via admin)</option>
-                      </select>
-                    </label>
-                    <label className="text-xs text-gray-400">
+                  <div className="max-w-md space-y-3">
+                    <label className="block text-xs text-gray-400">
                       Til
                       <input
                         value={to}
@@ -635,64 +683,34 @@ export function SalesOfferComposer() {
                         className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50"
                       />
                     </label>
+                    <label className="block text-xs text-gray-400">
+                      Startdato for workshop
+                      <input
+                        type="date"
+                        value={startDate}
+                        onChange={(e) => onStartDateChange(e.target.value)}
+                        disabled={locked}
+                        className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50"
+                      />
+                      <span className="mt-1 block text-[11px] text-gray-500">Tomt felt: datoen tas fra transkriptet, ellers avtaler vi den senere.</span>
+                    </label>
+                  </div>
+                  <div className="grid md:grid-cols-2 gap-3">
                     <label className="text-xs text-gray-400">
                       Emne
                       <input value={subject} onChange={(e) => onSubjectChange(e.target.value)} disabled={locked} className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50" />
                     </label>
                     <label className="text-xs text-gray-400">
-                      Preheader
+                      Forhåndstekst
                       <input value={preheader} onChange={(e) => onPreheaderChange(e.target.value)} disabled={locked} className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm disabled:opacity-50" />
                     </label>
                   </div>
 
-                  <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleFill()}
-                      disabled={locked || busy === 'fill' || Boolean(fillDisabledReason)}
-                      title={fillDisabledReason || 'Bruker møtedata fra Fireflies til å skrive de kundespesifikke delene'}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15 disabled:opacity-50"
-                    >
-                      {busy === 'fill' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-                      Fyll ut med kundedetaljer
-                    </button>
-                    {fillDisabledReason && <span className="text-xs text-gray-500 max-w-[360px]">{fillDisabledReason}</span>}
-                    {meeting && (
-                      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                        <span>
-                          Møte: {meeting.title || 'Uten tittel'}
-                          {meeting.when ? ` · ${meeting.when}` : ''}
-                          {meeting.durationMinutes ? ` · ${meeting.durationMinutes} min` : ''}
-                          {meeting.manual ? ' · valgt manuelt' : ''}
-                          {meeting.pendingTranscript ? ' · venter på transkript' : ''}
-                          {meeting.tooThin && !meeting.pendingTranscript ? ' · for lite tale til auto-utfylling' : ''}
-                        </span>
-                        <a
-                          href={meeting.firefliesUrl || 'https://app.fireflies.ai/'}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-[#FF5B00] hover:underline"
-                        >
-                          <ExternalLink size={12} />
-                          Åpne i Fireflies
-                        </a>
-                      </span>
-                    )}
-                    {!meeting && (
-                      <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                        <span>Venter på Fireflies-transkript. Oppdateres automatisk når det er klart.</span>
-                        <a
-                          href="https://app.fireflies.ai/"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 text-[#FF5B00] hover:underline"
-                        >
-                          <ExternalLink size={12} />
-                          Åpne i Fireflies
-                        </a>
-                      </span>
-                    )}
-                    <div className="ml-auto flex flex-wrap items-center gap-x-4 gap-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className={`text-xs ${fillPhase === 'error' ? 'text-amber-200' : fillPhase === 'done' ? 'text-emerald-300' : 'text-gray-400'}`}>
+                      {fillPhase === 'running' || busy === 'fill' ? 'Fyller ut e-posten…' : (fillMessage || 'E-posten fylles når du går hit fra produktnotatene.')}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
                       <label
                         className={`inline-flex items-center gap-2 text-xs ${locked ? 'text-gray-500' : 'text-gray-300'}`}
                         title="Standard: mva legges til på toppen av prisen. Slå på for å la oppgitt pris være det kunden betaler inkl. mva (for kunder med lavt budsjett)."
@@ -720,81 +738,77 @@ export function SalesOfferComposer() {
                     </div>
                   </div>
 
-                  {meetings.length > 0 && (
-                    <div className="space-y-2">
-                      <div className="text-xs text-gray-400">Fireflies-møter (velg hvis et nytt tidspunkt laget et ekstra opptak)</div>
-                      <div className="flex flex-wrap gap-2">
-                        {meetings.map((entry) => (
-                          <button
-                            key={entry.meetingId}
-                            type="button"
-                            disabled={locked || busy === 'meeting'}
-                            onClick={() => void handlePickMeeting({ meetingId: entry.meetingId })}
-                            className={`px-3 py-1.5 rounded-lg text-xs text-left ${
-                              entry.selected || entry.meetingId === meeting?.meetingId
-                                ? 'bg-[#FF5B00]/20 text-white border border-[#FF5B00]/40'
-                                : 'bg-white/10 text-white hover:bg-white/15'
-                            }`}
-                          >
-                            <span className="block">{entry.title || 'Uten tittel'}</span>
-                            <span className="block text-[11px] text-gray-400">
-                              {entry.when || 'Uten tid'}
-                              {entry.durationMinutes ? ` · ${entry.durationMinutes} min` : ' · lengde ukjent'}
-                              {entry.hasTranscript ? '' : ' · uten transkript'}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {!locked && (
-                    <div className="flex flex-wrap items-end gap-2">
-                      <label className="text-xs text-gray-400 flex-1 min-w-[220px]">
-                        Møtenavn eller Fireflies-lenke
-                        <input
-                          value={meetingQuery}
-                          onChange={(event) => setMeetingQuery(event.target.value)}
-                          placeholder="Møtenavn eller https://app.fireflies.ai/view/…"
-                          className="mt-1 w-full px-3 py-2 rounded-lg bg-[#111] border border-white/15 text-white text-sm"
-                        />
-                      </label>
-                      <button
-                        type="button"
-                        disabled={busy === 'meeting' || meetingQuery.trim().length < 3}
-                        onClick={() => void handlePickMeeting({ title: meetingQuery.trim() })}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-lg bg-white/10 text-sm hover:bg-white/15 disabled:opacity-50"
-                      >
-                        {busy === 'meeting' ? <Loader2 size={14} className="animate-spin" /> : null}
-                        Hent møte
-                      </button>
-                      {meeting?.manual && (
-                        <button
-                          type="button"
-                          disabled={busy === 'meeting'}
-                          onClick={() => void handlePickMeeting({ clear: true })}
-                          className="px-3 py-2 rounded-lg text-xs text-gray-400 hover:text-white"
-                        >
-                          Bruk booket møte
+                  <div className="rounded-lg border border-white/10 px-3 py-2 text-xs text-gray-400">
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span>
+                        {meeting
+                          ? `${meeting.title || 'Møte'}${meeting.when ? ` · ${meeting.when}` : ''}${meeting.pendingTranscript ? ' · venter på transkript' : ''}`
+                          : 'Ingen Fireflies-opptak valgt'}
+                      </span>
+                      <a href={meeting?.firefliesUrl || 'https://app.fireflies.ai/'} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-[#FF5B00] hover:underline">
+                        <ExternalLink size={12} /> Fireflies
+                      </a>
+                      {!locked && (
+                        <button type="button" onClick={() => setMeetingsOpen((open) => !open)} className="text-[#FF5B00] hover:underline">
+                          {meetingsOpen ? 'Skjul' : 'Bytt opptak'}
                         </button>
                       )}
                     </div>
-                  )}
-                  {meetingMatches.length > 1 && (
-                    <div className="flex flex-wrap gap-2">
-                      {meetingMatches.map((match) => (
-                        <button
-                          key={match.meetingId}
-                          type="button"
-                          disabled={busy === 'meeting'}
-                          onClick={() => void handlePickMeeting({ meetingId: match.meetingId })}
-                          className="px-3 py-1.5 rounded-lg bg-white/10 text-xs text-white hover:bg-white/15"
-                        >
-                          {match.title || 'Uten tittel'}{match.when ? ` · ${match.when}` : ''}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                    {meetingsOpen && !locked && (
+                      <div className="mt-2 space-y-2">
+                        {meetings.length > 0 && (
+                          <div className="flex flex-wrap gap-2">
+                            {meetings.map((entry) => (
+                              <button
+                                key={entry.meetingId}
+                                type="button"
+                                disabled={busy === 'meeting'}
+                                onClick={() => void handlePickMeeting({ meetingId: entry.meetingId })}
+                                className={`px-2 py-1 rounded-md text-left ${
+                                  entry.selected || entry.meetingId === meeting?.meetingId
+                                    ? 'bg-[#FF5B00]/20 text-white'
+                                    : 'bg-white/10 text-white hover:bg-white/15'
+                                }`}
+                              >
+                                {entry.title || 'Uten tittel'}{entry.when ? ` · ${entry.when}` : ''}{entry.hasTranscript ? '' : ' · uten transkript'}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                        <div className="flex flex-wrap items-end gap-2">
+                          <input
+                            value={meetingQuery}
+                            onChange={(event) => setMeetingQuery(event.target.value)}
+                            placeholder="Møtenavn eller Fireflies-lenke"
+                            className="flex-1 min-w-[180px] px-2 py-1.5 rounded-md bg-[#111] border border-white/15 text-white text-xs"
+                          />
+                          <button
+                            type="button"
+                            disabled={busy === 'meeting' || meetingQuery.trim().length < 3}
+                            onClick={() => void handlePickMeeting({ title: meetingQuery.trim() })}
+                            className="px-2 py-1.5 rounded-md bg-white/10 text-xs hover:bg-white/15 disabled:opacity-50"
+                          >
+                            {busy === 'meeting' ? 'Henter…' : 'Hent'}
+                          </button>
+                        </div>
+                        {meetingMatches.length > 1 && (
+                          <div className="flex flex-wrap gap-2">
+                            {meetingMatches.map((match) => (
+                              <button
+                                key={match.meetingId}
+                                type="button"
+                                disabled={busy === 'meeting'}
+                                onClick={() => void handlePickMeeting({ meetingId: match.meetingId })}
+                                className="px-2 py-1 rounded-md bg-white/10 text-xs text-white hover:bg-white/15"
+                              >
+                                {match.title || 'Uten tittel'}{match.when ? ` · ${match.when}` : ''}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
 
                   {placeholders.length > 0 && status !== 'sent' && (
                     <div className="flex items-start gap-3 rounded-xl border border-amber-500/40 bg-amber-900/20 px-4 py-3 text-sm text-amber-200">
@@ -804,7 +818,7 @@ export function SalesOfferComposer() {
                         <div className="text-xs mt-1">
                           {placeholders.map((label) => `«${label}»`).join(' · ')}
                         </div>
-                        <div className="text-xs mt-1">Fyll ut (AI eller manuelt i editoren), velg tier, eller slett avsnittet. Tilbudet kan ikke sendes med tomme felt.</div>
+                        <div className="text-xs mt-1">Skriv i editoren, eller slett avsnittet. Tilbudet kan ikke sendes med tomme felt.</div>
                       </div>
                     </div>
                   )}
