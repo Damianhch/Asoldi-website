@@ -119,6 +119,7 @@ import {
   buildFirefliesMeetingRecord,
   fetchFirefliesTranscript,
   firefliesIdsFromPaste,
+  findStoredFirefliesMeetingForMeetLink,
   listStoredFirefliesMeetings,
   meetingRefForClient,
   rankMeetingsByTitle,
@@ -12423,20 +12424,56 @@ function meetingForOffer(client, offer) {
     if (chosen) return chosen;
   }
   const ref = salesMeetingRef(client);
-  if (!ref?.meetingId) return null;
-  return readStoredFirefliesMeeting(ref.meetingId) || { ...ref, transcript: '' };
+  if (ref?.meetingId) return readStoredFirefliesMeeting(ref.meetingId) || { ...ref, transcript: '' };
+  const byLink = findStoredFirefliesMeetingForMeetLink(client?.calendar?.meetLink);
+  if (byLink?.meetingId) {
+    const linkedTo = sanitizeText(byLink.match?.clientId);
+    if (!linkedTo || linkedTo === sanitizeText(client?.id)) {
+      try {
+        linkFirefliesMeeting(client.id, meetingRefForClient(byLink, byLink.match || {
+          clientId: client.id,
+          linkedBy: 'meet-link',
+        }));
+      } catch {
+        // Display still works if the persist fails.
+      }
+      return byLink;
+    }
+  }
+  return null;
 }
 
-function presentMeetingForOffer(meeting, offer) {
-  if (!meeting) return null;
+function presentMeetingForOffer(meeting, offer, client = null) {
+  if (!meeting) {
+    const joinedAt = sanitizeText(client?.calendar?.firefliesLiveJoinedAt);
+    if (!joinedAt) return null;
+    const meetingMs = Date.parse(client?.meetingAt || '');
+    return {
+      meetingId: '',
+      title: 'Fireflies ble sendt inn i Meet',
+      when: Number.isFinite(meetingMs)
+        ? new Date(meetingMs).toLocaleString('nb-NO', { dateStyle: 'full', timeStyle: 'short', timeZone: 'Europe/Oslo' })
+        : joinedAt,
+      hasTranscript: false,
+      hasSummary: false,
+      tooThin: true,
+      pendingTranscript: true,
+      liveJoined: true,
+      firefliesUrl: 'https://app.fireflies.ai/',
+    };
+  }
   const view = sanitizeText(meeting.transcriptUrl);
+  const hasTranscript = Boolean(sanitizeText(meeting.transcript));
+  const hasSummary = Boolean(sanitizeText(meeting.summary));
   return {
     meetingId: meeting.meetingId || '',
     title: meeting.title || '',
     when: meeting.when || '',
-    hasTranscript: Boolean(sanitizeText(meeting.transcript)),
-    hasSummary: Boolean(sanitizeText(meeting.summary)),
+    hasTranscript,
+    hasSummary,
     tooThin: meetingContextIsTooThin(meeting),
+    pendingTranscript: !hasTranscript && !hasSummary,
+    liveJoined: Boolean(sanitizeText(client?.calendar?.firefliesLiveJoinedAt)),
     manual: sanitizeText(offer?.meetingSource) === 'manual',
     firefliesUrl: /^https:\/\/app\.fireflies\.ai\//i.test(view) ? view : 'https://app.fireflies.ai/',
   };
@@ -12660,7 +12697,7 @@ app.get('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
     mergeFields: mergeFieldsMeta(),
     sender,
     deepseek: isDeepseekConfigured(),
-    meeting: presentMeetingForOffer(meeting, offer),
+    meeting: presentMeetingForOffer(meeting, offer, client),
     canSendEmail: emailLib.canSendEmail(),
   });
 });
@@ -12671,7 +12708,7 @@ app.get('/api/admin/sales/:id/offer/meeting', salesAuth, async (req, res) => {
   if (!canAccessSalesClient(req, client)) return res.status(403).json({ message: 'Not your sales client.' });
   const offer = salesOffers.getOfferForClient(client.id);
   const meeting = meetingForOffer(client, offer);
-  return res.json({ meeting: presentMeetingForOffer(meeting, offer) });
+  return res.json({ meeting: presentMeetingForOffer(meeting, offer, client) });
 });
 
 app.put('/api/admin/sales/:id/offer', salesAuth, async (req, res) => {
@@ -12754,7 +12791,7 @@ app.post('/api/admin/sales/:id/offer/use-meeting', salesAuth, async (req, res) =
       meetingSource: '',
     }, { actor: offerActor(req), action: 'meeting-auto', note: '' });
     const meeting = meetingForOffer(client, updated);
-    return res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated) });
+    return res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated, client) });
   }
   const meetingId = sanitizeText(req.body?.meetingId);
   const pasted = sanitizeText(req.body?.title || req.body?.query || '');
@@ -12812,7 +12849,7 @@ app.post('/api/admin/sales/:id/offer/use-meeting', salesAuth, async (req, res) =
     meetingSource: 'manual',
   }, { actor: offerActor(req), action: 'meeting-picked', note: sanitizeText(record.title) });
   const meeting = meetingForOffer(client, updated);
-  res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated) });
+  res.json({ offer: presentOffer(updated), meeting: presentMeetingForOffer(meeting, updated, client) });
 });
 
 app.post('/api/admin/sales/:id/offer/request-review', salesAuth, async (req, res) => {

@@ -41,6 +41,8 @@ type MeetingInfo = {
   hasTranscript: boolean;
   hasSummary: boolean;
   tooThin?: boolean;
+  pendingTranscript?: boolean;
+  liveJoined?: boolean;
   manual?: boolean;
   firefliesUrl?: string;
 } | null;
@@ -476,6 +478,7 @@ export function SalesOfferComposer() {
   const fillDisabledReason = useMemo(() => {
     if (!deepseek) return 'AI-utfylling er ikke aktivert på serveren enda (DeepSeek-nøkkel mangler). Du kan fylle ut feltene manuelt i editoren.';
     if (!meeting) return 'Venter på Fireflies-transkript (vanligvis 5–10 min etter møtet). Siden oppdateres automatisk.';
+    if (meeting.pendingTranscript) return 'Fireflies var i Meet. Transkriptet er ikke klart ennå, eller møtet hadde for lite tale.';
     if (!meeting.hasTranscript && !meeting.hasSummary) return 'Møtet mangler transkript/sammendrag.';
     if (meeting.tooThin) return 'Opptaket har under 10 linjer og legges ikke inn i tilbudet.';
     return '';
@@ -642,7 +645,13 @@ export function SalesOfferComposer() {
                     {fillDisabledReason && <span className="text-xs text-gray-500 max-w-[360px]">{fillDisabledReason}</span>}
                     {meeting && (
                       <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-gray-500">
-                        <span>Møte: {meeting.title || 'Uten tittel'}{meeting.when ? ` · ${meeting.when}` : ''}{meeting.manual ? ' · valgt manuelt' : ''}</span>
+                        <span>
+                          Møte: {meeting.title || 'Uten tittel'}
+                          {meeting.when ? ` · ${meeting.when}` : ''}
+                          {meeting.manual ? ' · valgt manuelt' : ''}
+                          {meeting.pendingTranscript ? ' · venter på transkript' : ''}
+                          {meeting.tooThin && !meeting.pendingTranscript ? ' · for lite tale til auto-utfylling' : ''}
+                        </span>
                         <a
                           href={meeting.firefliesUrl || 'https://app.fireflies.ai/'}
                           target="_blank"
