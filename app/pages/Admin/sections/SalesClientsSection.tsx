@@ -168,6 +168,31 @@ const INITIAL_FORM: SalesFormState = {
   googleBusinessProfile: '',
 };
 
+function clientCardSnapshot(form: SalesFormState, websiteEmailTouched: boolean) {
+  return JSON.stringify({
+    product: form.product,
+    businessName: form.businessName.trim(),
+    contactPerson: form.contactPerson.trim(),
+    contactEmail: form.contactEmail.trim(),
+    websiteEmail: websiteEmailTouched ? form.websiteEmail.trim() : '',
+    contactPhone: form.contactPhone.trim(),
+    meetingPlace: form.meetingPlace.trim(),
+    orgNumber: form.orgNumber.trim(),
+    businessAddress: form.businessAddress.trim(),
+    industry: form.industry.trim(),
+    meetingMode: form.meetingMode,
+    agreedTime: Boolean(form.agreedTime),
+    meetingAt: form.agreedTime ? form.meetingAt : '',
+    websiteDomain: form.product === 'ssu' ? '' : form.websiteDomain.trim(),
+    notes: form.notes.trim(),
+    instagramUrl: form.instagramUrl.trim(),
+    facebookUrl: form.facebookUrl.trim(),
+    proffUrl: form.proffUrl.trim(),
+    otherLinks: form.otherLinks.trim(),
+    googleBusinessProfile: form.googleBusinessProfile.trim(),
+  });
+}
+
 function normalizeSalesProduct(value: unknown): SalesProduct {
   return String(value || '').trim().toLowerCase() === 'ssu' ? 'ssu' : 'asoldi';
 }
@@ -395,6 +420,8 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   const [savingNoteId, setSavingNoteId] = useState<string | null>(null);
   const [offerFillToken, setOfferFillToken] = useState(0);
   const notesFlushRef = useRef<null | (() => Promise<void>)>(null);
+  const clientCardBaselineRef = useRef('');
+  const [discardPrompt, setDiscardPrompt] = useState(false);
   const [previewMissingToastId, setPreviewMissingToastId] = useState<string | null>(null);
   const meetingMapContainerRef = useRef<HTMLDivElement | null>(null);
   const meetingMapRef = useRef<any>(null);
@@ -1061,8 +1088,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   function fillEditForm(client: SalesClient) {
     const details = parseDetails(client.details);
     setEditingId(client.id);
-    setWebsiteEmailTouched(Boolean(String(client.websiteEmail || '').trim()));
-    setForm({
+    const touched = Boolean(String(client.websiteEmail || '').trim());
+    setWebsiteEmailTouched(touched);
+    const nextForm: SalesFormState = {
       product: normalizeSalesProduct(client.product),
       businessName: client.businessName || '',
       contactPerson: client.contactPerson || '',
@@ -1083,7 +1111,9 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
       proffUrl: details.proffUrl,
       otherLinks: details.otherLinks,
       googleBusinessProfile: details.googleBusinessProfile,
-    });
+    };
+    setForm(nextForm);
+    clientCardBaselineRef.current = clientCardSnapshot(nextForm, touched);
   }
 
   function openEdit(client: SalesClient) {
@@ -1101,6 +1131,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
   }
 
   function closeClientFlow() {
+    setDiscardPrompt(false);
     const next = new URLSearchParams(searchParams);
     next.delete('flow');
     next.delete('step');
@@ -1108,6 +1139,20 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
     setSearchParams(next, { replace: true });
     setShowForm(false);
     setEditingId(null);
+  }
+
+  function requestCloseClientFlow() {
+    if (flowStep === 1 && clientCardSnapshot(form, websiteEmailTouched) !== clientCardBaselineRef.current) {
+      setDiscardPrompt(true);
+      return;
+    }
+    closeClientFlow();
+  }
+
+  async function saveClientCardAndClose() {
+    const ok = await saveForm(undefined, { keepOpen: true });
+    if (!ok) return;
+    closeClientFlow();
   }
 
   useEffect(() => {
@@ -1176,6 +1221,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
         });
       }
       await loadSales({ clearMessages: false });
+      clientCardBaselineRef.current = clientCardSnapshot(form, websiteEmailTouched);
       if (options?.keepOpen) {
         setError(warnings.length ? warnings.join(' | ') : '');
         return true;
@@ -2976,7 +3022,7 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                   <div className="font-semibold">{flowClient?.businessName || 'Kunde'}</div>
                   <div className="text-xs text-[#6B7280]">Kundekort, produktnotater og tilbud</div>
                 </div>
-                <button type="button" onClick={closeClientFlow} className="px-3 py-2 rounded-lg bg-[#F3F4F6] text-sm">Lukk</button>
+                <button type="button" onClick={requestCloseClientFlow} className="px-3 py-2 rounded-lg bg-[#F3F4F6] text-sm">Lukk</button>
               </div>
               <div className="px-5 py-3">
                 <SalesFlowSteps step={flowStep} onStep={(step) => void goFlowStep(step)} />
@@ -3142,25 +3188,16 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
                 </div>
               )}
 
+              {!inClientFlow && (
               <div className="md:col-span-2 flex justify-end gap-2 mt-2">
-                <button type="button" onClick={() => (inClientFlow ? closeClientFlow() : setShowForm(false))} className="px-4 py-2 rounded-lg bg-white/10 text-white">
-                  {inClientFlow ? 'Lukk' : 'Cancel'}
+                <button type="button" onClick={() => setShowForm(false)} className="px-4 py-2 rounded-lg bg-white/10 text-white">
+                  Cancel
                 </button>
-                {inClientFlow ? (
-                  <>
-                    <button type="button" disabled={saving} onClick={() => void saveForm(undefined, { keepOpen: true })} className="px-4 py-2 rounded-lg bg-white/10 text-white disabled:opacity-50">
-                      {saving ? 'Lagrer…' : 'Lagre'}
-                    </button>
-                    <button type="button" disabled={saving} onClick={() => void goFlowStep(2)} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white disabled:opacity-50">
-                      Neste · Produktnotater
-                    </button>
-                  </>
-                ) : (
-                  <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white disabled:opacity-50">
-                    {saving ? 'Saving…' : editingId ? 'Save changes' : 'Create sales client'}
-                  </button>
-                )}
+                <button type="submit" disabled={saving} className="px-4 py-2 rounded-lg bg-[#FF5B00] text-white disabled:opacity-50">
+                  {saving ? 'Saving…' : editingId ? 'Save changes' : 'Create sales client'}
+                </button>
               </div>
+              )}
             </form>
             </div>
             )}
@@ -3178,6 +3215,53 @@ export function SalesClientsSection({ onMovedToDevelopment }: Props) {
             {inClientFlow && flowStep === 3 && flowClient && (
               <SalesOfferComposer embedded clientId={flowClient.id} autoFillToken={offerFillToken} />
             )}
+          </div>
+          {inClientFlow && (
+            <div className="shrink-0 sticky bottom-0 z-10 border-t border-[#E6E9EF] bg-white px-5 py-3 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                disabled={saving || flowStep === 1}
+                onClick={() => void goFlowStep((flowStep - 1) as 1 | 2 | 3)}
+                className="px-4 py-2.5 rounded-lg bg-[#F3F4F6] text-sm font-medium text-[#111827] disabled:opacity-40"
+              >
+                Forrige
+              </button>
+              <button
+                type="button"
+                disabled={saving || flowStep === 3}
+                onClick={() => void goFlowStep((flowStep + 1) as 1 | 2 | 3)}
+                className="px-4 py-2.5 rounded-lg bg-[#FF5B00] text-sm font-medium text-white disabled:opacity-40"
+              >
+                {saving ? 'Lagrer…' : flowStep === 1 ? 'Neste · Produktnotater' : flowStep === 2 ? 'Neste · Tilbud' : 'Neste'}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+      {discardPrompt && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 text-[#111827] shadow-xl" role="dialog" aria-modal="true" aria-labelledby="unsaved-client-card-title">
+            <h3 id="unsaved-client-card-title" className="text-lg font-semibold">Lagre endringer?</h3>
+            <p className="mt-2 text-sm text-[#4B5563]">
+              Kundekortet har endringer som ikke er lagret. Lagre før du lukker, eller fortsett uten å lagre.
+            </p>
+            {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <button type="button" onClick={() => setDiscardPrompt(false)} className="px-3 py-2 rounded-lg bg-[#F3F4F6] text-sm">
+                Avbryt
+              </button>
+              <button type="button" onClick={closeClientFlow} className="px-3 py-2 rounded-lg border border-[#E5E7EB] text-sm">
+                Fortsett uten å lagre
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void saveClientCardAndClose()}
+                className="px-3 py-2 rounded-lg bg-[#FF5B00] text-sm font-medium text-white disabled:opacity-50"
+              >
+                {saving ? 'Lagrer…' : 'Lagre'}
+              </button>
+            </div>
           </div>
         </div>
       )}

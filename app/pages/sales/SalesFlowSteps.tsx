@@ -11,7 +11,7 @@ export function SalesFlowSteps({ step, onStep }: { step: Step; onStep: (step: St
     <div className="grid grid-cols-3 gap-2">
       {STEPS.map((item) => (
         item.step === step ? (
-          <span key={item.step} className="rounded-xl bg-[#111827] text-white px-3 py-3 text-sm font-semibold text-center">
+          <span key={item.step} className="rounded-xl bg-[#FF5B00] text-white px-3 py-3 text-sm font-semibold text-center">
             {item.step} · {item.label}
           </span>
         ) : (

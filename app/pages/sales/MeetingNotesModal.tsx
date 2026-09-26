@@ -304,6 +304,7 @@ export function MeetingNotesModal({ businessName, quote, saving, embedded = fals
             </div>
             <div className="p-4 border-t border-[#E6E9EF] space-y-2 bg-white">
               <p className="text-[11px] text-[#6B7280]">{saving ? 'Lagrer…' : savedLabel}</p>
+              {!embedded && (
               <button
                 type="button"
                 disabled={saving}
@@ -313,6 +314,7 @@ export function MeetingNotesModal({ businessName, quote, saving, embedded = fals
                 {saving ? <Loader2 size={16} className="animate-spin" /> : null}
                 Gå til tilbud
               </button>
+              )}
             </div>
           </aside>
         </div>

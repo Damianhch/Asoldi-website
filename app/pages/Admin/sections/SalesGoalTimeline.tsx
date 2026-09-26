@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { CalendarDays, CheckCircle2, ChevronsDown, ChevronsUp, Loader2, Pencil, Plus, Trash2, X } from 'lucide-react';
 import type { SalesClient, SalesGoalKey, SalesNextAction, SalesNextActionPreset } from '../shared';
 import {
@@ -86,6 +86,8 @@ export function SalesGoalTimeline({
 }: Props) {
   const [draft, setDraft] = useState<DraftState | null>(null);
   const [edit, setEdit] = useState<EditState | null>(null);
+  const actionListRef = useRef<HTMLDivElement | null>(null);
+  const [actionListMaxPx, setActionListMaxPx] = useState<number | null>(null);
   const [showFutureGoals, setShowFutureGoals] = useState(false);
   const isWin = variant === 'win';
   const currentGoal = (isWin ? AFTER_SALE_GOAL : getCurrentGoalKey(client)) as SalesGoalKey | 'afterSale' | '';
@@ -100,6 +102,28 @@ export function SalesGoalTimeline({
   );
   const presets = currentGoal ? (GOAL_PRESETS[currentGoal] || []) : [];
   const hasMeeting = Boolean(client.agreedTime && client.meetingAt);
+  const capActionList = currentActions.length > 1 && !edit;
+
+  useLayoutEffect(() => {
+    const root = actionListRef.current;
+    if (!root || !capActionList) {
+      setActionListMaxPx(null);
+      return;
+    }
+    const measure = () => {
+      const rows = root.querySelectorAll<HTMLElement>('[data-action-row]');
+      const first = rows[0];
+      const second = rows[1];
+      if (!first || !second) return;
+      const gap = parseFloat(window.getComputedStyle(second).marginTop) || 0;
+      const next = Math.ceil(first.getBoundingClientRect().height + gap + second.getBoundingClientRect().height / 2);
+      setActionListMaxPx((prev) => (prev === next ? prev : next));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    root.querySelectorAll('[data-action-row]').forEach((node) => observer.observe(node));
+    return () => observer.disconnect();
+  }, [capActionList, currentActions]);
 
   function startPreset(presetKey: SalesNextActionPreset) {
     if (presetNeedsMeeting(presetKey) && !hasMeeting) return;
@@ -235,8 +259,16 @@ export function SalesGoalTimeline({
             )}
           </div>
 
+          {currentActions.length > 0 && (
+          <div className="relative">
+          <div
+            ref={actionListRef}
+            style={actionListMaxPx ? { maxHeight: actionListMaxPx } : undefined}
+            className={actionListMaxPx ? 'sales-action-scroll overflow-y-auto overscroll-contain pr-1.5' : undefined}
+          >
+          <div className={actionListMaxPx ? 'space-y-2 pb-6' : 'space-y-2'}>
           {currentActions.map((currentAction) => (
-            <div key={currentAction.id} className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5">
+            <div key={currentAction.id} data-action-row className="rounded-lg border border-white/10 bg-black/30 px-2 py-1.5">
               {edit?.actionId === currentAction.id ? (
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <label className="text-[10px] text-gray-400 uppercase tracking-wide">
@@ -346,6 +378,13 @@ export function SalesGoalTimeline({
               )}
             </div>
           ))}
+          </div>
+          </div>
+          {actionListMaxPx ? (
+            <div className="pointer-events-none absolute bottom-0 left-0 right-2 h-4 bg-gradient-to-t from-[#f3f4f6] to-transparent" />
+          ) : null}
+          </div>
+          )}
 
           {draft ? (
             <div className="rounded-lg border border-white/10 bg-black/10 p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
